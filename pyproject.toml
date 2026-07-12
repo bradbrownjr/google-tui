@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "google-tui"
+version = "0.1.0"
+description = "Multi-pane TUI for Gmail, Calendar, Tasks, Drive, Search, and Hermes Q&A"
+requires-python = ">=3.11"
+dependencies = ["textual", "rich", "google-api-python-client", "google-auth", "google-auth-httplib2", "requests"]
+
+[project.scripts]
+google-tui = "google_tui.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["google_tui*"]
