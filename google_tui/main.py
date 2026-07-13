@@ -21,7 +21,9 @@ from textual.widgets import (
 from textual.worker import get_current_worker  # noqa: F401 (kept for future threaded workers)
 
 from . import gauth
-from .ask import ask_llm, ask_hermes_agent, needs_agent, google_search
+from . import ask
+from .ask import needs_agent, google_search
+from . import setup_instructions
 from .cache import Cache, derive_key_from_passphrase, make_canary, new_salt, read_or_create_keyfile, verify_canary
 from . import cache as cache_mod
 from .settings import Settings, load_settings, save_settings
@@ -204,10 +206,13 @@ class GoogleTUI(App):
     #help-global { color: $text-muted; }
     .settings-row { height: 3; align: left middle; }
     .settings-row Label { width: auto; margin-right: 2; }
+    #settings-nous-key { width: 40; margin-right: 2; }
     .hidden { display: none; }
     #settings-key-method { height: auto; margin: 1 0; }
     #settings-cache-info { margin-top: 1; }
     #unlock-box { height: auto; }
+    #onboarding-box { width: 90%; height: 80%; }
+    #onboarding-scroll { height: 1fr; }
     #unlock-error { height: 1; }
     """
 
@@ -388,7 +393,7 @@ class GoogleTUI(App):
                     yield Input(placeholder="Search query, Enter to run", id="s-query")
                     yield RichLog(id="search-results", markup=False, wrap=True)
             with TabPane(_tab_label("Settings", 5), id="tab-settings"):
-                with Container(id="settings-section", classes="section"):
+                with VerticalScroll(id="settings-section", classes="section"):
                     yield Label("SETTINGS", classes="pane-title-text")
                     with Horizontal(classes="settings-row"):
                         yield Label("Encrypt local cache at rest")
@@ -407,6 +412,21 @@ class GoogleTUI(App):
                         )
                     yield Button("Clear local cache now", id="settings-clear-cache")
                     yield Static("", id="settings-cache-info", classes="muted")
+                    yield Label("AI provider (Ask pane)", classes="pane-title-text")
+                    with RadioSet(id="settings-ai-provider"):
+                        for label, pid in ask.PROVIDER_CHOICES:
+                            yield RadioButton(
+                                label, value=(self.settings.ai_provider == pid),
+                                id=f"rb-provider-{pid}",
+                            )
+                    with Horizontal(classes="settings-row"):
+                        yield Label("Nous API key")
+                        yield Input(
+                            value=self.settings.nous_api_key or "", password=True,
+                            placeholder="only needed for the Hermes provider",
+                            id="settings-nous-key",
+                        )
+                        yield Button("Save", id="settings-save-nous-key")
         with Vertical(id="help-bar"):
             yield Static("", id="help-context")
             yield Static(HELP_GLOBAL, id="help-global")
@@ -415,6 +435,26 @@ class GoogleTUI(App):
     def on_mount(self) -> None:
         self._focus_pane(0)
         self._update_help_bar()
+        problems = self._diagnose_setup()
+        if problems:
+            self.push_screen(OnboardingWizardModal(self, problems), self._on_onboarding_result)
+        else:
+            self._continue_startup()
+
+    def _diagnose_setup(self) -> list[str]:
+        problems = []
+        try:
+            gauth.get_credentials()
+        except Exception:
+            problems.append("google")
+        if not ask.any_provider_reachable(nous_api_key=self.settings.nous_api_key):
+            problems.append("ai")
+        return problems
+
+    def _on_onboarding_result(self, _result) -> None:
+        self.call_after_refresh(self._continue_startup)
+
+    def _continue_startup(self) -> None:
         if self.settings.encrypt_at_rest and self.settings.key_method == "passphrase":
             self.push_screen(UnlockModal(self.settings, mode="unlock"), self._on_startup_unlock_result)
         else:
@@ -873,18 +913,20 @@ class GoogleTUI(App):
         self.run_worker(self._hermes_worker(q, log), exclusive=False)
 
     async def _hermes_worker(self, q: str, log: RichLog) -> None:
+        provider = ask.get_provider(self.settings.ai_provider, nous_api_key=self.settings.nous_api_key)
         try:
             if needs_agent(q):
-                log.write("[running full Hermes agent…]")
-                ans = ask_hermes_agent(q)
+                log.write(f"[running {provider.display_name} agent…]")
+                ans = provider.run_action(q)
             else:
                 ctx = self._build_context()
                 sys_prompt = (
-                    "You are Hermes, answering questions using the user's live Google "
-                    "Workspace data provided below. Be concise (couple of sentences). "
-                    "If you need to take an action, say so plainly.\n\nCONTEXT:\n" + ctx)
-                ans = ask_llm(sys_prompt, q)
-            log.write(f"Hermes: {ans}")
+                    "You are an assistant answering questions using the user's live "
+                    "Google Workspace data provided below. Be concise (couple of "
+                    "sentences). If you need to take an action, say so plainly.\n\n"
+                    "CONTEXT:\n" + ctx)
+                ans = provider.ask(sys_prompt, q)
+            log.write(f"{provider.display_name}: {ans}")
         except Exception as e:
             log.write(f"(error: {e})")
 
@@ -1233,6 +1275,15 @@ class GoogleTUI(App):
             self._update_settings_cache_info()
 
     def on_radio_set_changed(self, event: RadioSet.Changed) -> None:
+        if event.radio_set.id == "settings-ai-provider":
+            pid = event.pressed.id.removeprefix("rb-provider-")
+            if pid == self.settings.ai_provider:
+                return
+            self.settings.ai_provider = pid
+            save_settings(self.settings)
+            label = next(l for l, v in ask.PROVIDER_CHOICES if v == pid)
+            self.notify(f"AI provider set to {label}")
+            return
         if event.radio_set.id != "settings-key-method":
             return
         if not self.settings.encrypt_at_rest:
@@ -1277,11 +1328,62 @@ class GoogleTUI(App):
                 self._cache.clear_all()
             self.notify("Local cache cleared.")
             self._update_settings_cache_info()
+        elif event.button.id == "settings-save-nous-key":
+            key = self.query_one("#settings-nous-key", Input).value.strip()
+            self.settings.nous_api_key = key or None
+            save_settings(self.settings)
+            self.notify("Nous API key saved.")
 
 
 # ============================================================================
 # Modals
 # ============================================================================
+
+class OnboardingWizardModal(ModalScreen):
+    """Forced-first-run guidance when Google and/or every AI provider is
+    unreachable. "Retry" re-runs the diagnosis in place; "Continue anyway"
+    lets the app launch in a degraded state — per-action error handling
+    (offline mode, notify() on API errors) already covers that gracefully.
+    """
+
+    def __init__(self, app_ref: "GoogleTUI", problems: list[str]):
+        super().__init__()
+        self._app_ref = app_ref
+        self._problems = problems
+
+    def compose(self) -> ComposeResult:
+        with Container(id="onboarding-box", classes="pane"):
+            yield Label("WELCOME — SETUP NEEDED", classes="pane-title-text")
+            with VerticalScroll(id="onboarding-scroll"):
+                yield Static(self._body_text(), id="onboarding-text")
+            with Horizontal(classes="btnrow"):
+                yield Button("Retry", id="onboarding-retry")
+                yield Button("Continue anyway", id="onboarding-continue")
+
+    def _body_text(self) -> str:
+        parts = []
+        if "google" in self._problems:
+            parts.append(setup_instructions.GOOGLE_SETUP_STEPS)
+        if "ai" in self._problems:
+            parts.append(setup_instructions.AI_PROVIDER_SETUP_STEPS)
+        return "\n\n".join(parts)
+
+    def on_button_pressed(self, e: Button.Pressed) -> None:
+        if e.button.id == "onboarding-continue":
+            self.dismiss("continue")
+            return
+        problems = self._app_ref._diagnose_setup()
+        if problems:
+            self._problems = problems
+            self.query_one("#onboarding-text", Static).update(self._body_text())
+            self.notify("Still missing setup — see the instructions below.", severity="warning")
+        else:
+            self.dismiss("resolved")
+
+    def on_key(self, e) -> None:
+        if e.key == "escape":
+            self.dismiss("continue")
+
 
 class LoadingModal(ModalScreen):
     """Shown immediately on startup, before any Google API call is made."""

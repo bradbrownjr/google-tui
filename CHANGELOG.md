@@ -6,7 +6,32 @@ touched and any breaking notes.
 ## [2026-07-13]
 
 ### Added
-- **Labels as folders (M1 of the P1 feature epics).** A `Select` dropdown
+- **Multi-provider AI + onboarding wizard (P1 feature epic).** The Ask pane
+  is no longer locked into Hermes. `google_tui/ask.py` gets an `AIProvider`
+  abstraction — `HermesProvider` (existing Nous LLM + `hermes` CLI agent),
+  `ClaudeCodeProvider` (`claude -p --output-format text`), `OpenCodeProvider`
+  (`opencode run`), `GeminiCLIProvider` (`gemini -p`) — all picked from a
+  new "AI provider" radio group in the Settings tab and persisted to
+  `settings.ai_provider`. Every provider gets the same Google context
+  (recent email/events, built locally via `gauth`) handed to it as part of
+  the prompt — that's how the Google token is "shared" with each provider,
+  without needing separate Google integrations per CLI. Settings also
+  gained a Nous API key field (`settings-nous-key`), so Hermes no longer
+  requires hand-editing `~/.hermes/config.yaml`; the Settings tab container
+  changed from `Container` to `VerticalScroll` since it no longer fits one
+  screen. New `google_tui/setup_instructions.py` holds the shared
+  Google-account and AI-provider setup text, reused by both the wizard and
+  (later) `SETUP.md`. On launch, `GoogleTUI._diagnose_setup()` checks for a
+  valid Google token and at least one reachable AI provider; if either is
+  missing, an `OnboardingWizardModal` shows the relevant instructions
+  before the normal tabs, with "Retry" (re-diagnose) and "Continue anyway"
+  (proceed in the existing degraded/offline mode) options. Verified with
+  mocked `run_test` pilots: wizard shows/hides correctly based on
+  diagnosis, Continue anyway proceeds to normal startup, provider radio
+  switch and Nous key save both persist to settings. (`google_tui/ask.py`,
+  `google_tui/main.py`, `google_tui/settings.py`,
+  `google_tui/setup_instructions.py`)
+- **Labels as folders (P1 feature epic).** A `Select` dropdown
   above the Email pane (`#email-label-select`) lets you switch between
   Gmail labels/folders — "All Mail" plus every system and user label
   (nested user labels like `Family/Kids` shown indented by depth).
