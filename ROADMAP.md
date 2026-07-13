@@ -17,9 +17,10 @@ just checking it off here, so ROADMAP.md only ever shows what's still open.
 
 ## P1 — Major Feature Epics (ordered build sequence)
 
-Seven epics remaining from the 2026-07-13 planning pass (Labels-as-folders,
-multi-provider AI/onboarding, and the Google Console setup guide shipped —
-see CHANGELOG), ordered so each one's output is available to the epics
+Six epics remaining from the 2026-07-13 planning pass (Labels-as-folders,
+multi-provider AI/onboarding, the Google Console setup guide, and M1's
+shared rendering module shipped — see CHANGELOG), ordered so each one's
+output is available to the epics
 that build on it (shared render module before its consumers). The repo
 screenshot (M7) is deliberately LAST — take it once, after the major UI
 changes (M2, M3, M5, M6 all add or reshape tabs) have landed, so it's a
@@ -30,21 +31,6 @@ architecture/design before non-trivial code, **general-purpose** for the
 actual multi-step implementation, **claude-code-guide** where the step is
 specifically about the Claude Code CLI/SDK itself. Small one-shot steps
 with no real research/design component are left untagged (just do them).
-
-### M1 — Shared HTML/Gopher/Gemini rendering module
-The reusable core: Browser (M2), News (M3), and HTML email (M4) all
-consume this instead of each rolling their own parser.
-- [ ] Audit `bpq-apps/apps/htmlview.py` (nav/content link separation,
-  pagination) and `apps/gopher.py` for what ports cleanly vs. what's
-  coupled to their `print()`/`input()` packet-BBS interface. *(Explore)*
-- [ ] Design the module boundary: a protocol-agnostic `Document` (title,
-  text blocks, links) that Web/Gopher/Gemini/RSS parsers all produce, and
-  one Textual renderer widget that consumes any `Document` — this is the
-  modularity the whole plan hinges on. *(Plan)*
-- [ ] Implement `google_tui/render.py`: port htmlview.py's link-separation
-  heuristic, add a Gopher menu parser (from `gopher.py`), and a new
-  Gemtext parser (gemini:// markup isn't in bpq-apps yet).
-  *(general-purpose)*
 
 ### M2 — Browser tab (Web + Gopher + Gemini + Search)
 - [ ] Research the Gemini protocol (TLS handshake, TOFU cert trust,

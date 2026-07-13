@@ -6,6 +6,22 @@ touched and any breaking notes.
 ## [2026-07-13]
 
 ### Added
+- **`google_tui/render.py` — shared HTML/Gopher/Gemtext rendering module
+  (P1 M1).** Protocol-agnostic `Document`/`Block`/`Link` model plus a
+  Textual `DocumentView` widget, meant to be consumed by the future
+  Browser (M2), News (M3), and rich-HTML-email (M4) epics instead of each
+  rolling its own parser. Ports `bpq-apps/apps/htmlview.py`'s nav-vs-content
+  link separation heuristic and `apps/gopher.py`'s tab-delimited menu
+  parser (both packet-BBS apps whose `print()`/`input()` I/O and
+  `__EXIT__`/`__MAIN__` sentinel-string control flow were left behind in
+  favor of a real `LinkActivated` Textual message), and adds a from-spec
+  Gemtext parser (no existing client to port). Fixes made during the port:
+  entity decoding now keeps real Unicode instead of stripping to ASCII, a
+  hardcoded-domain nav heuristic became a same-site `urlparse` check, and
+  `<pre>`/`<code>` preformatted-block handling was added (didn't exist in
+  the source). Not wired into `main.py`/any tab yet — that's M2/M3/M4's
+  job. Design docs and audit only exist in the session that built this;
+  the code and its docstrings are the reference going forward.
 - **`SETUP.md` — Google Cloud Console walkthrough (P1 feature epic).**
   Step-by-step guide: create a project, enable Gmail/Calendar/Drive/Tasks/
   People/Routes APIs, configure the OAuth branding (Google rebranded the
