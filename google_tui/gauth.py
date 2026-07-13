@@ -196,19 +196,23 @@ def list_events(svc, days: int = 14) -> list[dict]:
     return resp.get("items", [])
 
 
-def month_events(svc, year: int, month: int) -> list[dict]:
+def events_between(svc, start: datetime, end: datetime) -> list[dict]:
     cal = svc["calendar"]
-    start = datetime(year, month, 1, tzinfo=timezone.utc)
-    if month == 12:
-        end = datetime(year + 1, 1, 1, tzinfo=timezone.utc)
-    else:
-        end = datetime(year, month + 1, 1, tzinfo=timezone.utc)
     resp = cal.events().list(
         calendarId="primary",
         timeMin=start.isoformat(), timeMax=end.isoformat(),
         orderBy="startTime", singleEvents=True,
     ).execute()
     return resp.get("items", [])
+
+
+def month_events(svc, year: int, month: int) -> list[dict]:
+    start = datetime(year, month, 1, tzinfo=timezone.utc)
+    if month == 12:
+        end = datetime(year + 1, 1, 1, tzinfo=timezone.utc)
+    else:
+        end = datetime(year, month + 1, 1, tzinfo=timezone.utc)
+    return events_between(svc, start, end)
 
 
 def _event_start(e: dict) -> datetime:
@@ -265,9 +269,17 @@ def list_drive(svc, folder_id: str = "root", max_results: int = 200) -> list[dic
     return resp.get("files", [])
 
 
+def get_file_metadata(svc, file_id: str) -> dict:
+    d = svc["drive"]
+    return d.files().get(
+        fileId=file_id,
+        fields="id,name,mimeType,size,owners,modifiedTime,createdTime,parents,webViewLink",
+    ).execute()
+
+
 def read_drive_text(svc, file_id: str):
     d = svc["drive"]
-    meta = d.files().get(file_id=file_id, fields="mimeType,name").execute()
+    meta = d.files().get(fileId=file_id, fields="mimeType,name").execute()
     mime = meta["mimeType"]
     if mime.startswith("application/vnd.google-apps."):
         kind = mime.split(".")[-1]
