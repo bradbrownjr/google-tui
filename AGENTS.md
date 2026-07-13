@@ -13,13 +13,13 @@ WITHOUT prior chat context. Read it top-to-bottom before touching code.
 
 Five full-width **tabs** live in the blue bar (this IS the styled `Tabs`
 bar of the outer `TabbedContent#main-tabs`, not a separate status widget):
-**Mail**, **Calendar**, **Drive**, **Search**, **Settings**. The Mail tab
+**Mail**, **Calendar**, **Drive**, **Browser**, **Settings**. The Mail tab
 holds four **panes**: Email, Events, Tasks, Hermes. Tabs and panes are
 deliberately different concepts with different key prefixes (`Ctrl+#` for
 tabs, `Alt+#` for panes) — see §2.
 
 ```
-┌[Mail¹]  Calendar²  Drive³  Search⁴  Settings⁵──────────────────┐  ← blue bar,
+┌[Mail¹]  Calendar²  Drive³  Browser⁴  Settings⁵──────────────────┐  ← blue bar,
 ├─ EMAIL (widened) ────────────┐ ┌─ EVENTS ─────────────────────┤    active tab
 │ ▸ Frank Krizan                │ │ ▸ 07/13 Tick/Flea Appt       │    has an
 │   Fwd: [DigiPi] …             │ │ ▸ 07/15 OHD Water Testing    │    accent-
@@ -113,8 +113,32 @@ Other tabs:
   - `gauth.get_file_metadata(svc, file_id)` — added for the preview's
     who/what/where/when: `fields="id,name,mimeType,size,owners,
     modifiedTime,createdTime,parents,webViewLink"`.
-- **Search tab**: `Input#s-query` + `RichLog#search-results`, shells
-  `hermes web search` via `ask.google_search`.
+- **Browser tab** (`Ctrl+4`, P1 M2): address bar (`Input#browser-url`) + a
+  mode badge (`Static#browser-mode`: WEB/GOPHER/GEMINI/SEARCH) + a
+  `render.DocumentView` (`#browser-doc`) rendering whatever came back.
+  Address-bar submission is classified by `_classify_address()` (omnibox
+  heuristic: explicit `http(s)://`/`gopher://`/`gemini://` wins; a single
+  dotted-word-with-no-space gets `https://` prepended; everything else,
+  including any text containing a space, is a web search via the existing
+  `ask.google_search` — same backend the old standalone Search tab used,
+  now reached as a Browser mode instead of a separate tab). Fetching lives
+  in `google_tui/fetchers.py` (`fetch_http`/`fetch_gopher`/`fetch_gemini`),
+  never in `render.py` (which stays I/O-free) or `main.py` directly — every
+  `fetch_*` is blocking and run via `self.run_worker(fn, thread=True,
+  exclusive=True, group="browser-fetch")`, same fetch/apply split as the
+  rest of the app. History is an in-memory `list[BrowserHistoryEntry]`
+  (already-fetched `Document`s, not just URLs — Back/Forward never
+  re-fetches) — session-lifetime only, no SQLite cache category for page
+  content. `Alt+Left/Right` are back/forward (not `[`/`]`) when the Browser
+  tab is active; `Tab`/`Shift+Tab` toggle focus between the address bar and
+  the page. Gemini's TOFU cert pinning uses a new `Cache` category
+  (`"gemini_cert"`, key `f"{host}:{port}"`) via `fetchers.GeminiTofuStore`;
+  Gemini status 1x (input) and cross-host 3x (redirect) responses raise
+  `fetchers.GeminiInputRequired`/`GeminiRedirectConfirm`, each handled by a
+  small modal (`GeminiInputModal`/`ConfirmModal`) that resumes navigation
+  through `_browser_navigate` on confirm. Never gated by
+  `self._require_online()` — that flag tracks Google reachability
+  specifically, unrelated to arbitrary web/gopher/gemini fetches.
 - **Settings tab**: `Switch#settings-encrypt-switch` (encrypt-at-rest on/off)
   + `RadioSet#settings-key-method` (passphrase vs. keyfile, hidden via
   `.hidden` CSS class when encryption is off) + a "Clear local cache now"
@@ -125,7 +149,7 @@ Other tabs:
 
 | Key | Action |
 |-----|--------|
-| `Ctrl+1..5` | switch **tab** (Mail / Calendar / Drive / Search / Settings) |
+| `Ctrl+1..5` | switch **tab** (Mail / Calendar / Drive / Browser / Settings) |
 | `Ctrl+Left/Right` | cycle tabs — the reliable fallback for `Ctrl+1..5` (see caveat below) |
 | `Alt+1..4` | jump to a Mail **pane** (Email / Events / Tasks / Hermes); switches to the Mail tab first if needed |
 | `Alt+Left/Right/Up/Down` | move to the adjacent Mail pane (see `PANE_ADJACENCY` below) |
@@ -273,6 +297,9 @@ almost certainly why — the fix would be routing that result through
 │   ├── __main__.py            # `python -m google_tui` → GoogleTUI().run()
 │   ├── gauth.py               # Google auth + Gmail/Cal/Tasks/Drive helpers
 │   ├── ask.py                 # Hermes Ask (LLM) + search backends
+│   ├── render.py              # protocol-agnostic Document/Block/Link model + DocumentView (P1 M1)
+│   ├── fetchers.py            # HTTP/Gopher/Gemini fetch for the Browser tab (P1 M2)
+│   ├── setup_instructions.py  # shared Google-account/AI-provider onboarding text
 │   ├── cache.py               # SQLite local cache, optional per-row Fernet encryption
 │   ├── settings.py            # plaintext Settings dataclass (settings.json)
 │   └── main.py                # Textual app: tabs, panes, modals, CSS, bindings
@@ -453,7 +480,17 @@ Gotchas that cost time before:
   other binaries show metadata + "no text preview" (no download-to-`less` or
   in-terminal image rendering — that would need `textual-image`, not
   currently a dependency).
-- Search uses `hermes web search` (shell-out) — requires `hermes` CLI on PATH.
+- The Browser tab's Search mode uses `hermes web search` (shell-out) —
+  requires `hermes` CLI on PATH. **Verified during M2 that this subcommand
+  does not exist in the `hermes` CLI installed in this environment**
+  (`hermes web search "..."` prints argparse's top-level usage/"invalid
+  choice: 'web'" instead of running a search — the CLI's command set has
+  moved on since `ask.google_search` was written). `ask.google_search`
+  itself was left unchanged (pre-existing, out of scope for M2 — the
+  Browser tab's `_search_result_document()` just linkifies whatever comes
+  back, gracefully degrading to a document with no links if the shell-out
+  fails). Worth fixing in a follow-up: find the current equivalent
+  `hermes` subcommand (or API) for a web search.
 - LLM model is hardcoded `tencent/hy3:free`; change in `ask.py` only.
 - Tab numbers are always-shown-dimmed, not hide-until-modifier-held — see the
   NOTE in §2 for why (no key-release event in Textual 8.2.8).

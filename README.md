@@ -6,7 +6,7 @@ A multi-pane terminal UI (TUI) for your Google Workspace, built with
 ## Features
 
 Five full-width **tabs** live in the blue bar: **Mail**, **Calendar**,
-**Drive**, **Search**, **Settings** (`Ctrl+1..5`). The Mail tab holds four
+**Drive**, **Browser**, **Settings** (`Ctrl+1..5`). The Mail tab holds four
 **panes**: Email, Events, Tasks, Hermes (`Alt+1..4`, or `Alt+arrows` to move
 relatively).
 
@@ -40,8 +40,13 @@ toggling a task) are disabled with a warning instead of failing silently.
   right shows file metadata (owner, type, path, created/modified) and, for
   non-binary/non-image files, a text preview. Files you've viewed are
   available offline too.
-- **Search tab:** text-based web search via your configured searxng backend
-  (shells `hermes web search`).
+- **Browser tab:** an address bar that speaks `http(s)://`, `gopher://`,
+  and `gemini://` (with TOFU cert trust), plus a Search mode for bare
+  text (no scheme) via your configured searxng backend (shells `hermes web
+  search`). Numbered `[N]` links in the page — like every Gopher/Gemini
+  menu and every extracted search result — jump with digits + `Enter`.
+  `Alt+Left/Right` are Back/Forward through this session's history (no
+  re-fetching); `Tab` toggles focus between the address bar and the page.
 - **Settings tab:** turn on encrypt-at-rest for the local cache (off by
   default — it costs nothing until you ask for it), choose how the
   encryption key is handled, clear the local cache, pick your AI provider,
@@ -55,7 +60,7 @@ full Google Cloud Console walkthrough.
 ## Layout & keys
 
 ```
-┌[Mail¹] Calendar² Drive³ Search⁴ Settings⁵ ── Synced 14:32 ────┐  ← blue bar
+┌[Mail¹] Calendar² Drive³ Browser⁴ Settings⁵ ── Synced 14:32 ───┐  ← blue bar
 ├─ EMAIL ──────────────────────┐ ┌─ EVENTS ─────────────────────┤
 │ ▸ Frank Krizan                │ │ ▸ 07/13 Tick/Flea Appt       │
 │   Fwd: [DigiPi] …             │ │ ▸ 07/15 OHD Water Testing    │
@@ -69,7 +74,7 @@ full Google Cloud Console walkthrough.
 
 | Key | Action |
 |-----|--------|
-| `Ctrl+1..5` | switch tab (Mail / Calendar / Drive / Search / Settings) |
+| `Ctrl+1..5` | switch tab (Mail / Calendar / Drive / Browser / Settings) |
 | `Ctrl+Left/Right` | cycle tabs — use this if `Ctrl+1..5` doesn't reach the app (common in browser-based terminals, which reserve `Ctrl+1..8` for switching *their own* tabs) |
 | `Alt+1..4` | jump to Mail pane (Email / Events / Tasks / Hermes) |
 | `Alt+Left/Right/Up/Down` | move to the adjacent Mail pane |
@@ -113,6 +118,8 @@ google-tui/
 │   ├── __main__.py        # `python -m google_tui` entry
 │   ├── gauth.py          # Google auth + Gmail/Cal/Tasks/Drive/label helpers
 │   ├── ask.py            # AIProvider abstraction (Hermes/Claude Code/opencode/Gemini CLI) + search
+│   ├── render.py         # protocol-agnostic Document/Block/Link model + DocumentView
+│   ├── fetchers.py       # HTTP/Gopher/Gemini fetch for the Browser tab
 │   ├── cache.py          # local SQLite cache, optional per-row encryption
 │   ├── settings.py       # user preferences (settings.json)
 │   ├── setup_instructions.py  # shared onboarding-wizard / SETUP.md text

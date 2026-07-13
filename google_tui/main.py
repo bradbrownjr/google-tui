@@ -1,14 +1,17 @@
-"""google-tui — multi-pane TUI for Gmail / Calendar / Tasks / Drive / Search / Hermes.
+"""google-tui — multi-pane TUI for Gmail / Calendar / Tasks / Drive / Browser / Hermes.
 
-Top-level layout is four full-width TABS in the blue bar: Mail, Calendar,
-Drive, Search (Ctrl+1..4). The Mail tab holds four PANES: Email, Events,
-Tasks, Hermes (Alt+1..4, or Alt+arrows to move relatively). See AGENTS.md
-for the full keybinding reference and the PANE_ADJACENCY rationale.
+Top-level layout is five full-width TABS in the blue bar: Mail, Calendar,
+Drive, Browser, Settings (Ctrl+1..5). The Mail tab holds four PANES: Email,
+Events, Tasks, Hermes (Alt+1..4, or Alt+arrows to move relatively). See
+AGENTS.md for the full keybinding reference and the PANE_ADJACENCY rationale.
 """
 from __future__ import annotations
 
 import base64
 import datetime as dt
+import re
+import urllib.parse
+from dataclasses import dataclass
 from functools import cached_property
 
 from textual.app import App, ComposeResult
@@ -24,6 +27,9 @@ from . import gauth
 from . import ask
 from .ask import needs_agent, google_search
 from . import setup_instructions
+from . import fetchers
+from . import render
+from .render import DocumentView
 from .cache import Cache, derive_key_from_passphrase, make_canary, new_salt, read_or_create_keyfile, verify_canary
 from . import cache as cache_mod
 from .settings import Settings, load_settings, save_settings
@@ -45,7 +51,7 @@ PANE_ADJACENCY = {
     "hermes": {"left": "email", "up": "tasks"},
 }
 
-TAB_ORDER = ["tab-mail", "tab-calendar", "tab-drive", "tab-search", "tab-settings"]
+TAB_ORDER = ["tab-mail", "tab-calendar", "tab-drive", "tab-browser", "tab-settings"]
 
 _SUPERSCRIPT = {1: "¹", 2: "²", 3: "³", 4: "⁴", 5: "⁵"}
 
@@ -69,7 +75,7 @@ _KEY_METHOD_LABELS = {
 
 HELP_TEXT = """\
 GLOBAL
-  Ctrl+1..5        Switch tab (Mail / Calendar / Drive / Search / Settings)
+  Ctrl+1..5        Switch tab (Mail / Calendar / Drive / Browser / Settings)
   Ctrl+Left/Right  Cycle tabs (use this if Ctrl+1..5 doesn't reach the app —
                    some terminals/browsers don't transmit Ctrl+digit)
   Alt+1..4         Jump to Mail pane (Email / Events / Tasks / Hermes)
@@ -95,8 +101,12 @@ DRIVE TAB
   Up/Down       Move selection — preview pane updates live
   Enter/click   Open a folder, or re-load a file's preview
 
-SEARCH TAB
-  Enter         Run the search
+BROWSER TAB
+  Enter (address bar)    Load URL, or run a search (bare text w/ no scheme searches)
+  Alt+Left / Alt+Right   Back / forward through this session's history
+  Tab                    Toggle focus: address bar <-> page content
+  0-9 then Enter (page)  Jump to numbered link
+  Esc (page)             Cancel a pending number entry
 
 SETTINGS TAB
   Switch        Toggle encrypt-at-rest for the local cache
@@ -143,6 +153,86 @@ def _event_day(e: dict) -> int | None:
 
 def _is_previewable(mime: str) -> bool:
     return mime.startswith(_PREVIEWABLE_PREFIXES) or mime in _PREVIEWABLE_EXTRA
+
+
+# ---------------------------------------------------------------------------
+# Browser tab glue (M2) — address classification + search-result linkifying.
+# These live here (not render.py) because they're specific to this app's
+# omnibox behavior / one opaque CLI's (hermes web search) output shape, not
+# general protocol parsing. See ROADMAP M2 design notes.
+# ---------------------------------------------------------------------------
+
+_SCHEME_PREFIXES = ("http://", "https://", "gopher://", "gemini://")
+_BARE_DOMAIN_RE = re.compile(
+    r"^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?)+(:\d+)?(/\S*)?$"
+)
+
+
+def _classify_address(raw: str) -> tuple[str, str]:
+    """Omnibox-style classification of Browser-tab address-bar input.
+
+    -> (mode, target) where mode is 'http'|'gopher'|'gemini'|'search'.
+    An explicit scheme always wins; a single dotted-word-with-no-space is
+    treated as a bare domain and gets "https://" prepended; everything else
+    (including any input containing a space) is a web search via
+    ``ask.google_search``. ``search:`` is an explicit escape hatch for the
+    rare case of wanting to search for literally "example.com".
+    """
+    raw = raw.strip()
+    if raw.startswith(("http://", "https://")):
+        return "http", raw
+    if raw.startswith("gopher://"):
+        return "gopher", raw
+    if raw.startswith("gemini://"):
+        return "gemini", raw
+    if raw.startswith("search:"):
+        return "search", raw[len("search:"):].strip()
+    if " " not in raw and _BARE_DOMAIN_RE.match(raw):
+        return "http", "https://" + raw
+    return "search", raw
+
+
+_SEARCH_RESULT_URL_RE = re.compile(r'(https?://[^\s<>"\')]+)')
+
+
+def _search_result_document(query: str, raw_text: str) -> render.Document:
+    """Turn ``hermes web search``'s opaque stdout into a rendered Document.
+
+    The CLI's output format isn't guaranteed/structured, so rather than
+    parse structure out of it, every ``https?://...`` token found by regex
+    becomes a numbered clickable Link, and everything else is left as plain
+    paragraph text — a lightweight, format-agnostic approach that still
+    satisfies "numbered-link nav" uniformly with the other three Browser
+    modes.
+    """
+    blocks: list[render.Block] = []
+    links: list[render.Link] = []
+    n = 0
+
+    def _sub(m: re.Match) -> str:
+        nonlocal n
+        n += 1
+        url = m.group(1).rstrip(").,")
+        links.append(render.Link(number=n, url=url, text=url, kind="content"))
+        return f"[{n}]"
+
+    for line in raw_text.split("\n"):
+        if not line.strip():
+            continue
+        blocks.append(render.Block(kind="paragraph", text=_SEARCH_RESULT_URL_RE.sub(_sub, line)))
+
+    return render.Document(title=f"Search: {query}", blocks=blocks, links=links, source_url="")
+
+
+@dataclass
+class BrowserHistoryEntry:
+    """One frame of the Browser tab's in-memory (session-lifetime only —
+    see ROADMAP M2) back/forward stack. Holds the already-fetched Document,
+    not just the URL, so Back/Forward never re-fetches.
+    """
+    url: str
+    document: render.Document | None
+    scroll_y: float = 0.0
 
 
 _SYSTEM_LABEL_ORDER = ["INBOX", "STARRED", "SENT", "DRAFT", "IMPORTANT"]
@@ -200,7 +290,11 @@ class GoogleTUI(App):
     #drive-preview-col { width: 1fr; border: round $panel-darken-1; padding: 0 1; }
     #drive-preview-meta { height: auto; border-bottom: solid $panel-darken-2; padding-bottom: 1; }
     #drive-preview-text { height: 1fr; }
-    #search-results { height: 1fr; border: round $panel-darken-1; }
+    #browser-bar { height: 3; align: left middle; }
+    #browser-mode { width: 10; color: $accent; text-style: bold; content-align: center middle; }
+    #browser-url { width: 1fr; }
+    #browser-status { width: auto; color: $text-muted; margin-left: 1; }
+    #browser-doc { height: 1fr; border: round $panel-darken-1; padding: 0 1; }
     #help-bar { height: auto; background: $panel; padding: 0 1; }
     #help-context { color: $text; }
     #help-global { color: $text-muted; }
@@ -226,7 +320,7 @@ class GoogleTUI(App):
         ("ctrl+1", "goto_tab_mail", "Mail"),
         ("ctrl+2", "goto_tab_calendar", "Calendar"),
         ("ctrl+3", "goto_tab_drive", "Drive"),
-        ("ctrl+4", "goto_tab_search", "Search"),
+        ("ctrl+4", "goto_tab_browser", "Browser"),
         ("ctrl+5", "goto_tab_settings", "Settings"),
         ("ctrl+left", "cycle_tab_back", "Prev Tab"),
         ("ctrl+right", "cycle_tab", "Next Tab"),
@@ -265,6 +359,9 @@ class GoogleTUI(App):
         self._loading_modal: LoadingModal | None = None
         self._mail_apply_gen = 0
         self._drive_apply_gen = 0
+        self._browser_history: list[BrowserHistoryEntry] = []
+        self._browser_hist_pos: int = -1
+        self._browser_tofu: fetchers.GeminiTofuStore | None = None
 
     # ---- data layer ----
     @cached_property
@@ -331,8 +428,8 @@ class GoogleTUI(App):
             return "[ / ] Prev/Next Month or Week   Enter Day Detail"
         if tab == "tab-drive":
             return "Enter Open Folder / Reload Preview"
-        if tab == "tab-search":
-            return "Enter Run Search"
+        if tab == "tab-browser":
+            return "Enter Load/Search   Alt+←/→ Back/Forward   Tab Toggle Focus   0-9+Enter Link"
         if tab == "tab-settings":
             return "Toggle encryption   Choose key method   Clear local cache"
         return ""
@@ -387,11 +484,14 @@ class GoogleTUI(App):
                         with VerticalScroll(id="drive-preview-col"):
                             yield Static(id="drive-preview-meta")
                             yield RichLog(id="drive-preview-text", markup=False, wrap=True)
-            with TabPane(_tab_label("Search", 4), id="tab-search"):
-                with Container(id="search-section", classes="section"):
-                    yield Label("GOOGLE SEARCH", classes="pane-title-text")
-                    yield Input(placeholder="Search query, Enter to run", id="s-query")
-                    yield RichLog(id="search-results", markup=False, wrap=True)
+            with TabPane(_tab_label("Browser", 4), id="tab-browser"):
+                with Container(id="browser-section", classes="section"):
+                    with Horizontal(id="browser-bar"):
+                        yield Static("WEB", id="browser-mode")
+                        yield Input(placeholder="URL, or type to search…", id="browser-url")
+                        yield Button("Go", id="browser-go")
+                        yield Static("", id="browser-status")
+                    yield DocumentView(id="browser-doc")
             with TabPane(_tab_label("Settings", 5), id="tab-settings"):
                 with VerticalScroll(id="settings-section", classes="section"):
                     yield Label("SETTINGS", classes="pane-title-text")
@@ -475,6 +575,7 @@ class GoogleTUI(App):
 
     def _start_after_unlock(self, key: bytes | None, reset: bool = False) -> None:
         self._cache = Cache(key)
+        self._browser_tofu = fetchers.GeminiTofuStore(self._cache)
         if reset:
             self._cache.clear_all()
         had_data = self._load_from_cache()
@@ -712,7 +813,7 @@ class GoogleTUI(App):
     def action_goto_tab_mail(self):     self._goto_tab("tab-mail")
     def action_goto_tab_calendar(self): self._goto_tab("tab-calendar")
     def action_goto_tab_drive(self):    self._goto_tab("tab-drive")
-    def action_goto_tab_search(self):   self._goto_tab("tab-search")
+    def action_goto_tab_browser(self):  self._goto_tab("tab-browser")
     def action_goto_tab_settings(self): self._goto_tab("tab-settings")
 
     def _cycle_tab(self, step: int) -> None:
@@ -733,8 +834,8 @@ class GoogleTUI(App):
             self.query_one("#cal-grid").focus()
         elif tab_id == "tab-drive":
             self.query_one("#drive-list").focus()
-        elif tab_id == "tab-search":
-            self.query_one("#s-query").focus()
+        elif tab_id == "tab-browser":
+            self.query_one("#browser-url").focus()
         elif tab_id == "tab-settings":
             self._update_settings_cache_info()
             self.query_one("#settings-encrypt-switch").focus()
@@ -750,18 +851,34 @@ class GoogleTUI(App):
     def action_goto_pane_tasks(self):  self._goto_pane(2)
     def action_goto_pane_hermes(self): self._goto_pane(3)
 
-    def action_switch_left(self):  self._adjacent("left")
-    def action_switch_right(self): self._adjacent("right")
+    def action_switch_left(self):
+        if self._main_tabs().active == "tab-browser":
+            self._browser_back()
+        else:
+            self._adjacent("left")
+
+    def action_switch_right(self):
+        if self._main_tabs().active == "tab-browser":
+            self._browser_forward()
+        else:
+            self._adjacent("right")
+
     def action_switch_up(self):    self._adjacent("up")
     def action_switch_down(self):  self._adjacent("down")
 
     def action_cycle(self):
-        if self._main_tabs().active == "tab-mail":
+        tab = self._main_tabs().active
+        if tab == "tab-mail":
             self._focus_pane((self.active + 1) % len(PANE_IDS))
+        elif tab == "tab-browser":
+            self._browser_toggle_focus()
 
     def action_cycle_back(self):
-        if self._main_tabs().active == "tab-mail":
+        tab = self._main_tabs().active
+        if tab == "tab-mail":
             self._focus_pane((self.active - 1) % len(PANE_IDS))
+        elif tab == "tab-browser":
+            self._browser_toggle_focus()
 
     def action_refresh(self) -> None:
         self.sub_title = "Connecting…"
@@ -896,12 +1013,12 @@ class GoogleTUI(App):
         if result == "sent":
             self.run_worker(self.refresh_all, exclusive=True)
 
-    # ---- hermes ask / search (shared Input.Submitted) ----
+    # ---- hermes ask / browser address bar (shared Input.Submitted) ----
     def on_input_submitted(self, event: Input.Submitted) -> None:
         if event.input.id == "hermes-input":
             self._hermes_submit(event)
-        elif event.input.id == "s-query":
-            self._search_submit(event)
+        elif event.input.id == "browser-url":
+            self._browser_submit(event)
 
     def _hermes_submit(self, event: Input.Submitted) -> None:
         q = event.value.strip()
@@ -946,21 +1063,186 @@ class GoogleTUI(App):
             pass
         return "\n\n".join(parts) or "(no context available)"
 
-    def _search_submit(self, event: Input.Submitted) -> None:
-        q = event.value.strip()
-        if not q:
+    # ---- browser tab (M2: Web / Gopher / Gemini / Search) ----
+    def _browser_submit(self, event: Input.Submitted) -> None:
+        raw = event.value.strip()
+        if not raw:
             return
-        event.input.value = ""
-        log = self.query_one("#search-results")
-        log.write(f"Searching: {q} …")
-        self.run_worker(self._search_worker(q, log), exclusive=False)
+        self._browser_navigate(raw, push_history=True)
 
-    async def _search_worker(self, q: str, log: RichLog) -> None:
+    def _browser_toggle_focus(self) -> None:
         try:
-            res = google_search(q)
-        except Exception as ex:
-            res = f"(error: {ex})"
-        log.write(res)
+            url_input = self.query_one("#browser-url", Input)
+            doc_view = self.query_one("#browser-doc", DocumentView)
+        except Exception:
+            return
+        if self.focused is url_input:
+            doc_view.focus()
+        else:
+            url_input.focus()
+
+    def _browser_capture_scroll(self) -> None:
+        if not (0 <= self._browser_hist_pos < len(self._browser_history)):
+            return
+        try:
+            doc_view = self.query_one("#browser-doc", DocumentView)
+        except Exception:
+            return
+        self._browser_history[self._browser_hist_pos].scroll_y = doc_view.scroll_y
+
+    def _browser_back(self) -> None:
+        if self._browser_hist_pos <= 0:
+            self.notify("No earlier page in this session", severity="warning")
+            return
+        self._browser_capture_scroll()
+        self._browser_hist_pos -= 1
+        self._browser_show_history_entry()
+
+    def _browser_forward(self) -> None:
+        if self._browser_hist_pos >= len(self._browser_history) - 1:
+            self.notify("No later page in this session", severity="warning")
+            return
+        self._browser_capture_scroll()
+        self._browser_hist_pos += 1
+        self._browser_show_history_entry()
+
+    def _browser_show_history_entry(self) -> None:
+        entry = self._browser_history[self._browser_hist_pos]
+        mode, _ = _classify_address(entry.url)
+        try:
+            self.query_one("#browser-url", Input).value = entry.url
+            self.query_one("#browser-mode", Static).update(mode.upper())
+            self.query_one("#browser-status", Static).update("")
+            doc_view = self.query_one("#browser-doc", DocumentView)
+            doc_view.document = entry.document
+            doc_view.scroll_to(y=entry.scroll_y, animate=False)
+            doc_view.focus()
+        except Exception:
+            pass
+
+    def _browser_navigate(self, raw: str, *, push_history: bool) -> None:
+        if push_history:
+            self._browser_capture_scroll()
+        mode, target = _classify_address(raw)
+        display_url = target if mode != "search" else raw
+        try:
+            self.query_one("#browser-mode", Static).update(mode.upper())
+            self.query_one("#browser-status", Static).update("Loading…")
+        except Exception:
+            pass
+        self.run_worker(
+            lambda: self._browser_fetch_thread(mode, target, display_url, push_history),
+            thread=True, exclusive=True, group="browser-fetch",
+        )
+
+    def _browser_fetch_dispatch(self, mode: str, target: str) -> render.Document:
+        if mode == "http":
+            return fetchers.fetch_http(target)
+        if mode == "gopher":
+            return fetchers.fetch_gopher(target)
+        if mode == "gemini":
+            return fetchers.fetch_gemini(target, self._browser_tofu)
+        return _search_result_document(target, google_search(target))
+
+    def _browser_fetch_thread(self, mode: str, target: str, display_url: str, push_history: bool) -> None:
+        try:
+            doc = self._browser_fetch_dispatch(mode, target)
+        except fetchers.GeminiInputRequired as e:
+            self.call_from_thread(self._browser_prompt_gemini_input, e, push_history)
+            return
+        except fetchers.GeminiRedirectConfirm as e:
+            self.call_from_thread(self._browser_confirm_redirect, e, push_history)
+            return
+        except fetchers.BrowserFetchError as e:
+            self.call_from_thread(self._browser_apply_error, str(e))
+            return
+        except Exception as e:
+            self.call_from_thread(self._browser_apply_error, f"Unexpected error: {e}")
+            return
+        self.call_from_thread(self._browser_apply_document, doc, mode, display_url, push_history)
+
+    def _browser_apply_error(self, message: str) -> None:
+        try:
+            self.query_one("#browser-status", Static).update("")
+        except Exception:
+            pass
+        self.notify(message, severity="error")
+
+    def _browser_apply_document(self, doc: render.Document, mode: str, display_url: str, push_history: bool) -> None:
+        if push_history:
+            current = (self._browser_history[self._browser_hist_pos]
+                       if 0 <= self._browser_hist_pos < len(self._browser_history) else None)
+            if current is not None and current.url == display_url:
+                # Reload of the currently-displayed URL: update in place,
+                # not a new history frame.
+                current.document = doc
+                current.scroll_y = 0.0
+            else:
+                # Standard back-stack semantics: navigating to a new URL
+                # while not at the tail truncates everything past here.
+                self._browser_history = self._browser_history[: self._browser_hist_pos + 1]
+                self._browser_history.append(BrowserHistoryEntry(url=display_url, document=doc))
+                self._browser_hist_pos = len(self._browser_history) - 1
+
+        try:
+            self.query_one("#browser-url", Input).value = display_url
+            self.query_one("#browser-mode", Static).update(mode.upper())
+            self.query_one("#browser-status", Static).update("")
+            doc_view = self.query_one("#browser-doc", DocumentView)
+            doc_view.document = doc
+            doc_view.scroll_y = 0
+            doc_view.focus()
+        except Exception:
+            pass
+
+    def _browser_prompt_gemini_input(self, exc: fetchers.GeminiInputRequired, push_history: bool) -> None:
+        try:
+            self.query_one("#browser-status", Static).update("")
+        except Exception:
+            pass
+        self.push_screen(
+            GeminiInputModal(exc.meta, sensitive=exc.sensitive),
+            lambda result: self._browser_resume_gemini_input(exc, result, push_history),
+        )
+
+    def _browser_resume_gemini_input(self, exc: fetchers.GeminiInputRequired, result, push_history: bool) -> None:
+        if result is None:
+            self.notify("Cancelled", severity="warning")
+            return
+        # push_screen's callback fires BEFORE the modal is actually popped
+        # (see AGENTS.md's push_screen-callback-timing NOTE) — defer so
+        # _browser_navigate's query_one calls resolve against the base
+        # screen, not the still-on-top modal.
+        self.call_after_refresh(
+            self._browser_navigate,
+            f"{exc.url}?{urllib.parse.quote(result, safe='')}",
+            push_history=push_history,
+        )
+
+    def _browser_confirm_redirect(self, exc: fetchers.GeminiRedirectConfirm, push_history: bool) -> None:
+        try:
+            self.query_one("#browser-status", Static).update("")
+        except Exception:
+            pass
+        msg = f"Redirect to a different host:\n{exc.from_url}\n->\n{exc.to_url}\n\nFollow it?"
+        self.push_screen(
+            ConfirmModal(msg),
+            lambda ok: self._browser_resume_redirect(exc, ok, push_history),
+        )
+
+    def _browser_resume_redirect(self, exc: fetchers.GeminiRedirectConfirm, ok: bool, push_history: bool) -> None:
+        if not ok:
+            self.notify("Redirect not followed", severity="warning")
+            return
+        self.call_after_refresh(self._browser_navigate, exc.to_url, push_history=push_history)
+
+    def on_document_view_link_activated(self, event: DocumentView.LinkActivated) -> None:
+        if self._main_tabs().active != "tab-browser":
+            return
+        if event.link.url.startswith("mailto:"):
+            self.notify("mailto: links aren't handled by the Browser tab yet", severity="warning")
+            return
+        self._browser_navigate(event.link.url, push_history=True)
 
     # ---- calendar tab ----
     def action_cal_prev(self) -> None:
@@ -1333,6 +1615,10 @@ class GoogleTUI(App):
             self.settings.nous_api_key = key or None
             save_settings(self.settings)
             self.notify("Nous API key saved.")
+        elif event.button.id == "browser-go":
+            raw = self.query_one("#browser-url", Input).value.strip()
+            if raw:
+                self._browser_navigate(raw, push_history=True)
 
 
 # ============================================================================
@@ -1717,6 +2003,70 @@ class HelpModal(ModalScreen):
     def on_key(self, e):
         if e.key == "escape":
             self.dismiss(None)
+
+
+class GeminiInputModal(ModalScreen):
+    """Gemini status 10/11 ("input required") prompt: collects one line of
+    text (masked if ``sensitive``, per status 11) to append as the retried
+    request's query string. Dismisses with the entered string, or None if
+    cancelled. See ``fetchers.GeminiInputRequired``.
+    """
+
+    def __init__(self, prompt: str, sensitive: bool = False):
+        super().__init__()
+        self._prompt = prompt
+        self._sensitive = sensitive
+
+    def compose(self) -> ComposeResult:
+        with Container(id="gemini-input-box", classes="pane"):
+            yield Label("INPUT REQUESTED", classes="pane-title-text")
+            yield Static(self._prompt or "(no prompt given)")
+            yield Input(password=self._sensitive, id="gemini-input-value")
+        with Horizontal(classes="btnrow"):
+            yield Button("Submit", id="submit")
+            yield Button("Cancel", id="cancel")
+
+    def on_mount(self) -> None:
+        self.query_one("#gemini-input-value", Input).focus()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        self.dismiss(event.value)
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "submit":
+            self.dismiss(self.query_one("#gemini-input-value", Input).value)
+        else:
+            self.dismiss(None)
+
+    def on_key(self, e) -> None:
+        if e.key == "escape":
+            self.dismiss(None)
+
+
+class ConfirmModal(ModalScreen):
+    """Reusable Yes/No confirmation — used by the Browser tab for Gemini
+    cross-host/cross-scheme redirect confirmation, but generic enough for
+    any future yes/no prompt. Dismisses with a bool.
+    """
+
+    def __init__(self, message: str):
+        super().__init__()
+        self._message = message
+
+    def compose(self) -> ComposeResult:
+        with Container(id="confirm-box", classes="pane"):
+            yield Label("CONFIRM", classes="pane-title-text")
+            yield Static(self._message, id="confirm-text")
+        with Horizontal(classes="btnrow"):
+            yield Button("Yes", id="yes")
+            yield Button("No", id="no")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        self.dismiss(event.button.id == "yes")
+
+    def on_key(self, e) -> None:
+        if e.key == "escape":
+            self.dismiss(False)
 
 
 def main():

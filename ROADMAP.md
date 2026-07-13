@@ -17,13 +17,13 @@ just checking it off here, so ROADMAP.md only ever shows what's still open.
 
 ## P1 — Major Feature Epics (ordered build sequence)
 
-Six epics remaining from the 2026-07-13 planning pass (Labels-as-folders,
-multi-provider AI/onboarding, the Google Console setup guide, and M1's
-shared rendering module shipped — see CHANGELOG), ordered so each one's
-output is available to the epics
+Five epics remaining from the 2026-07-13 planning pass (Labels-as-folders,
+multi-provider AI/onboarding, the Google Console setup guide, M1's shared
+rendering module, and M2's Browser tab all shipped — see CHANGELOG),
+ordered so each one's output is available to the epics
 that build on it (shared render module before its consumers). The repo
 screenshot (M7) is deliberately LAST — take it once, after the major UI
-changes (M2, M3, M5, M6 all add or reshape tabs) have landed, so it's a
+changes (M3, M5, M6 all add or reshape tabs) have landed, so it's a
 current snapshot instead of one that goes stale after the next epic. Each
 step is tagged with the Claude Code agent recommended for a future
 session tackling it — **Explore** for read-only research, **Plan** for
@@ -31,19 +31,6 @@ architecture/design before non-trivial code, **general-purpose** for the
 actual multi-step implementation, **claude-code-guide** where the step is
 specifically about the Claude Code CLI/SDK itself. Small one-shot steps
 with no real research/design component are left untagged (just do them).
-
-### M2 — Browser tab (Web + Gopher + Gemini + Search)
-- [ ] Research the Gemini protocol (TLS handshake, TOFU cert trust,
-  `gemini://` URLs, status-code scheme) — no existing client to port, so
-  this one's from spec. *(Explore)*
-- [ ] Design the tab: address bar, rendered-content pane, numbered-link
-  nav (matching bpq-apps' UX), a history/back stack, and how the current
-  standalone Search tab folds into this one as a mode rather than staying
-  separate. *(Plan)*
-- [ ] Implement HTTP(S) fetch, a ported `gopher://` client, and a new
-  `gemini://` client, all rendering through M1; retire the Search tab,
-  keeping `hermes web search` reachable as a Browser action.
-  *(general-purpose)*
 
 ### M3 — News tab (RSS/Atom)
 - [ ] Implement feed fetch (`feedparser`) + an entry list using the same
@@ -78,8 +65,9 @@ with no real research/design component are left untagged (just do them).
 
 ### M7 — Repo screenshot
 Last, on purpose — a single current snapshot taken once the major UI
-work above (M2 Browser, M3 News, M5 Contacts, M6 Navigation) has landed,
-rather than one that goes stale after the next epic.
+work above (M3 News, M5 Contacts, M6 Navigation — M2 Browser already
+landed, see CHANGELOG) has landed, rather than one that goes stale after
+the next epic.
 - [ ] Build a fake dataset (dummy threads/events/tasks/Drive files, zero
   real PII) and drive the app against it with the existing `run_test`
   pilot + `save_screenshot` → cairosvg pipeline (AGENTS.md §6) to produce
@@ -115,6 +103,14 @@ rather than one that goes stale after the next epic.
   method currently clears the cache and asks for a restart rather than
   rebuilding `self._cache` with the new key in-session. Fine for now; worth
   revisiting if restart-to-apply proves annoying in practice.
+- [ ] **`hermes web search` subcommand no longer exists.** Discovered while
+  implementing the Browser tab's Search mode (M2): the installed `hermes`
+  CLI's argparse command set doesn't include `web`/`search` anymore (`hermes
+  web search "<q>"` prints top-level usage / "invalid choice: 'web'"
+  instead of running a search) — `ask.google_search`'s shell-out is stale
+  against the current CLI. Find the current equivalent (subcommand or API)
+  and fix `ask.google_search`; until then, the Browser tab's Search mode
+  degrades gracefully (a Document with no links) rather than crashing.
 
 ## P4 — Nice-to-have
 

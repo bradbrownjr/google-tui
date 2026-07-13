@@ -6,6 +6,82 @@ touched and any breaking notes.
 ## [2026-07-13]
 
 ### Added
+- **Browser tab — Web/Gopher/Gemini/Search (P1 M2).** Replaces the
+  standalone Search tab in place at `Ctrl+4` (`TAB_ORDER` and
+  `BINDINGS`/`action_goto_tab_browser` updated accordingly; Settings stays
+  at `Ctrl+5`), consuming M1's `render.py`/`DocumentView` directly — an
+  address bar (`Input#browser-url`), a mode badge
+  (`Static#browser-mode`: WEB/GOPHER/GEMINI/SEARCH — the only visual cue
+  for Search mode, since bare query text has no scheme prefix to show it),
+  and `DocumentView#browser-doc` for the rendered page. New
+  `google_tui/fetchers.py` holds all the actual network I/O (`render.py`
+  itself stays fetch-agnostic, per its M1 design): `fetch_http` (routes
+  `text/html` through `render.parse_html`, other `text/*` through plain
+  paragraph blocks, anything else raises `BrowserFetchError`); `fetch_gopher`
+  (no existing client to port — raw `socket` I/O, `render.parse_gopher_url`
+  to re-derive host/port/item-type/selector, `render.parse_gopher_menu` for
+  type `1`, plain paragraphs for type `0`, a clear error for the `URL:`
+  web-link selector convention and for any other item type); `fetch_gemini`
+  (implemented from spec — TLS via `ssl.SSLContext(PROTOCOL_TLS_CLIENT)`
+  with `CERT_NONE`/`check_hostname=False`, deliberately NOT
+  `create_default_context()`, since self-signed certs are the Gemini norm;
+  SHA-256 cert-fingerprint TOFU pinning via a new `GeminiTofuStore`
+  wrapping `Cache`'s new `"gemini_cert"` category, keyed
+  `f"{host}:{port}"`, checked *before* reading the response body; full
+  1x/2x/3x/4x/5x/6x status dispatch — 1x raises `GeminiInputRequired`, 3x
+  auto-follows same-host/scheme redirects up to 5 hops or raises
+  `GeminiRedirectConfirm` otherwise, 6x is a "not supported yet" stub).
+  Address-bar submission is classified by a new `_classify_address()`
+  helper in `main.py` (omnibox heuristic: explicit
+  `http(s)/gopher/gemini://` wins, a single dotted-word-with-no-space gets
+  `https://` prepended, everything else — including any text containing a
+  space — is a web search via the existing `ask.google_search`, with
+  `search:` as an explicit escape hatch). Search results are rendered as a
+  real linkified `Document` (`_search_result_document()`, regex-extracts
+  every `https?://…` token from `hermes web search`'s opaque stdout into a
+  numbered `Link`) rather than dumped into a `RichLog`, so numbered-link
+  nav (matching bpq-apps' UX) works uniformly across all four Browser
+  modes — this was the one real design call in M2, since the CLI's output
+  format isn't structured/guaranteed. History is a session-lifetime-only
+  in-memory `list[BrowserHistoryEntry]` (already-fetched `Document`s plus
+  scroll position, not just URLs — Back/Forward never re-fetches, works
+  fully offline); `Alt+Left/Right` are Back/Forward when the Browser tab is
+  active (reusing `action_switch_left/right`, which already no-op outside
+  Mail-tab-adjacency elsewhere), `Tab`/`Shift+Tab` toggle focus between the
+  address bar and the page. Two new modals — `GeminiInputModal` (status
+  10/11 prompts, masked input for "sensitive") and a reusable `ConfirmModal`
+  (Gemini cross-host/cross-scheme redirect confirmation) — both funnel
+  their result back through `_browser_navigate()`, deferred via
+  `call_after_refresh` per the documented push_screen-callback-timing
+  gotcha (AGENTS.md §2). The Browser tab is never gated by
+  `self._require_online()` (that flag tracks Google reachability
+  specifically, not arbitrary web/gopher/gemini fetches), and there's no
+  SQLite cache category for page content itself — only the `gemini_cert`
+  TOFU store persists; that's a deliberate v1 non-goal, tracked in
+  ROADMAP. `HELP_TEXT`'s `SEARCH TAB` section and `_context_help_text()`'s
+  `tab-search` branch became `BROWSER TAB`/`tab-browser`. Verified with
+  headless Textual `run_test` pilots (mocked `fetchers.fetch_http`/
+  `fetch_gemini` and `ask.google_search`, one scenario per process per
+  AGENTS.md §6): Browser tab shows at `Ctrl+4`; address-bar submit renders
+  a mocked `Document`; activating a numbered link navigates and grows
+  history; `Alt+Left/Right` restore prior pages with zero additional
+  fetches; bare-text input reaches `ask.google_search` and renders a
+  linkified result Document; the Gemini status-10 input-required modal
+  round-trip (push, submit, resume navigation) works end to end. Also unit-
+  tested `fetchers.py`'s HTTP/Gopher/Gemini parsing/dispatch logic directly
+  against synthetic fixture data (mocked `requests.get`/`socket.
+  create_connection`/`ssl.SSLContext.wrap_socket`, zero real sockets) —
+  covers content-type routing, gopher item-type dispatch and the `URL:`
+  selector error, and the full Gemini status-code matrix including TOFU
+  pin-then-mismatch and same-host-autofollow-vs-cross-host-confirm
+  redirect branching. Found along the way: the `hermes web search`
+  subcommand this feature (and the old Search tab) depends on no longer
+  exists in the installed `hermes` CLI in this environment — tracked as a
+  new ROADMAP P3 item rather than fixed here (out of scope for `ask.py`,
+  which M2 deliberately left untouched); the Browser tab's Search mode
+  degrades gracefully (an empty-link Document) rather than crashing when
+  this happens. (`google_tui/fetchers.py` new; `google_tui/main.py`,
+  `AGENTS.md`, `ROADMAP.md`)
 - **`google_tui/render.py` — shared HTML/Gopher/Gemtext rendering module
   (P1 M1).** Protocol-agnostic `Document`/`Block`/`Link` model plus a
   Textual `DocumentView` widget, meant to be consumed by the future
