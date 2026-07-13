@@ -51,11 +51,19 @@ def services() -> dict:
 # Gmail (threaded)
 # ----------------------------------------------------------------------------
 
-def list_threads(svc, max_results: int = 50, q: str | None = None) -> list[dict]:
+def list_labels(svc) -> list[dict]:
+    g = svc["gmail"]
+    return g.users().labels().list(userId="me").execute().get("labels", [])
+
+
+def list_threads(svc, max_results: int = 50, q: str | None = None,
+                 label_ids: list[str] | None = None) -> list[dict]:
     g = svc["gmail"]
     params = {"userId": "me", "maxResults": max_results}
     if q:
         params["q"] = q
+    if label_ids:
+        params["labelIds"] = label_ids
     resp = g.users().threads().list(**params).execute()
     out = []
     for t in resp.get("threads", []):

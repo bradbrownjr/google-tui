@@ -18,6 +18,7 @@ class Settings:
     key_method: str = "keyfile"  # "keyfile" | "passphrase"
     kdf_salt: str | None = None  # base64, passphrase mode only
     canary: str | None = None  # base64 Fernet token of a known string, passphrase mode only
+    default_label_id: str = "INBOX"  # Gmail label id shown in the Email pane on launch
 
 
 def load_settings() -> Settings:

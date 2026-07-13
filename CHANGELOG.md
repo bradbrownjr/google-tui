@@ -6,6 +6,21 @@ touched and any breaking notes.
 ## [2026-07-13]
 
 ### Added
+- **Labels as folders (M1 of the P1 feature epics).** A `Select` dropdown
+  above the Email pane (`#email-label-select`) lets you switch between
+  Gmail labels/folders — "All Mail" plus every system and user label
+  (nested user labels like `Family/Kids` shown indented by depth).
+  `gauth.list_labels` (`users.labels.list`) and `gauth.list_threads(...,
+  label_ids=...)` (`threads.list(labelIds=...)`) back it. Picking a label
+  persists to `settings.default_label_id`, shows the cached threads for
+  that label instantly (new label-scoped cache category
+  `thread_summary:<label_id>`, replacing the old flat `thread_summary`
+  category), and kicks a background refetch if online. Defaults to
+  `INBOX` — previously the Email pane had no label filter at all (closer
+  to All Mail than an inbox). Verified with a mocked `run_test` pilot:
+  initial load shows Inbox-only threads, switching to a nested user label
+  re-fetches and re-caches correctly. (`google_tui/gauth.py`,
+  `google_tui/main.py`, `google_tui/settings.py`)
 - **Send confirmation via a 5-second cancelable countdown.**
   `ComposeModal` no longer fires `gauth.reply_to`/`forward` the instant
   Send is clicked. Clicking Send disables the To/Subject/body fields and

@@ -16,7 +16,7 @@ from textual.containers import Container, Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
 from textual.widgets import (
     Button, DataTable, Header, Input, Label, ListItem, ListView,
-    RadioButton, RadioSet, RichLog, Static, Switch, TabbedContent, TabPane, TextArea,
+    RadioButton, RadioSet, RichLog, Select, Static, Switch, TabbedContent, TabPane, TextArea,
 )
 from textual.worker import get_current_worker  # noqa: F401 (kept for future threaded workers)
 
@@ -123,6 +123,14 @@ def _tab_label(text: str, num: int) -> str:
     return f"{text} [dim]{_SUPERSCRIPT[num]}[/dim]"
 
 
+def _append_email_items(email_list, threads) -> None:
+    for th in threads:
+        mark = "•" if th["unread"] else " "
+        subj = th["subject"] or "(no subject)"
+        line = f"{mark} {th['from'][:36]:<36} {subj[:60]}  ({th['count']})"
+        email_list.append(ListItem(Label(line), id=_mk_id("t", th["threadId"])))
+
+
 def _event_day(e: dict) -> int | None:
     s = e.get("start", {}).get("dateTime") or e.get("start", {}).get("date", "")
     try:
@@ -133,6 +141,30 @@ def _event_day(e: dict) -> int | None:
 
 def _is_previewable(mime: str) -> bool:
     return mime.startswith(_PREVIEWABLE_PREFIXES) or mime in _PREVIEWABLE_EXTRA
+
+
+_SYSTEM_LABEL_ORDER = ["INBOX", "STARRED", "SENT", "DRAFT", "IMPORTANT"]
+
+
+def _label_display_name(label: dict) -> str:
+    name = label["name"]
+    if label.get("type") == "system":
+        return name.replace("_", " ").title()
+    depth = name.count("/")
+    leaf = name.rsplit("/", 1)[-1]
+    return ("  " * depth) + leaf
+
+
+def _label_select_options(labels: list[dict]) -> list[tuple[str, str]]:
+    system = [l for l in labels if l.get("type") == "system"]
+    user = [l for l in labels if l.get("type") != "system"]
+    system.sort(key=lambda l: (_SYSTEM_LABEL_ORDER.index(l["name"])
+                               if l["name"] in _SYSTEM_LABEL_ORDER else 99, l["name"]))
+    user.sort(key=lambda l: l["name"])
+    options = [("All Mail", "ALL")]
+    options += [(_label_display_name(l), l["id"]) for l in system]
+    options += [(_label_display_name(l), l["id"]) for l in user]
+    return options
 
 
 class GoogleTUI(App):
@@ -151,6 +183,7 @@ class GoogleTUI(App):
     .pane-title-row { height: 1; }
     .pane-title-text { text-style: bold; color: $accent; width: 1fr; }
     .pane-title-num { color: $text-muted; width: auto; }
+    #email-label-select { height: 3; }
     #email-list { height: 1fr; }
     #event-list, #task-list { height: 1fr; }
     #hermes-log { height: 1fr; border: round $panel-darken-1; }
@@ -221,6 +254,7 @@ class GoogleTUI(App):
         self._drive_path = "/"
         self._drive_files: list[dict] = []
         self.settings: Settings = load_settings()
+        self._current_label_id = self.settings.default_label_id
         self._cache: Cache | None = None
         self._online = False
         self._loading_modal: LoadingModal | None = None
@@ -313,6 +347,12 @@ class GoogleTUI(App):
                     with Vertical(id="left"):
                         with Container(id="email", classes="pane"):
                             yield self._pane_title_row("EMAIL  (threads)", 1)
+                            yield Select(
+                                [("All Mail", "ALL"), ("Inbox", "INBOX")],
+                                value=self.settings.default_label_id
+                                if self.settings.default_label_id in ("ALL", "INBOX") else "INBOX",
+                                allow_blank=False, id="email-label-select",
+                            )
                             yield ListView(id="email-list")
                     with Vertical(id="right"):
                         with Container(id="events", classes="pane"):
@@ -410,13 +450,17 @@ class GoogleTUI(App):
         self.run_worker(self._live_refresh_thread, thread=True, exclusive=True)
 
     def _load_from_cache(self) -> bool:
-        thread_summaries = list(self._cache.get_all("thread_summary").values())
+        thread_summaries = list(self._cache.get_all(f"thread_summary:{self._current_label_id}").values())
         events = list(self._cache.get_all("event").values())
         tasks = list(self._cache.get_all("task").values())
         tasklists = list(self._cache.get_all("tasklist").values())
         had_mail = bool(thread_summaries or events or tasks)
         if had_mail:
             self._apply_mail_data(thread_summaries, events, tasks, tasklists)
+
+        labels = list(self._cache.get_all("label").values())
+        if labels:
+            self._apply_labels(labels)
 
         month_key = f"{self._cal_year:04d}-{self._cal_month:02d}"
         self._apply_cal_month(self._cache.get("cal_month", month_key) or [])
@@ -428,16 +472,16 @@ class GoogleTUI(App):
 
         return had_mail or bool(drive_files)
 
-    def _write_mail_cache(self, threads, events, tasks, tasklists) -> None:
+    def _write_mail_cache(self, label_id, threads, events, tasks, tasklists) -> None:
         if not self._cache:
             return
-        self._cache.put_many("thread_summary", {t["threadId"]: t for t in threads})
+        self._cache.put_many(f"thread_summary:{label_id}", {t["threadId"]: t for t in threads})
         self._cache.put_many("event", {e["id"]: e for e in events})
         self._cache.put_many("task", {f"{t['_list']}-{t['id']}": t for t in tasks})
         self._cache.put_many("tasklist", {tl["id"]: tl for tl in tasklists})
 
     def _live_refresh_thread(self) -> None:
-        mail = cal_month = cal_week = drive_files = None
+        mail = cal_month = cal_week = drive_files = labels = None
         ok = True
         try:
             mail = self._fetch_mail_data()
@@ -445,6 +489,12 @@ class GoogleTUI(App):
         except Exception as e:
             ok = False
             self.call_from_thread(self.notify, f"Refresh error: {e}", severity="error")
+        try:
+            labels = gauth.list_labels(self.svc)
+            self._cache.put_many("label", {l["id"]: l for l in labels})
+        except Exception as e:
+            ok = False
+            self.call_from_thread(self.notify, f"Labels error: {e}", severity="error")
         try:
             cal_month = self._fetch_cal_month()
             self._cache.put("cal_month", f"{self._cal_year:04d}-{self._cal_month:02d}", cal_month)
@@ -463,9 +513,9 @@ class GoogleTUI(App):
         except Exception as e:
             ok = False
             self.call_from_thread(self.notify, f"Drive error: {e}", severity="error")
-        self.call_from_thread(self._apply_live_refresh, ok, mail, cal_month, cal_week, drive_files)
+        self.call_from_thread(self._apply_live_refresh, ok, mail, cal_month, cal_week, drive_files, labels)
 
-    def _apply_live_refresh(self, ok: bool, mail, cal_month, cal_week, drive_files) -> None:
+    def _apply_live_refresh(self, ok: bool, mail, cal_month, cal_week, drive_files, labels) -> None:
         # Dismiss the modal FIRST: self.query_one(...) below resolves against
         # the currently active screen, and while LoadingModal is on top of
         # the stack, the base screen's widgets (#email-list etc.) aren't
@@ -477,7 +527,10 @@ class GoogleTUI(App):
                 pass
             self._loading_modal = None
         if mail is not None:
-            self._apply_mail_data(*mail)
+            _, threads, events, tasks, tasklists = mail
+            self._apply_mail_data(threads, events, tasks, tasklists)
+        if labels is not None:
+            self._apply_labels(labels)
         if cal_month is not None:
             self._apply_cal_month(cal_month)
         if cal_week is not None:
@@ -490,14 +543,67 @@ class GoogleTUI(App):
 
     # ---- refresh ----
     def _fetch_mail_data(self):
-        threads = gauth.list_threads(self.svc, max_results=80)
+        label_id = self._current_label_id
+        label_ids = None if label_id in (None, "ALL") else [label_id]
+        threads = gauth.list_threads(self.svc, max_results=80, label_ids=label_ids)
         events = gauth.list_events(self.svc, days=21)
         tasklists = gauth.list_tasklists(self.svc)
         tasks = []
         for tl in tasklists:
             for t in gauth.list_tasks(self.svc, tl["id"], show_completed=True):
                 tasks.append({**t, "_list": tl["id"]})
-        return threads, events, tasks, tasklists
+        return label_id, threads, events, tasks, tasklists
+
+    # ---- labels (folders) ----
+    def _apply_labels(self, labels: list[dict]) -> None:
+        try:
+            select = self.query_one("#email-label-select", Select)
+        except Exception:
+            return
+        options = _label_select_options(labels)
+        valid_values = {v for _, v in options}
+        value = self._current_label_id if self._current_label_id in valid_values else "ALL"
+        select.set_options(options)
+        select.value = value
+        self._current_label_id = value
+
+    def on_select_changed(self, event: Select.Changed) -> None:
+        if event.select.id != "email-label-select":
+            return
+        new_id = event.value
+        if new_id == self._current_label_id:
+            return
+        self._current_label_id = new_id
+        self.settings.default_label_id = new_id
+        save_settings(self.settings)
+        if self._cache:
+            cached = list(self._cache.get_all(f"thread_summary:{new_id}").values())
+            self._apply_email_list(cached)
+        if self._online:
+            self.run_worker(self._refresh_email_for_label, thread=True, exclusive=True, group="mail-apply")
+
+    def _refresh_email_for_label(self) -> None:
+        label_id = self._current_label_id
+        try:
+            label_ids = None if label_id in (None, "ALL") else [label_id]
+            threads = gauth.list_threads(self.svc, max_results=80, label_ids=label_ids)
+            if self._cache:
+                self._cache.put_many(f"thread_summary:{label_id}", {t["threadId"]: t for t in threads})
+        except Exception as e:
+            self.call_from_thread(self.notify, f"Label refresh error: {e}", severity="error")
+            return
+        self.call_from_thread(self._apply_email_list, threads)
+
+    def _apply_email_list(self, threads) -> None:
+        self._mail_apply_gen += 1
+        gen = self._mail_apply_gen
+        self.run_worker(self._apply_email_list_async(gen, threads), exclusive=True, group="mail-apply")
+
+    async def _apply_email_list_async(self, gen, threads) -> None:
+        await self.query_one("#email-list").clear()
+        if gen != self._mail_apply_gen:
+            return  # superseded by a newer apply call
+        _append_email_items(self.query_one("#email-list"), threads)
 
     def _apply_mail_data(self, threads, events, tasks, tasklists) -> None:
         self._tasklists = tasklists
@@ -523,12 +629,7 @@ class GoogleTUI(App):
         if gen != self._mail_apply_gen:
             return  # superseded by a newer _apply_mail_data call
 
-        email_list = self.query_one("#email-list")
-        for th in threads:
-            mark = "•" if th["unread"] else " "
-            subj = th["subject"] or "(no subject)"
-            line = f"{mark} {th['from'][:36]:<36} {subj[:60]}  ({th['count']})"
-            email_list.append(ListItem(Label(line), id=_mk_id("t", th["threadId"])))
+        _append_email_items(self.query_one("#email-list"), threads)
 
         event_list = self.query_one("#event-list")
         for e in events:
@@ -547,12 +648,20 @@ class GoogleTUI(App):
 
     async def refresh_all(self) -> None:
         try:
-            threads, events, tasks, tasklists = self._fetch_mail_data()
+            mail = self._fetch_mail_data()
         except Exception as e:
             self.notify(f"Refresh error: {e}", severity="error")
             return
-        self._write_mail_cache(threads, events, tasks, tasklists)
+        _, threads, events, tasks, tasklists = mail
+        self._write_mail_cache(*mail)
         self._apply_mail_data(threads, events, tasks, tasklists)
+        try:
+            labels = gauth.list_labels(self.svc)
+            if self._cache:
+                self._cache.put_many("label", {l["id"]: l for l in labels})
+            self._apply_labels(labels)
+        except Exception:
+            pass
         self.notify(f"Refreshed: {len(threads)} threads, {len(events)} events, {len(tasks)} tasks")
 
     # ---- tab switching ----
