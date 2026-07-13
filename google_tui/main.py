@@ -157,6 +157,7 @@ class GoogleTUI(App):
     #hermes-input { dock: bottom; }
     .muted { color: $text-muted; }
     .btnrow { height: 3; align: left middle; }
+    #send-countdown { height: 1; color: $accent; text-style: bold; }
     .section { height: 1fr; border: round $panel-darken-2; padding: 0 1; }
     #cal-grid, #cal-week-grid { height: 1fr; }
     #drive-body { height: 1fr; }
@@ -632,19 +633,19 @@ class GoogleTUI(App):
             return
         tid = self._selected_thread()
         if tid:
-            self.push_screen(ComposeModal(self.svc, tid, mode="reply"))
+            self.push_screen(ComposeModal(self.svc, tid, mode="reply"), self._on_compose_result)
     def action_reply_all(self):
         if not self._require_online():
             return
         tid = self._selected_thread()
         if tid:
-            self.push_screen(ComposeModal(self.svc, tid, mode="reply_all"))
+            self.push_screen(ComposeModal(self.svc, tid, mode="reply_all"), self._on_compose_result)
     def action_forward(self):
         if not self._require_online():
             return
         tid = self._selected_thread()
         if tid:
-            self.push_screen(ComposeModal(self.svc, tid, mode="forward"))
+            self.push_screen(ComposeModal(self.svc, tid, mode="forward"), self._on_compose_result)
 
     def _require_online(self) -> bool:
         if not self._online:
@@ -701,7 +702,7 @@ class GoogleTUI(App):
         elif pane == "email":
             tid = self._selected_thread()
             if tid:
-                self.push_screen(ThreadModal(self.svc, tid))
+                self.push_screen(ThreadModal(self.svc, tid), self._on_thread_modal_result)
         elif pane == "events":
             eid = self._highlighted_event_id()
             if eid:
@@ -711,7 +712,7 @@ class GoogleTUI(App):
     def on_list_view_selected(self, event: ListView.Selected) -> None:
         cid = event.item.id or ""
         if cid.startswith("t-"):
-            self.push_screen(ThreadModal(self.svc, cid[2:]))
+            self.push_screen(ThreadModal(self.svc, cid[2:]), self._on_thread_modal_result)
         elif cid.startswith("e-"):
             self._open_event_by_id(cid[2:])
         elif cid.startswith("k-"):
@@ -727,12 +728,23 @@ class GoogleTUI(App):
         self._drive_on_highlight(event.item)
 
     # ---- modal returns ----
-    def on_dismiss(self, event: ModalScreen.Dismissed) -> None:
-        result = event.result
+    # NOTE: ModalScreen.Dismissed doesn't exist in the installed Textual
+    # version, so an on_dismiss(self, event) handler here is silently never
+    # called — every push_screen that needs to react to its result MUST pass
+    # an explicit callback instead (see AGENTS.md §2). The callback fires
+    # BEFORE the screen is actually popped off the stack, so anything that
+    # pushes another screen or touches widgets on the screen underneath is
+    # deferred one step via call_after_refresh.
+    def _on_thread_modal_result(self, result) -> None:
         if isinstance(result, tuple) and result and result[0] == "compose":
             _, tid, mode = result
-            self.push_screen(ComposeModal(self.svc, tid, mode))
-        elif result == "sent":
+            self.call_after_refresh(self._open_compose_from_thread, tid, mode)
+
+    def _open_compose_from_thread(self, tid: str, mode: str) -> None:
+        self.push_screen(ComposeModal(self.svc, tid, mode), self._on_compose_result)
+
+    def _on_compose_result(self, result) -> None:
+        if result == "sent":
             self.run_worker(self.refresh_all, exclusive=True)
 
     # ---- hermes ask / search (shared Input.Submitted) ----
@@ -1292,11 +1304,15 @@ class ThreadModal(ModalScreen):
 
 
 class ComposeModal(ModalScreen):
+    SEND_COUNTDOWN_SECONDS = 5
+
     def __init__(self, svc, thread_id: str, mode: str):
         super().__init__()
         self.svc = svc
         self.thread_id = thread_id
         self.mode = mode
+        self._countdown_remaining = 0
+        self._countdown_timer = None  # Textual Timer handle while a send is pending
 
     def compose(self) -> ComposeResult:
         with Container(id="compose-box", classes="pane"):
@@ -1307,6 +1323,7 @@ class ComposeModal(ModalScreen):
         with Horizontal(classes="btnrow"):
             yield Button("Send", id="send")
             yield Button("Cancel", id="cancel")
+        yield Static("", id="send-countdown")
 
     def on_mount(self) -> None:
         g = self.svc["gmail"]
@@ -1329,13 +1346,53 @@ class ComposeModal(ModalScreen):
 
     def on_button_pressed(self, e: Button.Pressed) -> None:
         if e.button.id == "cancel":
-            self.dismiss(None)
+            if self._countdown_timer is not None:
+                self._cancel_countdown()
+            else:
+                self.dismiss(None)
             return
+        if e.button.id == "send":
+            if self._countdown_timer is not None:
+                return  # already counting down
+            if not self.query_one("#c-to").value.strip():
+                return
+            self._start_send_countdown()
+
+    def _start_send_countdown(self) -> None:
+        self._countdown_remaining = self.SEND_COUNTDOWN_SECONDS
+        self.query_one("#c-to").disabled = True
+        self.query_one("#c-subject").disabled = True
+        self.query_one("#c-body").disabled = True
+        self.query_one("#send", Button).disabled = True
+        self._update_countdown_label()
+        self._countdown_timer = self.set_interval(1.0, self._countdown_tick)
+
+    def _countdown_tick(self) -> None:
+        self._countdown_remaining -= 1
+        if self._countdown_remaining <= 0:
+            self._countdown_timer.stop()
+            self._countdown_timer = None
+            self._send_now()
+        else:
+            self._update_countdown_label()
+
+    def _update_countdown_label(self) -> None:
+        self.query_one("#send-countdown", Static).update(
+            f"Sending in {self._countdown_remaining}… (Cancel or Esc to stop)"
+        )
+
+    def _cancel_countdown(self) -> None:
+        self._countdown_timer.stop()
+        self._countdown_timer = None
+        self.query_one("#c-to").disabled = False
+        self.query_one("#c-subject").disabled = False
+        self.query_one("#c-body").disabled = False
+        self.query_one("#send", Button).disabled = False
+        self.query_one("#send-countdown", Static).update("")
+
+    def _send_now(self) -> None:
         to = self.query_one("#c-to").value.strip()
-        subject = self.query_one("#c-subject").value.strip()
         body = self.query_one("#c-body").text
-        if not to:
-            return
         if self.mode == "forward":
             gauth.forward(self.svc, self.thread_id, to, body_prefix=body + "\n")
         else:
@@ -1344,7 +1401,10 @@ class ComposeModal(ModalScreen):
 
     def on_key(self, e) -> None:
         if e.key == "escape":
-            self.dismiss(None)
+            if self._countdown_timer is not None:
+                self._cancel_countdown()
+            else:
+                self.dismiss(None)
 
 
 class EventModal(ModalScreen):

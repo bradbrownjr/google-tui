@@ -3,6 +3,31 @@
 Format: keep newest at top. One entry per meaningful change. Reference files
 touched and any breaking notes.
 
+## [2026-07-13]
+
+### Added
+- **Send confirmation via a 5-second cancelable countdown.**
+  `ComposeModal` no longer fires `gauth.reply_to`/`forward` the instant
+  Send is clicked. Clicking Send disables the To/Subject/body fields and
+  the Send button and shows a "Sending in N…" countdown
+  (`ComposeModal.SEND_COUNTDOWN_SECONDS = 5`); the actual send only
+  happens once it reaches zero. Cancel or `Esc` at any point during the
+  countdown aborts it and re-enables the form instead of sending.
+  (`google_tui/main.py`)
+
+### Fixed
+- **Dead `on_dismiss` handler.** `ModalScreen.Dismissed` doesn't exist in
+  the installed Textual version, so `GoogleTUI.on_dismiss` was never
+  invoked — `ThreadModal`'s Reply/Reply All/Forward buttons, and the
+  direct `r`/`a`/`f` keybindings, silently did nothing (no `ComposeModal`
+  opened, no refresh after send). Replaced with explicit
+  `push_screen(..., callback)` pairs (`_on_thread_modal_result` →
+  `_open_compose_from_thread` → `_on_compose_result`), deferred one step
+  via `call_after_refresh` per the push_screen-callback-timing note in
+  AGENTS.md §2. Verified with a scripted `run_test` pilot (mocked
+  `gauth`): Reply from `ThreadModal` now reliably opens `ComposeModal`,
+  and a completed send now triggers `refresh_all`.
+
 ## [Unreleased]
 
 ### Added

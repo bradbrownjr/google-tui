@@ -1,46 +1,172 @@
 # ROADMAP.md — google-tui
 
 Prioritized future work. Each item notes status and the file(s) it touches.
-Update this file as items are completed (and bump CHANGELOG.md).
+Update this file as items are completed — move the completed item's entry
+into CHANGELOG.md under a new dated section (`## [YYYY-MM-DD]`) instead of
+just checking it off here, so ROADMAP.md only ever shows what's still open.
 
 ## P0 — Safety (do before relying on it daily)
 
-- [ ] **Send confirmation dialog.** `ComposeModal` currently fires
-  `gauth.reply_to` / `forward` immediately on send. Add a confirm step
-  (e.g. `y` to send / `Esc` to cancel) so a misfire can't email someone.
-  Touches `main.py` `ComposeModal.on_button_pressed`.
-- [ ] **Live send smoke test (supervised).** Once confirmation exists, do ONE
-  real reply to a test thread and verify To/Subject/body/threading. Never
-  auto-send in tests — mock `gauth.reply_to`/`forward`.
-- [ ] **`on_dismiss` is likely dead code.** Discovered while wiring up
-  `UnlockModal`: `ModalScreen.Dismissed` doesn't exist in the installed
-  Textual version (`hasattr(ModalScreen, "Dismissed")` is `False`), and
-  `GoogleTUI.on_dismiss(self, event: ModalScreen.Dismissed)` only imports
-  cleanly because `from __future__ import annotations` never evaluates the
-  annotation. This method is very likely never invoked, meaning
-  `ThreadModal`'s Reply/Reply All/Forward buttons (which dismiss with
-  `("compose", tid, mode")` expecting `on_dismiss` to catch it and push
-  `ComposeModal`) silently do nothing. Not fixed this round (out of scope
-  for the caching/settings work). Fix: route that result through
-  `push_screen(ThreadModal(...), callback)` instead — see the
-  `push_screen`-callback-timing NOTE in AGENTS.md §2 (the callback fires
-  BEFORE the screen pops, so defer any widget-touching work one step via
-  `call_after_refresh`).
+- [ ] **Live send smoke test (supervised).** Now that Send has a 5-second
+  cancelable countdown (see CHANGELOG `[2026-07-13]`) instead of firing
+  immediately, do ONE real reply to a test thread with your own
+  `~/.hermes/google_token.json` and verify To/Subject/body/threading.
+  Needs a real Google token and an actual send, so it can't be done from
+  this sandbox — run it yourself when ready. Never auto-send in
+  unsupervised tests — mock `gauth.reply_to`/`forward` as usual.
 
-## P1 — UX polish
+## P1 — Major Feature Epics (ordered build sequence)
+
+Ten epics from a single planning pass (2026-07-13), ordered so each one's
+output is available to the epics that build on it (shared render module
+before its consumers; config/docs before features that add new scopes).
+The repo screenshot (M10) is deliberately LAST — take it once, after the
+major UI changes (M2, M5, M6, M8, M9 all add or reshape tabs) have
+landed, so it's a current snapshot instead of one that goes stale after
+the next epic. Each step is tagged with the Claude Code agent recommended
+for a future session tackling it — **Explore** for read-only research,
+**Plan** for architecture/design before non-trivial code,
+**general-purpose** for the actual multi-step implementation,
+**claude-code-guide** where the step is specifically about the Claude
+Code CLI/SDK itself. Small one-shot steps with no real research/design
+component are left untagged (just do them).
+
+### M1 — Labels as folders
+- [ ] Research Gmail label semantics: `users.labels.list`,
+  `threads.list(labelIds=...)`, and the "/" convention Gmail itself uses
+  for nested label names. *(Explore)*
+- [ ] Design: folder-tree selector vs. a flat label dropdown above the
+  Email pane, and whether it replaces or supplements the current
+  all-mail view. *(Plan)*
+- [ ] Implement `gauth` label helpers, a cache category, and the picker
+  UI. *(general-purpose)*
+
+### M2 — Config/Settings overhaul: multi-provider AI + onboarding wizard
+Not beholden to Hermes: opencode, Claude Code, and Gemini CLI should all
+be selectable, sharing the same Google API token.
+- [ ] Design a provider-agnostic config schema — a shared Google-token
+  section plus one block per AI provider (Hermes/Nous, opencode, Claude
+  Code, Gemini CLI) — and how each provider receives Google context
+  (env vars vs. stdin vs. MCP). *(Plan)*
+- [ ] Research each target CLI's non-interactive/one-shot invocation
+  (flags, stdin/stdout contract, how it'd receive the Google token).
+  *(Explore)*, with a dedicated pass on Claude Code's own headless mode
+  (`claude -p`, `--output-format`, session handling) — *(claude-code-guide)*.
+- [ ] Implement an `AIProvider` interface in `ask.py` (`ask(prompt,
+  context) -> str`); keep the existing Nous/Hermes path as the default
+  implementation, add opencode/Claude Code/Gemini CLI as siblings.
+  *(general-purpose)*
+- [ ] Expand the Settings tab into a full in-app config editor: provider
+  picker, token/key entry fields, inline validation. *(general-purpose)*
+- [ ] Bootstrap flow: if no valid Google token AND no reachable AI
+  provider at launch, skip the normal tabs and open an `OnboardingWizard`
+  screen instead, surfacing the relevant setup instructions from M4
+  inline. *(Plan)* for the flow, *(general-purpose)* to build it.
+
+### M3 — Google Cloud Console setup guide + product recommendations
+Pairs directly with M2's wizard — write once, reuse as both the wizard's
+inline text and a standalone `SETUP.md`.
+- [ ] Confirm the current console flow live — Google merged the old
+  "OAuth consent screen" into **Google Auth Platform** (Branding /
+  Audience / Clients tabs under APIs & Services). *(Explore, via
+  WebSearch/WebFetch since this UI has moved before and will again)*
+- [ ] Write the step-by-step guide: create a project → enable APIs
+  (Gmail, Calendar, Drive, Tasks, People — add Routes once M9 lands) →
+  configure Auth Platform branding, scopes, and test users (External +
+  Testing mode caps at 100 test users and expires tokens every 7 days
+  unless the app is published/verified — call this out explicitly) →
+  create a **Desktop app** OAuth client (no redirect URI juggling) →
+  download the client secret → run the local auth flow once to mint
+  `google_token.json`. *(general-purpose)*
+- [ ] Recommend additional products in the doc: **People API** (Contacts,
+  M8) and **Routes API** (Navigation, M9 — the maintained replacement
+  for the now-deprecated Directions API; pair with **Places API** for
+  address/place lookup). Flag clearly that Maps Platform is the first API
+  in this project that requires enabling **Cloud Billing** on the
+  project — Workspace APIs (Gmail/Calendar/Drive/Tasks/People) are free,
+  Maps Platform is not. *(general-purpose)*
+
+### M4 — Shared HTML/Gopher/Gemini rendering module
+The reusable core: Browser (M5), News (M6), and HTML email (M7) all
+consume this instead of each rolling their own parser.
+- [ ] Audit `bpq-apps/apps/htmlview.py` (nav/content link separation,
+  pagination) and `apps/gopher.py` for what ports cleanly vs. what's
+  coupled to their `print()`/`input()` packet-BBS interface. *(Explore)*
+- [ ] Design the module boundary: a protocol-agnostic `Document` (title,
+  text blocks, links) that Web/Gopher/Gemini/RSS parsers all produce, and
+  one Textual renderer widget that consumes any `Document` — this is the
+  modularity the whole plan hinges on. *(Plan)*
+- [ ] Implement `google_tui/render.py`: port htmlview.py's link-separation
+  heuristic, add a Gopher menu parser (from `gopher.py`), and a new
+  Gemtext parser (gemini:// markup isn't in bpq-apps yet).
+  *(general-purpose)*
+
+### M5 — Browser tab (Web + Gopher + Gemini + Search)
+- [ ] Research the Gemini protocol (TLS handshake, TOFU cert trust,
+  `gemini://` URLs, status-code scheme) — no existing client to port, so
+  this one's from spec. *(Explore)*
+- [ ] Design the tab: address bar, rendered-content pane, numbered-link
+  nav (matching bpq-apps' UX), a history/back stack, and how the current
+  standalone Search tab folds into this one as a mode rather than staying
+  separate. *(Plan)*
+- [ ] Implement HTTP(S) fetch, a ported `gopher://` client, and a new
+  `gemini://` client, all rendering through M4; retire the Search tab,
+  keeping `hermes web search` reachable as a Browser action.
+  *(general-purpose)*
+
+### M6 — News tab (RSS/Atom)
+- [ ] Implement feed fetch (`feedparser`) + an entry list using the same
+  lightbar `ListView` pattern as the Email pane, opening each entry
+  through M4's renderer. *(general-purpose)*
+- [ ] Feed subscription management (add/remove URLs) in Settings.
+  *(general-purpose)*
+
+### M7 — Rich HTML email rendering
+- [ ] Route HTML-heavy Gmail bodies through M4's renderer inside
+  `ThreadModal` instead of today's plain-text stripping.
+  *(general-purpose)*
+
+### M8 — Contacts tab + fuzzy lookup in Compose
+- [ ] Research the People API (`people.connections.list`, `otherContacts`,
+  scopes, quota). *(Explore)*
+- [ ] Implement `gauth` contacts helpers, a fuzzy-match (e.g. `rapidfuzz`)
+  autocomplete wired into Compose's To/CC/BCC fields, and a standalone
+  Contacts tab (list/search/detail). This also delivers the long-standing
+  "email compose from scratch" item below. *(general-purpose)*
+
+### M9 — Navigation tab
+- [ ] Confirm the Routes API request/response shape, quota, and billing
+  setup (M3 already flagged that this needs Cloud Billing enabled).
+  *(Explore)*
+- [ ] Design a printable, MapQuest-style itinerary view (step list +
+  summary) — "print" in a TUI means export to text/file, not literal
+  printing. *(Plan)*
+- [ ] Implement origin/destination input (reusing M8's fuzzy lookup where
+  it helps), the Routes API call, and itinerary render + text export.
+  *(general-purpose)*
+
+### M10 — Repo screenshot
+Last, on purpose — a single current snapshot taken once the major UI
+work above (M2 Settings/wizard, M5 Browser, M6 News, M8 Contacts, M9
+Navigation) has landed, rather than one that goes stale after the next epic.
+- [ ] Build a fake dataset (dummy threads/events/tasks/Drive files, zero
+  real PII) and drive the app against it with the existing `run_test`
+  pilot + `save_screenshot` → cairosvg pipeline (AGENTS.md §6) to produce
+  a PNG. *(general-purpose)*
+- [ ] Add it to the top of README.md as the project hero image.
+
+## P2 — UX polish
 
 - [ ] **Task subtasks + add/delete.** `TaskDetailModal` shows subtasks
   read-only. Add create/check/delete for tasks and subtasks (need
   `gauth.create_task` / `delete_task` / `patch_subtask`).
-- [ ] **Email compose from scratch** (new message, not reply) — `ComposeModal`
-  is reply/forward-only today. Add a "New" button.
 - [ ] **Calendar create event** from a modal (date/time/title) →
   `gauth.create_event`. Currently read-only.
 - [ ] **Threading depth.** Show full thread tree (multiple messages) with
   expand/collapse; today each thread shows the latest message only.
 - [ ] **Search within panes** (filter emails/tasks live as you type).
 
-## P2 — Robustness
+## P3 — Robustness
 
 - [ ] **Pagination / "load more".** Email caps at 80 threads; events at 3
   weeks; Drive at one folder page. Add lazy load on scroll / a "More" button.
@@ -59,7 +185,7 @@ Update this file as items are completed (and bump CHANGELOG.md).
   rebuilding `self._cache` with the new key in-session. Fine for now; worth
   revisiting if restart-to-apply proves annoying in practice.
 
-## P3 — Nice-to-have
+## P4 — Nice-to-have
 
 - [ ] **Week view sub-hour granularity** (30/15-minute rows) — the current
   week grid (`#cal-week-grid`) is hour-granularity; an event's summary fills
