@@ -83,6 +83,10 @@ def list_threads(svc, max_results: int = 50, q: str | None = None,
             "date": hdrs.get("date", ""),
             "count": len(msgs),
             "unread": any("UNREAD" in m.get("labelIds", []) for m in msgs),
+            # Gmail message resources include a top-level "snippet" regardless
+            # of `format` — no extra API call needed. Backs the Email pane's
+            # Space-to-expand inline preview (main.py's _toggle_thread_expand).
+            "snippet": last.get("snippet", ""),
         })
     return out
 

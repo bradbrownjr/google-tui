@@ -20,9 +20,13 @@ toggling a task) are disabled with a warning instead of failing silently.
 
 - **Mail tab — Email pane** (left, full height): a label/folder picker
   (All Mail, system labels, nested user labels) above a threaded Gmail
-  list with a lightbar. `Enter`/`Space` opens the thread; `r` / `a` / `f`
-  reply / reply-all / forward (compose modal, with a 5-second cancelable
-  countdown before it actually sends). Unread threads are marked with a bullet.
+  list with a lightbar. `l` jumps straight to the folder picker and opens
+  it. `Enter` opens the full thread; `Space` expands/collapses the
+  highlighted row in place to show its snippet (and message count, for
+  threads with more than one message) without leaving the list; `r` / `a` /
+  `f` reply / reply-all / forward (compose modal, with a 5-second
+  cancelable countdown before it actually sends). Unread threads are
+  marked with a bullet.
 - **Mail tab — Events pane** (upcoming): next ~3 weeks of events, lightbar,
   `Enter`/`Space` for detail.
 - **Mail tab — Tasks pane:** all Google Task lists, lightbar. `Space` toggles
@@ -51,11 +55,12 @@ toggling a task) are disabled with a warning instead of failing silently.
   to (managed in Settings), combined into one lightbar list, newest first.
   `Enter`/`Space` opens an entry, rendered through the same shared
   Document view as the Browser tab.
-- **Settings tab:** turn on encrypt-at-rest for the local cache (off by
-  default — it costs nothing until you ask for it), choose how the
-  encryption key is handled, clear the local cache, pick your AI provider,
-  set a Nous API key, and manage your News-tab feed subscriptions (add/remove
-  URLs) — all without hand-editing config files.
+- **Settings tab:** three sub-tabs (`Alt+Left/Right` cycles between them
+  while the Settings tab is active) — **General** (encrypt-at-rest for the
+  local cache, off by default; choose how the encryption key is handled;
+  clear the local cache), **AI Provider** (pick your AI provider, set a
+  Nous API key), and **News Feeds** (manage your News-tab feed
+  subscriptions — add/remove URLs) — all without hand-editing config files.
 
 **First run with nothing configured?** google-tui still launches — an
 onboarding wizard walks you through whatever's missing (Google account,
@@ -82,10 +87,11 @@ full Google Cloud Console walkthrough.
 | `Ctrl+1..6` | switch tab (Mail / Calendar / Drive / Browser / News / Settings) |
 | `Ctrl+Left/Right` | cycle tabs — use this if `Ctrl+1..6` doesn't reach the app (common in browser-based terminals, which reserve `Ctrl+1..8` for switching *their own* tabs) |
 | `Alt+1..4` | jump to Mail pane (Email / Events / Tasks / Hermes) |
-| `Alt+Left/Right/Up/Down` | move to the adjacent Mail pane |
+| `Alt+Left/Right/Up/Down` | move to the adjacent Mail pane; on the Browser tab, back/forward through history; on the Settings tab, cycle General/AI Provider/News Feeds |
 | `Tab` / `Shift+Tab` | cycle Mail panes |
+| `l` | open the folder/label picker (Email pane) |
 | `r` `a` `f` | reply / reply-all / forward (Email pane, disabled while offline) |
-| `Space` | contextual: expand thread (Email), toggle complete (Tasks, disabled while offline), event detail (Events) |
+| `Space` | contextual: expand/collapse the highlighted row in place, showing its snippet (Email), toggle complete (Tasks, disabled while offline), event detail (Events) |
 | `Enter` | open selected item's detail |
 | `[` `]` | previous / next month or week (Calendar tab) |
 | `Ctrl+R` | reconnect / refresh all data |

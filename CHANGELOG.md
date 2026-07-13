@@ -5,6 +5,114 @@ touched and any breaking notes.
 
 ## [2026-07-13]
 
+### Fixed (live-testing bug reports, second pass)
+- **Header grew to 3 rows on click, shrank back on a second click.** This
+  was Textual's OWN built-in `Header` behavior (`Header._on_click ->
+  self.toggle_class("-tall")`, mapped to `height: 3` in `Header.
+  DEFAULT_CSS`), not custom app code, and it wasn't wanted. Fix: a new
+  module-level `GtHeader(Header)` in `main.py`, used in `compose()` in
+  place of a bare `Header()`. The first attempt — a no-op override
+  (`def _on_click(self): pass`) — looked right by inspection but does
+  **NOT** actually suppress the base class's handler: confirmed via a live
+  pilot click that `Header`'s own `_on_click` still ran and toggled the
+  class anyway. Root cause: Textual's `MessagePump._get_dispatch_methods()`
+  walks the full MRO and, for naming-convention handlers like `_on_click`
+  (as opposed to `@on`-decorated ones), invokes the method from **every**
+  class in the MRO that defines one — no dedup. The real fix is
+  `event.prevent_default()`, whose docstring explicitly says "prevent
+  handlers in any base classes from being called"; `_get_dispatch_methods`
+  checks `message._no_default_action` at the top of each MRO-loop iteration
+  and `break`s before reaching `Header`'s own handler. Documented as a new
+  NOTE in AGENTS.md §2 (override-an-internal-handler gotcha) since it'll
+  bite again on any future `_on_xxx` override. Verified with a headless
+  `run_test` pilot click (had to pass an explicit `offset=` too — the
+  default `pilot.click(widget)` offset landed on `HeaderIcon`, a child
+  widget docked left that calls `event.stop()` in its own `on_click` and
+  opens the command palette, so the very first version of this test
+  "passed" without ever exercising `Header`'s own handler at all — also now
+  a NOTE in AGENTS.md §6).
+- **Settings tab restructured into sub-tabs, `Alt+Left/Right` switches
+  between them.** Was one long `VerticalScroll` with encryption controls,
+  AI-provider controls, and News-feed subscription management all crammed
+  together. Now a nested `TabbedContent#settings-tabs` (mirrors the
+  existing `TabbedContent#cal-tabs` Month/Week pattern on the Calendar
+  tab) with three sub-tabs, each wrapped in its own independently-
+  scrolling `VerticalScroll` rather than one outer scroll around the whole
+  thing: `TabPane#settings-tab-general` (encrypt switch, key-method
+  RadioSet, clear-cache button, cache-info Static), `TabPane#settings-tab-ai`
+  (AI-provider RadioSet, Nous API key Input/Save), `TabPane#settings-tab-feeds`
+  (News-feed subscription ListView/add/remove) — content relocated
+  unchanged, not redesigned. New `SETTINGS_TAB_ORDER` constant (alongside
+  the existing `TAB_ORDER`) and `_cycle_settings_tab(step)` helper (modeled
+  on the existing `_cycle_tab`) back a new third branch in
+  `action_switch_left`/`action_switch_right`: Mail tab still does pane
+  adjacency, Browser tab still does history back/forward, Settings tab now
+  cycles sub-tabs — a clean `elif` chain, regression-tested that the first
+  two still work. `on_tabbed_content_tab_activated`'s existing guard
+  (`if event.tabbed_content.id != "main-tabs": return`) already correctly
+  no-ops for `#settings-tabs` sub-tab activation, the same way it already
+  did for `#cal-tabs`; no new branch needed. There are now THREE
+  `TabbedContent` widgets in the DOM (`#main-tabs`, `#cal-tabs`,
+  `#settings-tabs`) — AGENTS.md's existing NOTE about always querying by ID
+  (never a bare `self.query_one(TabbedContent)`) now covers all three. A
+  4th sub-tab (`settings-tab-search`, Browser search providers) is a
+  planned follow-up that can now drop in as a plain sibling `TabPane`.
+- **`Select#email-label-select` (folder/label picker) had no keyboard
+  shortcut.** New `l` binding (`action_focus_label_select`) focuses the
+  Select and opens its dropdown — confirmed via a live pilot test that
+  setting `.expanded = True` directly actually opens the overlay in this
+  Textual version (it does; `Select._watch_expanded` shows/focuses the
+  overlay). No-ops outside the Mail tab's Email pane. Verified `l` has no
+  existing binding collision (`r`/`a`/`f`/`space` were already taken) and
+  that it still types normally into a focused text `Input` (Textual gives
+  the focused widget first crack at printable keys before bubbling to
+  app-level `BINDINGS`).
+- **Space on an email thread did the exact same thing as Enter, instead of
+  the documented "expand" behavior.** `HELP_TEXT`, `_context_help_text`,
+  README.md, and AGENTS.md all already claimed "Space = Expand" for the
+  Email pane, but the code just pushed `ThreadModal`, identically to
+  Enter — the documented behavior was never actually implemented. Fixed as
+  a lightweight inline expand (deliberately NOT the full multi-message
+  thread-tree UI — that's ROADMAP's separate, larger, not-yet-started P2
+  "Threading depth" item, left untouched): `gauth.list_threads` now
+  includes `"snippet"` in each thread dict (Gmail message resources carry
+  a top-level `snippet` regardless of `format`, so this is free — no extra
+  API call). New `self._threads_cache: dict[str, dict]` (threadId -> thread
+  dict, populated everywhere `_apply_email_list`/`_apply_mail_data_async`
+  populate the list) and `self._expanded_thread_ids: set[str]` back a new
+  `_toggle_thread_expand(thread_id)` that mutates ONLY the one highlighted
+  `ListItem`'s `Label` text in place (`self.query_one(f"#{_mk_id('t',
+  thread_id)} Label", Label).update(...)`) — deliberately does NOT call
+  `ListView.clear()`/repopulate, sidestepping the async-`clear()`-races
+  trap documented elsewhere in AGENTS.md entirely rather than working
+  around it. Collapsed text is the existing one-line format (factored out
+  as a new `_email_collapsed_line(th)` helper, shared with
+  `_append_email_items`); expanded text appends one line with the
+  snippet (truncated to ~100 chars) and, if the thread has more than one
+  message, a `(N messages)` note. `action_context_space`'s Email-pane
+  branch now calls `_toggle_thread_expand` instead of pushing
+  `ThreadModal`; Enter (`on_list_view_selected`) is unchanged and remains
+  the only way to open the full thread modal.
+- **Opening an email scrolled to the bottom instead of the top.**
+  `ThreadModal`'s `#thread-body` is a `RichLog`, which defaults to
+  `auto_scroll=True` (scrolls to the end on every `write()` call) — hence
+  landing at the bottom on open. Fixed by passing `scroll_end=False` on
+  all three `write()` calls in `ThreadModal` (`on_mount`'s "Loading…",
+  `_apply_thread`, `_apply_error`). Message ORDER is unchanged
+  (`gauth.get_thread` still returns oldest-first) — whether the most-recent
+  message should show first instead is a separate, genuinely undecided
+  design question the repo owner flagged themselves ("need to confirm"),
+  left alone rather than guessed at; a fast, clearly-scoped follow-up if
+  wanted.
+
+Verified all five fixes above with headless `run_test` + `pilot` scenarios
+(mocked `gauth.*`/`ask.*`, no real network, each scenario its own process
+per AGENTS.md §6), including regression checks that Mail-tab pane
+adjacency and Browser-tab history back/forward on `Alt+Left/Right` still
+work after adding the Settings-sub-tab branch. Scratch test scripts
+deleted after verification (this repo doesn't keep a committed `tests/`
+dir).
+
 ### Fixed
 - **`ThreadModal` crashed the whole app on any network error while opening a
   thread** (e.g. `SSLError: [SSL: RECORD_LAYER_FAILURE]` seen live while the

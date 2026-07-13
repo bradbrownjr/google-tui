@@ -52,6 +52,7 @@ PANE_ADJACENCY = {
 }
 
 TAB_ORDER = ["tab-mail", "tab-calendar", "tab-drive", "tab-browser", "tab-news", "tab-settings"]
+SETTINGS_TAB_ORDER = ["settings-tab-general", "settings-tab-ai", "settings-tab-feeds"]
 
 _SUPERSCRIPT = {1: "¹", 2: "²", 3: "³", 4: "⁴", 5: "⁵", 6: "⁶"}
 
@@ -87,7 +88,8 @@ GLOBAL
   Ctrl+Q           Quit
 
 MAIL TAB
-  Email pane:   Enter/Space open thread, r Reply, a Reply All, f Forward
+  Email pane:   Enter open thread, Space expand/collapse (shows snippet),
+                l open folder picker, r Reply, a Reply All, f Forward
   Events pane:  Enter/Space open event detail
   Tasks pane:   Space toggle complete, Enter open detail
   Hermes pane:  type a question, Enter to ask
@@ -114,15 +116,39 @@ NEWS TAB
   subscriptions (add/remove feed URLs) from the Settings tab.
 
 SETTINGS TAB
-  Switch        Toggle encrypt-at-rest for the local cache
-  RadioSet      Choose passphrase-at-launch vs. local key file
-  Button        Clear the local cache immediately
-  Input+Button  Add a News-tab feed subscription (URL)
-  Button        Remove the selected feed subscription
+  Sub-tabs      General / AI Provider / News Feeds — Alt+Left/Right cycles
+                between them while the Settings tab is active
+  Switch        Toggle encrypt-at-rest for the local cache (General)
+  RadioSet      Choose passphrase-at-launch vs. local key file (General)
+  Button        Clear the local cache immediately (General)
+  RadioSet      Choose AI provider for the Hermes Ask pane (AI Provider)
+  Input+Button  Set/save the Nous API key (AI Provider)
+  Input+Button  Add a News-tab feed subscription (URL) (News Feeds)
+  Button        Remove the selected feed subscription (News Feeds)
 
 Reply/Forward/Toggle-complete are disabled while offline (shown in the
 title bar as "Offline (cached HH:MM)"); browsing cached data still works.
 """
+
+
+class GtHeader(Header):
+    """Textual's Header toggles to a 3-row 'tall' mode on click by default
+    (Header._on_click -> toggle_class('-tall')). Disabled — not wanted here.
+
+    NOTE: a bare no-op override (`def _on_click(self): pass`) does NOT
+    suppress this — confirmed empirically via a live pilot click. Textual's
+    MessagePump._get_dispatch_methods() walks the FULL MRO and invokes the
+    naming-convention handler from EVERY class that defines one (there is no
+    dedup for `_on_click`-style handlers, only for `@on`-decorated ones), so
+    both GtHeader._on_click AND Header._on_click would fire on a single
+    click, and Header's still toggles the class. The actual fix is
+    `event.prevent_default()`, whose docstring says exactly this: "prevent
+    handlers in any base classes from being called" — `_get_dispatch_methods`
+    checks `message._no_default_action` and `break`s out of the MRO walk
+    before reaching Header's own handler.
+    """
+    def _on_click(self, event) -> None:
+        event.prevent_default()
 
 
 def _fmt_date(s: str) -> str:
@@ -167,12 +193,15 @@ def _tab_label(text: str, num: int) -> str:
     return f"{text} [dim]{_SUPERSCRIPT[num]}[/dim]"
 
 
+def _email_collapsed_line(th: dict) -> str:
+    mark = "•" if th["unread"] else " "
+    subj = th["subject"] or "(no subject)"
+    return f"{mark} {th['from'][:36]:<36} {subj[:60]}  ({th['count']})"
+
+
 def _append_email_items(email_list, threads) -> None:
     for th in threads:
-        mark = "•" if th["unread"] else " "
-        subj = th["subject"] or "(no subject)"
-        line = f"{mark} {th['from'][:36]:<36} {subj[:60]}  ({th['count']})"
-        email_list.append(ListItem(Label(line), id=_mk_id("t", th["threadId"])))
+        email_list.append(ListItem(Label(_email_collapsed_line(th)), id=_mk_id("t", th["threadId"])))
 
 
 def _event_day(e: dict) -> int | None:
@@ -367,6 +396,7 @@ class GoogleTUI(App):
         ("r", "reply", "Reply"),
         ("a", "reply_all", "Reply All"),
         ("f", "forward", "Forward"),
+        ("l", "focus_label_select", "Folder"),
         ("space", "context_space", "Context"),
         ("[", "cal_prev", "Prev"),
         ("]", "cal_next", "Next"),
@@ -400,6 +430,11 @@ class GoogleTUI(App):
         self._browser_history: list[BrowserHistoryEntry] = []
         self._browser_hist_pos: int = -1
         self._browser_tofu: fetchers.GeminiTofuStore | None = None
+        # Email pane's Space-to-expand (inline snippet preview, not the full
+        # ThreadModal — see AGENTS.md's Email-pane NOTE). Naturally resets on
+        # every list repopulate (refresh/label change); no persistence needed.
+        self._expanded_thread_ids: set[str] = set()
+        self._threads_cache: dict[str, dict] = {}
 
     # ---- data layer ----
     @cached_property
@@ -455,7 +490,7 @@ class GoogleTUI(App):
         if tab == "tab-mail":
             pane = PANE_IDS[self.active]
             if pane == "email":
-                return "Enter Open   r Reply   a Reply All   f Forward   Space Expand"
+                return "Enter Open   r Reply   a Reply All   f Forward   Space Expand   l Folder"
             if pane == "events":
                 return "Enter/Space Detail"
             if pane == "tasks":
@@ -471,7 +506,7 @@ class GoogleTUI(App):
         if tab == "tab-news":
             return "Enter/Space Open Entry"
         if tab == "tab-settings":
-            return "Toggle encryption   Choose key method   Clear local cache   Manage feeds"
+            return "Alt+←/→ Switch Section   Toggle encryption   Choose key method   Clear local cache   Manage feeds"
         return ""
 
     def _update_help_bar(self) -> None:
@@ -482,7 +517,7 @@ class GoogleTUI(App):
 
     # ---- compose ----
     def compose(self) -> ComposeResult:
-        yield Header()
+        yield GtHeader()
         with TabbedContent(id="main-tabs", initial="tab-mail"):
             with TabPane(_tab_label("Mail", 1), id="tab-mail"):
                 with Horizontal(id="body"):
@@ -537,49 +572,56 @@ class GoogleTUI(App):
                     yield Label("NEWS  (all subscribed feeds, newest first)", classes="pane-title-text")
                     yield ListView(id="news-list")
             with TabPane(_tab_label("Settings", 6), id="tab-settings"):
-                with VerticalScroll(id="settings-section", classes="section"):
+                with Container(id="settings-section", classes="section"):
                     yield Label("SETTINGS", classes="pane-title-text")
-                    with Horizontal(classes="settings-row"):
-                        yield Label("Encrypt local cache at rest")
-                        yield Switch(value=self.settings.encrypt_at_rest, id="settings-encrypt-switch")
-                    key_method_classes = "" if self.settings.encrypt_at_rest else "hidden"
-                    with RadioSet(id="settings-key-method", classes=key_method_classes):
-                        yield RadioButton(
-                            _KEY_METHOD_LABELS["passphrase"],
-                            value=(self.settings.key_method == "passphrase"),
-                            id="rb-passphrase",
-                        )
-                        yield RadioButton(
-                            _KEY_METHOD_LABELS["keyfile"],
-                            value=(self.settings.key_method == "keyfile"),
-                            id="rb-keyfile",
-                        )
-                    yield Button("Clear local cache now", id="settings-clear-cache")
-                    yield Static("", id="settings-cache-info", classes="muted")
-                    yield Label("AI provider (Ask pane)", classes="pane-title-text")
-                    with RadioSet(id="settings-ai-provider"):
-                        for label, pid in ask.PROVIDER_CHOICES:
-                            yield RadioButton(
-                                label, value=(self.settings.ai_provider == pid),
-                                id=f"rb-provider-{pid}",
-                            )
-                    with Horizontal(classes="settings-row"):
-                        yield Label("Nous API key")
-                        yield Input(
-                            value=self.settings.nous_api_key or "", password=True,
-                            placeholder="only needed for the Hermes provider",
-                            id="settings-nous-key",
-                        )
-                        yield Button("Save", id="settings-save-nous-key")
-                    yield Label("News feeds (RSS/Atom)", classes="pane-title-text")
-                    yield ListView(
-                        *[_feed_list_item(u) for u in self.settings.feed_urls],
-                        id="settings-feed-list",
-                    )
-                    with Horizontal(classes="settings-row"):
-                        yield Input(placeholder="https://example.com/feed.xml", id="settings-feed-url")
-                        yield Button("Add feed", id="settings-add-feed")
-                    yield Button("Remove selected feed", id="settings-remove-feed")
+                    with TabbedContent(id="settings-tabs"):
+                        with TabPane("General", id="settings-tab-general"):
+                            with VerticalScroll(id="settings-general-scroll"):
+                                with Horizontal(classes="settings-row"):
+                                    yield Label("Encrypt local cache at rest")
+                                    yield Switch(value=self.settings.encrypt_at_rest, id="settings-encrypt-switch")
+                                key_method_classes = "" if self.settings.encrypt_at_rest else "hidden"
+                                with RadioSet(id="settings-key-method", classes=key_method_classes):
+                                    yield RadioButton(
+                                        _KEY_METHOD_LABELS["passphrase"],
+                                        value=(self.settings.key_method == "passphrase"),
+                                        id="rb-passphrase",
+                                    )
+                                    yield RadioButton(
+                                        _KEY_METHOD_LABELS["keyfile"],
+                                        value=(self.settings.key_method == "keyfile"),
+                                        id="rb-keyfile",
+                                    )
+                                yield Button("Clear local cache now", id="settings-clear-cache")
+                                yield Static("", id="settings-cache-info", classes="muted")
+                        with TabPane("AI Provider", id="settings-tab-ai"):
+                            with VerticalScroll(id="settings-ai-scroll"):
+                                yield Label("AI provider (Ask pane)", classes="pane-title-text")
+                                with RadioSet(id="settings-ai-provider"):
+                                    for label, pid in ask.PROVIDER_CHOICES:
+                                        yield RadioButton(
+                                            label, value=(self.settings.ai_provider == pid),
+                                            id=f"rb-provider-{pid}",
+                                        )
+                                with Horizontal(classes="settings-row"):
+                                    yield Label("Nous API key")
+                                    yield Input(
+                                        value=self.settings.nous_api_key or "", password=True,
+                                        placeholder="only needed for the Hermes provider",
+                                        id="settings-nous-key",
+                                    )
+                                    yield Button("Save", id="settings-save-nous-key")
+                        with TabPane("News Feeds", id="settings-tab-feeds"):
+                            with VerticalScroll(id="settings-feeds-scroll"):
+                                yield Label("News feeds (RSS/Atom)", classes="pane-title-text")
+                                yield ListView(
+                                    *[_feed_list_item(u) for u in self.settings.feed_urls],
+                                    id="settings-feed-list",
+                                )
+                                with Horizontal(classes="settings-row"):
+                                    yield Input(placeholder="https://example.com/feed.xml", id="settings-feed-url")
+                                    yield Button("Add feed", id="settings-add-feed")
+                                yield Button("Remove selected feed", id="settings-remove-feed")
         with Vertical(id="help-bar"):
             yield Static("", id="help-context")
             yield Static(HELP_GLOBAL, id="help-global")
@@ -815,6 +857,7 @@ class GoogleTUI(App):
         if gen != self._mail_apply_gen:
             return  # superseded by a newer apply call
         _append_email_items(self.query_one("#email-list"), threads)
+        self._threads_cache = {t["threadId"]: t for t in threads}
 
     def _apply_mail_data(self, threads, events, tasks, tasklists) -> None:
         self._tasklists = tasklists
@@ -841,6 +884,7 @@ class GoogleTUI(App):
             return  # superseded by a newer _apply_mail_data call
 
         _append_email_items(self.query_one("#email-list"), threads)
+        self._threads_cache = {t["threadId"]: t for t in threads}
 
         event_list = self.query_one("#event-list")
         for e in events:
@@ -895,6 +939,12 @@ class GoogleTUI(App):
     def action_cycle_tab(self):      self._cycle_tab(1)
     def action_cycle_tab_back(self): self._cycle_tab(-1)
 
+    def _cycle_settings_tab(self, step: int) -> None:
+        tabs = self.query_one("#settings-tabs", TabbedContent)
+        current = tabs.active
+        idx = SETTINGS_TAB_ORDER.index(current) if current in SETTINGS_TAB_ORDER else 0
+        tabs.active = SETTINGS_TAB_ORDER[(idx + step) % len(SETTINGS_TAB_ORDER)]
+
     def on_tabbed_content_tab_activated(self, event: TabbedContent.TabActivated) -> None:
         if event.tabbed_content.id != "main-tabs":
             return
@@ -927,12 +977,16 @@ class GoogleTUI(App):
     def action_switch_left(self):
         if self._main_tabs().active == "tab-browser":
             self._browser_back()
+        elif self._main_tabs().active == "tab-settings":
+            self._cycle_settings_tab(-1)
         else:
             self._adjacent("left")
 
     def action_switch_right(self):
         if self._main_tabs().active == "tab-browser":
             self._browser_forward()
+        elif self._main_tabs().active == "tab-settings":
+            self._cycle_settings_tab(1)
         else:
             self._adjacent("right")
 
@@ -986,11 +1040,50 @@ class GoogleTUI(App):
         if tid:
             self.push_screen(ComposeModal(self.svc, tid, mode="forward"), self._on_compose_result)
 
+    def action_focus_label_select(self) -> None:
+        if self._main_tabs().active != "tab-mail" or PANE_IDS[self.active] != "email":
+            return
+        try:
+            sel = self.query_one("#email-label-select", Select)
+            sel.focus()
+            sel.expanded = True
+        except Exception:
+            pass
+
     def _require_online(self) -> bool:
         if not self._online:
             self.notify("Can't do that while offline", severity="warning")
             return False
         return True
+
+    # ---- email: Space = lightweight inline expand (NOT the full thread-tree
+    # UI — see ROADMAP's separate P2 "Threading depth" item). Mutates just the
+    # one highlighted ListItem's Label text in place; deliberately does NOT
+    # call ListView.clear()/repopulate (see AGENTS.md's ListView.clear() NOTE
+    # for why that's a trap this sidesteps entirely by not going there). ----
+    def _toggle_thread_expand(self, thread_id: str) -> None:
+        th = self._threads_cache.get(thread_id)
+        if not th:
+            return
+        if thread_id in self._expanded_thread_ids:
+            self._expanded_thread_ids.discard(thread_id)
+            text = _email_collapsed_line(th)
+        else:
+            self._expanded_thread_ids.add(thread_id)
+            snippet = (th.get("snippet") or "").strip()
+            if len(snippet) > 100:
+                snippet = snippet[:100].rstrip() + "…"
+            extra_parts = []
+            if snippet:
+                extra_parts.append(snippet)
+            if th.get("count", 1) > 1:
+                extra_parts.append(f"({th['count']} messages)")
+            extra = ("\n    " + "  ".join(extra_parts)) if extra_parts else ""
+            text = _email_collapsed_line(th) + extra
+        try:
+            self.query_one(f"#{_mk_id('t', thread_id)} Label", Label).update(text)
+        except Exception:
+            pass
 
     # ---- tasks ----
     def _selected_task(self) -> dict | None:
@@ -1049,7 +1142,7 @@ class GoogleTUI(App):
         elif pane == "email":
             tid = self._selected_thread()
             if tid:
-                self.push_screen(ThreadModal(self.svc, tid), self._on_thread_modal_result)
+                self._toggle_thread_expand(tid)
         elif pane == "events":
             eid = self._highlighted_event_id()
             if eid:
@@ -1982,7 +2075,12 @@ class ThreadModal(ModalScreen):
             yield Button("Close", id="close")
 
     def on_mount(self) -> None:
-        self.query_one("#thread-body", RichLog).write("Loading…")
+        # scroll_end=False on every write() below: RichLog defaults to
+        # auto_scroll=True (scrolls to the end on every write), which landed
+        # an opened thread at the BOTTOM of the message instead of the top —
+        # a live-testing bug report. Message ORDER (oldest-first, from
+        # gauth.get_thread) is unchanged/undecided — see AGENTS.md.
+        self.query_one("#thread-body", RichLog).write("Loading…", scroll_end=False)
         # gauth.get_thread is a blocking synchronous network call (same as
         # every other gauth-touching method in this app) — must run on a
         # worker THREAD, not directly in on_mount, both so it doesn't freeze
@@ -2009,12 +2107,12 @@ class ThreadModal(ModalScreen):
             txt.append(f"From: {m['from']}\nDate: {m['date']}\nSubject: {m['subject']}\n\n{m['body'][:4000]}\n{'='*60}")
         body = self.query_one("#thread-body", RichLog)
         body.clear()
-        body.write("\n".join(txt))
+        body.write("\n".join(txt), scroll_end=False)
 
     def _apply_error(self, error: Exception) -> None:
         body = self.query_one("#thread-body", RichLog)
         body.clear()
-        body.write(f"Couldn't load this thread:\n{error}")
+        body.write(f"Couldn't load this thread:\n{error}", scroll_end=False)
         self.app.notify(f"Thread load error: {error}", severity="error")
 
     def on_button_pressed(self, e: Button.Pressed) -> None:

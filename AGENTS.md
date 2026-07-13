@@ -85,9 +85,19 @@ of blocking on that.
   read-only while offline," not a sync engine.
 
 Mail-tab panes:
-- **Email** (left, full height): threaded Gmail list, lightbar. `Enter`/
-  `Space` opens thread; `r`/`a`/`f` reply / reply-all / forward (compose
-  modal). Unread threads prefixed with a bullet `•`.
+- **Email** (left, full height): threaded Gmail list, lightbar. `Enter`
+  opens the full thread (`ThreadModal`); `Space` expands/collapses the
+  highlighted row IN PLACE (mutates just that one `ListItem`'s `Label` text
+  — see `_toggle_thread_expand` — to append the thread's snippet, and a
+  `(N messages)` note if `count > 1`; does NOT open `ThreadModal`, and does
+  NOT `ListView.clear()`/repopulate). `l` focuses `Select#email-label-select`
+  and opens its dropdown (`action_focus_label_select`). `r`/`a`/`f` reply /
+  reply-all / forward (compose modal). Unread threads prefixed with a
+  bullet `•`. `self._threads_cache: dict[str, dict]` (threadId -> thread
+  dict) backs the expand lookup, populated everywhere `_apply_email_list`/
+  `_apply_mail_data_async` populate the list; `self._expanded_thread_ids:
+  set[str]` tracks which threads are currently expanded and naturally
+  resets whenever the list is torn down and repopulated (no persistence).
 - **Events** (right top, renamed from "Calendar" to avoid clashing with the
   Calendar tab): next ~3 weeks of events, lightbar, `Enter`/`Space` → detail.
 - **Tasks** (right middle): all Google Task lists combined, lightbar.
@@ -183,17 +193,33 @@ Other tabs:
   (confirmed empirically — its tag-detection regex doesn't even touch a
   bracketed phrase containing a space, and `Content.from_markup()` still ate
   it), so `markup=False` is the correct fix, not escaping.
-- **Settings tab** (`Ctrl+6`): `Switch#settings-encrypt-switch` (encrypt-at-rest
-  on/off) + `RadioSet#settings-key-method` (passphrase vs. keyfile, hidden via
-  `.hidden` CSS class when encryption is off) + a "Clear local cache now"
-  button + a `Static` showing the cache file's path/size (see §1a for the
-  encryption model this drives) + a News-feed subscription manager
-  (`ListView#settings-feed-list` + `Input#settings-feed-url` +
-  `Button#settings-add-feed` + `Button#settings-remove-feed`) that edits
-  `Settings.feed_urls` directly (append/remove + `save_settings`) and kicks
-  a one-off background fetch (`_fetch_and_merge_one_feed`, `thread=True`,
-  group `"news-fetch-one"`) for a newly-added feed so the News tab isn't
-  empty for it until the next full refresh.
+- **Settings tab** (`Ctrl+6`): nested `TabbedContent#settings-tabs` (mirrors
+  the Calendar tab's `#cal-tabs` Month/Week pattern), three sub-tabs,
+  `Alt+Left/Right` cycles between them while the Settings tab is active
+  (`_cycle_settings_tab`, modeled on `_cycle_tab`, targets
+  `SETTINGS_TAB_ORDER = ["settings-tab-general", "settings-tab-ai",
+  "settings-tab-feeds"]` instead of `TAB_ORDER`). Each sub-tab's content is
+  wrapped in its own `VerticalScroll` (independent scrolling per section,
+  not one giant outer scroll around the whole `TabbedContent`):
+  - `TabPane#settings-tab-general`: `Switch#settings-encrypt-switch`
+    (encrypt-at-rest on/off) + `RadioSet#settings-key-method` (passphrase
+    vs. keyfile, hidden via `.hidden` CSS class when encryption is off) + a
+    "Clear local cache now" button + a `Static` showing the cache file's
+    path/size (see §1a for the encryption model this drives).
+  - `TabPane#settings-tab-ai`: `RadioSet#settings-ai-provider` (AI provider
+    for the Hermes Ask pane) + `Input#settings-nous-key` /
+    `Button#settings-save-nous-key`.
+  - `TabPane#settings-tab-feeds`: a News-feed subscription manager
+    (`ListView#settings-feed-list` + `Input#settings-feed-url` +
+    `Button#settings-add-feed` + `Button#settings-remove-feed`) that edits
+    `Settings.feed_urls` directly (append/remove + `save_settings`) and kicks
+    a one-off background fetch (`_fetch_and_merge_one_feed`, `thread=True`,
+    group `"news-fetch-one"`) for a newly-added feed so the News tab isn't
+    empty for it until the next full refresh.
+  - A 4th sub-tab (`settings-tab-search`, Browser search providers) is a
+    planned follow-up — not added here, but the structure (a plain sibling
+    `TabPane` inside `#settings-tabs`) makes that a drop-in addition; extend
+    `SETTINGS_TAB_ORDER` too if/when it lands.
 
 ## 2. Key bindings
 
@@ -202,10 +228,11 @@ Other tabs:
 | `Ctrl+1..6` | switch **tab** (Mail / Calendar / Drive / Browser / News / Settings) |
 | `Ctrl+Left/Right` | cycle tabs — the reliable fallback for `Ctrl+1..6` (see caveat below) |
 | `Alt+1..4` | jump to a Mail **pane** (Email / Events / Tasks / Hermes); switches to the Mail tab first if needed |
-| `Alt+Left/Right/Up/Down` | move to the adjacent Mail pane (see `PANE_ADJACENCY` below) |
+| `Alt+Left/Right/Up/Down` | move to the adjacent Mail pane (see `PANE_ADJACENCY` below) on the Mail tab; back/forward through session history on the Browser tab; cycle Settings sub-tabs (General/AI Provider/News Feeds) on the Settings tab (`Alt+Up/Down` still only does Mail-pane adjacency — no vertical cycling defined for Settings) |
 | `Tab` / `Shift+Tab` | cycle Mail panes (no-op outside the Mail tab) |
+| `l` | focus + open `Select#email-label-select`'s dropdown (Email pane only — no-op elsewhere) |
 | `r` `a` `f` | reply / reply-all / forward (Email pane) — blocked with a warning notify while offline |
-| `Space` | contextual (`action_context_space`): expand thread (Email), toggle complete (Tasks — blocked while offline), event detail (Events); no-op elsewhere |
+| `Space` | contextual (`action_context_space`): expand/collapse the highlighted row in place (Email — see `_toggle_thread_expand`, NOT `ThreadModal`), toggle complete (Tasks — blocked while offline), event detail (Events); no-op elsewhere |
 | `Enter` | open selected item's detail (`ListView.Selected` / `DataTable.CellSelected`) |
 | `[` `]` | previous / next month, or week if the Week sub-tab is active (Calendar tab only — no-op on other tabs) |
 | `Ctrl+R` | reconnect / refresh all data (same code path as the background sync on startup) |
@@ -248,12 +275,18 @@ ListItem. A `ListView` only has a `highlighted_child` after the cursor has
 moved via key/message (e.g. `pilot.press("down")`), not by setting the
 attribute directly. This matters for tests — see §6.
 
-NOTE on `TabbedContent`: there are TWO `TabbedContent` widgets in the DOM
-(`#main-tabs` outer, `#cal-tabs` nested inside the Calendar tab). A bare
+NOTE on `TabbedContent`: there are THREE `TabbedContent` widgets in the DOM
+(`#main-tabs` outer, `#cal-tabs` nested inside the Calendar tab,
+`#settings-tabs` nested inside the Settings tab). A bare
 `self.query_one(TabbedContent)` raises `TooManyMatches` — always query by ID
-(`self._main_tabs()` helper, or `self.query_one("#cal-tabs", TabbedContent)`).
+(`self._main_tabs()` helper, or `self.query_one("#cal-tabs", TabbedContent)`,
+or `self.query_one("#settings-tabs", TabbedContent)`).
 `on_tabbed_content_tab_activated` must check `event.tabbed_content.id` before
-acting, since both post the same `TabbedContent.TabActivated` message.
+acting, since all three post the same `TabbedContent.TabActivated` message —
+the existing guard (`if event.tabbed_content.id != "main-tabs": return`)
+already correctly no-ops for `#settings-tabs` sub-tab activation the same
+way it already did for `#cal-tabs`; no new branch was needed when
+`#settings-tabs` was added.
 
 NOTE on `TabPane`/`Tab` titles: pass a **markup string** (e.g.
 `"Mail [dim]¹[/dim]"`), not a `rich.text.Text` object. Textual 8.2.8's
@@ -261,6 +294,25 @@ NOTE on `TabPane`/`Tab` titles: pass a **markup string** (e.g.
 the input is already a Textual `Content` instance — a Rich `Text` object hits
 `Content.from_markup()` too and blows up (`AttributeError: 'Text' object has
 no attribute 'translate'`) instead of being passed through.
+
+NOTE on overriding a Textual-internal `_on_xxx` handler (e.g. `Header.
+_on_click`): a bare no-op override in a subclass does **NOT** suppress the
+base class's handler. `MessagePump._get_dispatch_methods()` walks the
+FULL MRO and, for naming-convention handlers (`_on_click` etc., as opposed
+to `@on`-decorated ones), invokes the method from **every** class in the
+MRO that defines one — there's no dedup, unlike the decorated-handler path.
+Confirmed empirically: `class GtHeader(Header): def _on_click(self): pass`
+still let `Header._on_click`'s `toggle_class("-tall")` run right after it,
+because both `GtHeader._on_click` and `Header._on_click` get dispatched for
+the same click. The actual fix is `event.prevent_default()` — its docstring
+says exactly "prevent handlers in any base classes from being called", and
+`_get_dispatch_methods` checks `message._no_default_action` at the top of
+each MRO-loop iteration and `break`s before reaching the base class's
+handler. `main.py`'s `GtHeader` (disables `Header`'s click-to-grow-3-rows
+behavior) uses this pattern; if you ever override another built-in
+`_on_xxx` handler, use `event.prevent_default()`, not a no-op body, and
+verify with a live pilot click (see the `pilot.click` offset gotcha in §6)
+rather than trusting it by inspection.
 
 NOTE on `App.query_one`/`App.query` and screens: they resolve against
 `self.screen`, i.e. the CURRENTLY ACTIVE (top-of-stack) screen — not the base
@@ -368,6 +420,10 @@ user_cache_dir("google-tui")/cache.db`; `KEY_FILE_PATH` and `SETTINGS_PATH`
   client isn't shared across worker threads.
 - `list_threads(svc, max_results, q)` — Gmail threads, formats `metadata`
   then `full` per thread for snippet/body/headers. Unread via `UNREAD` label.
+  Each returned dict also carries `"snippet"` (Gmail message resources
+  include a top-level `snippet` regardless of `format`, so this is free —
+  no extra API call); backs the Email pane's Space-to-expand inline preview
+  (`main.py`'s `_toggle_thread_expand`).
 - `list_events(svc, days)` — Calendar `events.list` over next `days` days.
 - `events_between(svc, start, end)` — generic date-range `events.list`;
   `month_events(svc, year, month)` and the Calendar tab's week grid both call
@@ -403,7 +459,12 @@ user_cache_dir("google-tui")/cache.db`; `KEY_FILE_PATH` and `SETTINGS_PATH`
 - `GoogleTUI(App)` — main screen. Holds `self.svc`, `self.settings`,
   `self._cache` (`Cache | None`, built once the encryption key is resolved),
   `self._online`, `self._tasks_cache`, `self._events_cache` (Mail-tab
-  upcoming events), `self._cal_by_day` / `self._cal_week_cells`
+  upcoming events), `self._threads_cache` (threadId -> thread dict,
+  populated everywhere `_apply_email_list`/`_apply_mail_data_async` are —
+  backs the Email pane's Space-to-expand lookup),
+  `self._expanded_thread_ids` (`set[str]`, which threads are currently
+  shown expanded; resets naturally on every list repopulate, no
+  persistence), `self._cal_by_day` / `self._cal_week_cells`
   (Calendar-tab month/week grids), `self._drive_files` (Drive tab) — all
   populated so modal/preview reads don't need a fresh network round trip.
 - `LoadingModal` — pushed only on a genuine first run (empty cache), by
@@ -439,7 +500,14 @@ user_cache_dir("google-tui")/cache.db`; `KEY_FILE_PATH` and `SETTINGS_PATH`
 - Module-level helpers: `_fmt_date(s)`, `_mk_id`, `_feed_list_item(url)`
   (News-feed subscription row, stashes the raw URL as a `.feed_url`
   attribute since `_mk_id` can't be reversed for a URL-shaped id),
-  `_tab_label(text, num)`, `_event_day(e)`, `_is_previewable(mime)`.
+  `_tab_label(text, num)`, `_event_day(e)`, `_is_previewable(mime)`,
+  `_email_collapsed_line(th)` (the one-line collapsed row format shared by
+  `_append_email_items` and `_toggle_thread_expand`'s collapse path).
+- `GtHeader(Header)` — module-level class (not a method), disables
+  Textual's built-in click-to-grow-3-rows `Header` behavior via
+  `event.prevent_default()` in an overridden `_on_click`; see the MRO-
+  dispatch NOTE in §2 for why a naive no-op override doesn't work. Used in
+  `compose()` in place of a bare `Header()`.
 
 ## 4. Auth & secrets
 
@@ -506,8 +574,20 @@ Gotchas that cost time before:
 - Do NOT assert on `ListView.highlighted`/`highlighted_child` after setting the
   attribute directly (read-only setters differ between versions). Drive selection
   through key presses instead.
-- There are two `TabbedContent`s in the DOM (`#main-tabs`, `#cal-tabs`) — use
-  `app.query_one("#main-tabs")`, never a bare type query (see §2).
+- There are three `TabbedContent`s in the DOM (`#main-tabs`, `#cal-tabs`,
+  `#settings-tabs`) — use `app.query_one("#main-tabs")`, never a bare type
+  query (see §2).
+- `app.query_one`/`app.query` resolve against `self.screen` (see the NOTE in
+  §2) — a pushed `ModalScreen` (e.g. `ThreadModal`) means widgets like
+  `#thread-body` must be reached via `app.screen.query_one(...)`, not
+  `app.query_one(...)`, while that modal is on top of the stack.
+- `pilot.click(SomeWidget)` with no `offset` clicks the widget's top-left
+  corner, not its visual center — cost real debugging time once already on
+  `GtHeader`/`Header`: the default offset landed on `HeaderIcon` (docked
+  left, width 8), whose own `on_click` calls `event.stop()` and opens the
+  command palette, so the click never even reached `Header`'s own handler —
+  a test that "passed" for the wrong reason. Pass an explicit `offset=`
+  (e.g. `(50, 0)`) to land on the part of the widget actually being tested.
 - The Hermes Ask answer takes ~1s to stream into the RichLog; sleep 2s before
   asserting log line count.
 - Run each `GoogleTUI()` test scenario in its OWN process (`python
