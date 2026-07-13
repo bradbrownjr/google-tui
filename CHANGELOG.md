@@ -5,6 +5,27 @@ touched and any breaking notes.
 
 ## [2026-07-13]
 
+### Fixed
+- **`ThreadModal` crashed the whole app on any network error while opening a
+  thread** (e.g. `SSLError: [SSL: RECORD_LAYER_FAILURE]` seen live while the
+  background reconnect/live-refresh was still in flight on app startup).
+  `on_mount` called the blocking `gauth.get_thread`/`gauth.mark_read`
+  synchronously on the main thread with no `try`/`except` — the one modal in
+  the app that fetches live data in `on_mount` instead of reading from an
+  already-populated dict (`EventModal`/`TaskModal` don't hit the network at
+  all), and the only gauth call anywhere without the fetch/apply thread split
+  the rest of the app uses (see AGENTS.md §2's NOTE on the startup/refresh
+  worker). Fixed by splitting into `_fetch_thread` (runs via
+  `self.run_worker(..., thread=True)`) and `_apply_thread`/`_apply_error`
+  (posted back via `self.app.call_from_thread(...)` — `call_from_thread`
+  lives on `App`, not `Screen`, so a `ModalScreen` worker must reach through
+  `self.app`). A failed fetch now shows the error inline in the modal body
+  plus a `notify(severity="error")` instead of taking down the process;
+  `mark_read` failures are swallowed (best-effort, not worth a second error).
+  Verified via two headless `run_test` pilots (mocked `gauth.get_thread`
+  raising and succeeding) — not a full offline-body-caching fix, that's
+  still ROADMAP P4's separate "Cache email bodies for offline reading" item.
+
 ### Added
 - **News tab — RSS/Atom reader + feed subscription management (P1 M3).**
   Adds a sixth full-width tab (`Ctrl+5`, `TAB_ORDER` = `[..., "tab-browser",

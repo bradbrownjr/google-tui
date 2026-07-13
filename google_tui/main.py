@@ -1982,14 +1982,40 @@ class ThreadModal(ModalScreen):
             yield Button("Close", id="close")
 
     def on_mount(self) -> None:
-        msgs = gauth.get_thread(self.svc, self.thread_id)
+        self.query_one("#thread-body", RichLog).write("Loading…")
+        # gauth.get_thread is a blocking synchronous network call (same as
+        # every other gauth-touching method in this app) — must run on a
+        # worker THREAD, not directly in on_mount, both so it doesn't freeze
+        # the UI and so a transient network error (e.g. an SSL hiccup while
+        # the app's own background reconnect is still in flight) is caught
+        # and shown as a notify instead of crashing the whole app.
+        self.run_worker(self._fetch_thread, thread=True, exclusive=True)
+
+    def _fetch_thread(self) -> None:
+        try:
+            msgs = gauth.get_thread(self.svc, self.thread_id)
+        except Exception as e:
+            self.app.call_from_thread(self._apply_error, e)
+            return
+        self.app.call_from_thread(self._apply_thread, msgs)
+        try:
+            gauth.mark_read(self.svc, self.thread_id)
+        except Exception:
+            pass  # best-effort — not worth surfacing a separate error for this
+
+    def _apply_thread(self, msgs: list[dict]) -> None:
         txt = []
         for m in msgs:
             txt.append(f"From: {m['from']}\nDate: {m['date']}\nSubject: {m['subject']}\n\n{m['body'][:4000]}\n{'='*60}")
-        body = self.query_one("#thread-body")
+        body = self.query_one("#thread-body", RichLog)
         body.clear()
         body.write("\n".join(txt))
-        gauth.mark_read(self.svc, self.thread_id)
+
+    def _apply_error(self, error: Exception) -> None:
+        body = self.query_one("#thread-body", RichLog)
+        body.clear()
+        body.write(f"Couldn't load this thread:\n{error}")
+        self.app.notify(f"Thread load error: {error}", severity="error")
 
     def on_button_pressed(self, e: Button.Pressed) -> None:
         if e.button.id == "close":
