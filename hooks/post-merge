@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# Auto-syncs the venv's installed packages after `git pull`/`git merge` changes
+# pyproject.toml, so a newly-declared dependency (e.g. feedparser, added for
+# the News tab) doesn't crash the next `google-tui` launch with
+# ModuleNotFoundError instead of being picked up silently.
+#
+# Not active by default — git hooks aren't tracked/installed by cloning.
+# Activate once per clone:
+#   git config core.hooksPath hooks
+set -e
+
+repo_root="$(git rev-parse --show-toplevel)"
+venv="$repo_root/.venv"
+
+if [ ! -d "$venv" ]; then
+    exit 0  # no venv yet — first-time setup (README) handles this itself
+fi
+
+changed="$(git diff --name-only HEAD@{1} HEAD 2>/dev/null || true)"
+if ! echo "$changed" | grep -qx "pyproject.toml"; then
+    exit 0  # pyproject.toml untouched by this pull — nothing to sync
+fi
+
+echo "pyproject.toml changed — syncing google-tui's venv dependencies..."
+"$venv/bin/pip" install -e "$repo_root" --quiet
+echo "Done."

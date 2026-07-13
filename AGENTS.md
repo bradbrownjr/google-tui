@@ -466,6 +466,17 @@ google-tui                     # works from ANY shell (see §7)
 shell script that `exec`s `/home/bradb/google-tui/.venv/bin/python -m google_tui`.
 If the project folder moves, update the `VENV=` path in that launcher.
 
+**Keeping venv deps in sync across machines**: `pip install -e .` (README
+Setup) only installs what `pyproject.toml` lists AT THAT MOMENT — a later
+`git pull` that adds a new dependency (e.g. `feedparser` for the News tab,
+P1 M3) does NOT retroactively install it, and the next launch crashes with
+`ModuleNotFoundError` instead of failing informatively. Fixed with a tracked
+`hooks/post-merge` hook (activate once per clone: `git config
+core.hooksPath hooks`, also in the README) that re-runs `pip install -e .`
+automatically whenever a pull touches `pyproject.toml`. If a machine's
+`google-tui` fails on import with a missing module right after a pull, check
+whether `core.hooksPath` is set there before assuming something else broke.
+
 ## 6. Testing without a TTY
 
 Textual needs a real terminal, so headless tests use Textual's `run_test`

@@ -110,8 +110,18 @@ cd google-tui
 python3 -m venv --system-site-packages .venv
 . .venv/bin/activate
 pip install -e .
+git config core.hooksPath hooks   # one-time: auto-installs new deps on `git pull`
 google-tui          # launches the TUI
 ```
+
+### Updating
+
+`git pull` as usual. The `core.hooksPath` line above activates a tracked
+`post-merge` hook (`hooks/post-merge`) that re-runs `pip install -e .`
+automatically whenever a pull changes `pyproject.toml` — so a newly-declared
+dependency (e.g. `feedparser` for the News tab) is installed before you next
+launch `google-tui`, instead of crashing with `ModuleNotFoundError`. If you
+cloned before this existed, run the `git config` line once to catch up.
 
 ## Project layout
 
