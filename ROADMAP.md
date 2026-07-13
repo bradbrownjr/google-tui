@@ -17,47 +17,22 @@ just checking it off here, so ROADMAP.md only ever shows what's still open.
 
 ## P1 — Major Feature Epics (ordered build sequence)
 
-Eight epics remaining from the 2026-07-13 planning pass (Labels-as-folders
-and multi-provider AI/onboarding shipped — see CHANGELOG), ordered so each
-one's output is available to the epics that build on it (shared render
-module before its consumers; config/docs before features that add new
-scopes). The repo screenshot (M8) is deliberately LAST — take it once,
-after the major UI changes (M3, M4, M6, M7 all add or reshape tabs) have
-landed, so it's a current snapshot instead of one that goes stale after
-the next epic. Each step is tagged with the Claude Code agent recommended
-for a future session tackling it — **Explore** for read-only research,
-**Plan** for architecture/design before non-trivial code,
-**general-purpose** for the actual multi-step implementation,
-**claude-code-guide** where the step is specifically about the Claude
-Code CLI/SDK itself. Small one-shot steps with no real research/design
-component are left untagged (just do them).
+Seven epics remaining from the 2026-07-13 planning pass (Labels-as-folders,
+multi-provider AI/onboarding, and the Google Console setup guide shipped —
+see CHANGELOG), ordered so each one's output is available to the epics
+that build on it (shared render module before its consumers). The repo
+screenshot (M7) is deliberately LAST — take it once, after the major UI
+changes (M2, M3, M5, M6 all add or reshape tabs) have landed, so it's a
+current snapshot instead of one that goes stale after the next epic. Each
+step is tagged with the Claude Code agent recommended for a future
+session tackling it — **Explore** for read-only research, **Plan** for
+architecture/design before non-trivial code, **general-purpose** for the
+actual multi-step implementation, **claude-code-guide** where the step is
+specifically about the Claude Code CLI/SDK itself. Small one-shot steps
+with no real research/design component are left untagged (just do them).
 
-### M1 — Google Cloud Console setup guide + product recommendations
-Pairs directly with the onboarding wizard's inline instructions
-(`google_tui/setup_instructions.py`) — write once, reuse as both the
-wizard's text and a standalone `SETUP.md`.
-- [ ] Confirm the current console flow live — Google merged the old
-  "OAuth consent screen" into **Google Auth Platform** (Branding /
-  Audience / Clients tabs under APIs & Services). *(Explore, via
-  WebSearch/WebFetch since this UI has moved before and will again)*
-- [ ] Write the step-by-step guide: create a project → enable APIs
-  (Gmail, Calendar, Drive, Tasks, People — add Routes once M7 lands) →
-  configure Auth Platform branding, scopes, and test users (External +
-  Testing mode caps at 100 test users and expires tokens every 7 days
-  unless the app is published/verified — call this out explicitly) →
-  create a **Desktop app** OAuth client (no redirect URI juggling) →
-  download the client secret → run the local auth flow once to mint
-  `google_token.json`. *(general-purpose)*
-- [ ] Recommend additional products in the doc: **People API** (Contacts,
-  M6) and **Routes API** (Navigation, M7 — the maintained replacement
-  for the now-deprecated Directions API; pair with **Places API** for
-  address/place lookup). Flag clearly that Maps Platform is the first API
-  in this project that requires enabling **Cloud Billing** on the
-  project — Workspace APIs (Gmail/Calendar/Drive/Tasks/People) are free,
-  Maps Platform is not. *(general-purpose)*
-
-### M2 — Shared HTML/Gopher/Gemini rendering module
-The reusable core: Browser (M3), News (M4), and HTML email (M5) all
+### M1 — Shared HTML/Gopher/Gemini rendering module
+The reusable core: Browser (M2), News (M3), and HTML email (M4) all
 consume this instead of each rolling their own parser.
 - [ ] Audit `bpq-apps/apps/htmlview.py` (nav/content link separation,
   pagination) and `apps/gopher.py` for what ports cleanly vs. what's
@@ -71,7 +46,7 @@ consume this instead of each rolling their own parser.
   Gemtext parser (gemini:// markup isn't in bpq-apps yet).
   *(general-purpose)*
 
-### M3 — Browser tab (Web + Gopher + Gemini + Search)
+### M2 — Browser tab (Web + Gopher + Gemini + Search)
 - [ ] Research the Gemini protocol (TLS handshake, TOFU cert trust,
   `gemini://` URLs, status-code scheme) — no existing client to port, so
   this one's from spec. *(Explore)*
@@ -80,23 +55,23 @@ consume this instead of each rolling their own parser.
   standalone Search tab folds into this one as a mode rather than staying
   separate. *(Plan)*
 - [ ] Implement HTTP(S) fetch, a ported `gopher://` client, and a new
-  `gemini://` client, all rendering through M2; retire the Search tab,
+  `gemini://` client, all rendering through M1; retire the Search tab,
   keeping `hermes web search` reachable as a Browser action.
   *(general-purpose)*
 
-### M4 — News tab (RSS/Atom)
+### M3 — News tab (RSS/Atom)
 - [ ] Implement feed fetch (`feedparser`) + an entry list using the same
   lightbar `ListView` pattern as the Email pane, opening each entry
-  through M2's renderer. *(general-purpose)*
+  through M1's renderer. *(general-purpose)*
 - [ ] Feed subscription management (add/remove URLs) in Settings.
   *(general-purpose)*
 
-### M5 — Rich HTML email rendering
-- [ ] Route HTML-heavy Gmail bodies through M2's renderer inside
+### M4 — Rich HTML email rendering
+- [ ] Route HTML-heavy Gmail bodies through M1's renderer inside
   `ThreadModal` instead of today's plain-text stripping.
   *(general-purpose)*
 
-### M6 — Contacts tab + fuzzy lookup in Compose
+### M5 — Contacts tab + fuzzy lookup in Compose
 - [ ] Research the People API (`people.connections.list`, `otherContacts`,
   scopes, quota). *(Explore)*
 - [ ] Implement `gauth` contacts helpers, a fuzzy-match (e.g. `rapidfuzz`)
@@ -104,20 +79,20 @@ consume this instead of each rolling their own parser.
   Contacts tab (list/search/detail). This also delivers the long-standing
   "email compose from scratch" item below. *(general-purpose)*
 
-### M7 — Navigation tab
+### M6 — Navigation tab
 - [ ] Confirm the Routes API request/response shape, quota, and billing
-  setup (M1 already flagged that this needs Cloud Billing enabled).
-  *(Explore)*
+  setup (SETUP.md §6 already flagged that this needs Cloud Billing
+  enabled). *(Explore)*
 - [ ] Design a printable, MapQuest-style itinerary view (step list +
   summary) — "print" in a TUI means export to text/file, not literal
   printing. *(Plan)*
-- [ ] Implement origin/destination input (reusing M6's fuzzy lookup where
+- [ ] Implement origin/destination input (reusing M5's fuzzy lookup where
   it helps), the Routes API call, and itinerary render + text export.
   *(general-purpose)*
 
-### M8 — Repo screenshot
+### M7 — Repo screenshot
 Last, on purpose — a single current snapshot taken once the major UI
-work above (M3 Browser, M4 News, M6 Contacts, M7 Navigation) has landed,
+work above (M2 Browser, M3 News, M5 Contacts, M6 Navigation) has landed,
 rather than one that goes stale after the next epic.
 - [ ] Build a fake dataset (dummy threads/events/tasks/Drive files, zero
   real PII) and drive the app against it with the existing `run_test`

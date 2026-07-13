@@ -1,0 +1,134 @@
+# SETUP.md — Google Cloud Console walkthrough for google-tui
+
+This is the full walkthrough. The in-app onboarding wizard
+(`google_tui/setup_instructions.py`) shows a condensed version of the same
+steps when it detects nothing is configured yet — this file is the
+detailed version, plus the "why" behind each step.
+
+## 1. Create a Google Cloud project
+
+1. Go to [console.cloud.google.com](https://console.cloud.google.com/) and
+   sign in with the Google account you want google-tui to access.
+2. Top bar → project picker → **New Project**. Any name is fine (e.g.
+   "google-tui"). You don't need an Organization.
+
+Everything below happens inside that project — check the project picker
+at the top of the console if something looks missing; it's a common trap
+to end up creating credentials in the wrong project.
+
+## 2. Enable the APIs you want google-tui to use
+
+Left sidebar → **APIs & Services** → **Enabled APIs & services** → **+
+Enable APIs and Services**, then search for and enable each of these:
+
+| API | Used for |
+|---|---|
+| **Gmail API** | Mail tab |
+| **Google Calendar API** | Calendar tab |
+| **Google Drive API** | Drive tab |
+| **Tasks API** | Tasks pane |
+| **People API** | Contacts tab (planned — see ROADMAP) |
+| **Routes API** | Navigation tab (planned — see ROADMAP; this one needs billing, see §6) |
+
+All of these are free within Google's normal per-user quotas except
+Routes API — see §6 before enabling it.
+
+## 3. Configure the OAuth branding (Google Auth Platform)
+
+Google folded what used to be called the "OAuth consent screen" into a
+section now named **Google Auth Platform**. If you've used an older
+Google Cloud tutorial, this is the same place under a new name.
+
+1. **APIs & Services** → **Google Auth Platform** → **Branding**. If you
+   see "Google Auth Platform not configured yet", click **Get Started**.
+2. App name: anything (e.g. "google-tui"). Support email: your own email
+   is fine for a personal tool.
+3. User type: **External** (Internal requires a Google Workspace
+   organization — most personal Gmail accounts don't have one available).
+4. Save through the wizard; you don't need to fill in scopes here for a
+   personal tool — they're requested at auth time instead.
+
+## 4. Add yourself as a test user
+
+**Google Auth Platform** → **Audience**:
+
+- Publishing status: leave as **Testing**.
+- Under **Test users**, add your own Google account's email address.
+
+**What this means in practice:** while the app is in Testing status, only
+the test users you list can complete the OAuth flow, and Google expires
+each test user's authorization (and the refresh token that comes with it)
+**7 days** after they consent. For a personal single-user CLI tool this
+is the normal, expected setup — you'll just need to re-run the local auth
+flow (step 6) roughly weekly, or whenever google-tui reports an expired
+token. Switching to "In production" removes the 7-day cap, but Gmail's
+scopes are considered "restricted," so publishing may prompt Google's
+formal verification review — usually more overhead than it's worth for a
+tool only you use.
+
+## 5. Create an OAuth client
+
+**Google Auth Platform** → **Clients** → **Create Client**:
+
+- Application type: **Desktop app**. (Desktop apps don't need a redirect
+  URI configured — the simplest option for a local CLI/TUI tool.)
+- Name: anything.
+- Click **Create**, then **Download JSON** — this is your client secret
+  file. Keep it out of version control (it's already covered by
+  `.gitignore`'s `*.json.bak`/token patterns — double check before
+  committing anything from this step).
+
+## 6. (Optional) Routes API and billing
+
+Routes API — used by the planned Navigation tab — is part of **Google
+Maps Platform**, which is billed, unlike the Workspace APIs above. If you
+want driving directions:
+
+1. **Billing** (left sidebar) → link a billing account to this project.
+   Google Maps Platform has a recurring free monthly credit that covers
+   light personal use, but a billing account must be attached regardless.
+2. Enable **Routes API** as in §2.
+3. Optionally enable **Places API** too, if you want to type addresses by
+   name instead of exact coordinates.
+
+Skip this section entirely if you don't need the Navigation tab — every
+other API in this project is free.
+
+## 7. Run the local auth flow to mint a token
+
+google-tui reads Google credentials from `~/.hermes/google_token.json` —
+a small JSON file with an access token, a `refresh_token`, and the scopes
+you authorized (see `google_tui/gauth.py`). Use the client secret from
+step 5 to run any standard Google OAuth "installed app" flow once (for
+example, the `google-auth-oauthlib` `InstalledAppFlow.run_local_server()`
+helper) requesting these scopes:
+
+```
+https://www.googleapis.com/auth/gmail.modify
+https://www.googleapis.com/auth/calendar
+https://www.googleapis.com/auth/drive
+https://www.googleapis.com/auth/tasks
+https://www.googleapis.com/auth/contacts.readonly   # once Contacts/People lands
+```
+
+Save the resulting credentials as `~/.hermes/google_token.json`. Once
+that file exists, launch `google-tui` — the onboarding wizard won't
+appear again for the Google side of setup.
+
+## 8. AI provider setup (Ask pane)
+
+Separate from the Google side — see `google_tui/setup_instructions.py`'s
+`AI_PROVIDER_SETUP_STEPS`, or just open Settings in the app (`Ctrl+5`) and
+pick a provider:
+
+- **Hermes** (default): paste a Nous API key into Settings, or set
+  `api_key:` in `~/.hermes/config.yaml`.
+- **Claude Code**: install the `claude` CLI and run `claude` once
+  interactively to log in.
+- **opencode**: install the `opencode` CLI and configure it per
+  [opencode.ai/docs](https://opencode.ai/docs/).
+- **Gemini CLI**: install the `gemini` CLI and log in.
+
+Whichever you pick, google-tui builds your Google context locally (recent
+email/events) and hands it to that provider as part of the prompt — no
+separate Google integration needed inside the AI CLI itself.

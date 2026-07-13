@@ -6,6 +6,20 @@ touched and any breaking notes.
 ## [2026-07-13]
 
 ### Added
+- **`SETUP.md` — Google Cloud Console walkthrough (P1 feature epic).**
+  Step-by-step guide: create a project, enable Gmail/Calendar/Drive/Tasks/
+  People/Routes APIs, configure the OAuth branding (Google rebranded the
+  old "OAuth consent screen" into **Google Auth Platform** — Branding/
+  Audience/Clients tabs, confirmed live via search since this UI moves),
+  add yourself as a test user (flags the real caveat: Testing-mode tokens
+  expire every 7 days unless the app is published/verified), create a
+  Desktop-app OAuth client, and run the local auth flow. Recommends
+  **People API** for the future Contacts tab and **Routes API** for the
+  future Navigation tab — noting Routes is the maintained replacement for
+  the now-deprecated Directions API, and that Maps Platform is the first
+  API in this project requiring **Cloud Billing** (Workspace APIs are
+  free). README updated to reflect labels/folders, multi-provider AI, the
+  send countdown, and the onboarding wizard, and now links to `SETUP.md`.
 - **Multi-provider AI + onboarding wizard (P1 feature epic).** The Ask pane
   is no longer locked into Hermes. `google_tui/ask.py` gets an `AIProvider`
   abstraction — `HermesProvider` (existing Nous LLM + `hermes` CLI agent),
