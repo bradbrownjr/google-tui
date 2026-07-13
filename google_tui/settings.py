@@ -4,7 +4,7 @@ encryption key method BEFORE we can derive or verify any key.
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 import platformdirs
@@ -21,6 +21,7 @@ class Settings:
     default_label_id: str = "INBOX"  # Gmail label id shown in the Email pane on launch
     ai_provider: str = "hermes"  # "hermes" | "claude_code" | "opencode" | "gemini_cli"
     nous_api_key: str | None = None  # overrides ~/.hermes/config.yaml if set
+    feed_urls: list[str] = field(default_factory=list)  # subscribed RSS/Atom feeds (News tab, P1 M3)
 
 
 def load_settings() -> Settings:

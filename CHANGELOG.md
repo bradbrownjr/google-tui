@@ -6,6 +6,100 @@ touched and any breaking notes.
 ## [2026-07-13]
 
 ### Added
+- **News tab — RSS/Atom reader + feed subscription management (P1 M3).**
+  Adds a sixth full-width tab (`Ctrl+5`, `TAB_ORDER` = `[..., "tab-browser",
+  "tab-news", "tab-settings"]`), pushing Settings from `Ctrl+5`→`Ctrl+6`
+  (`_SUPERSCRIPT` gained a `6: "⁶"` entry; `BINDINGS`, `action_goto_tab_
+  settings`/new `action_goto_tab_news`, `on_tabbed_content_tab_activated`,
+  `_context_help_text`, and `HELP_TEXT` all renumbered/extended
+  accordingly). New `fetchers.fetch_feed(url, timeout=15) -> list[dict]`
+  (new `feedparser` dependency, added to `pyproject.toml` and installed
+  into `.venv`) fetches a feed's bytes via `requests` (same
+  timeout/User-Agent control as `fetch_http`, rather than handing
+  feedparser a bare URL) and returns plain dicts — `id` (`entry.id` or
+  `entry.link`, feedparser's own dedup key), `title`, `link`, `summary`
+  (`content` if the feed provides full content, else `summary`),
+  `published` (ISO-8601 UTC derived from feedparser's normalized
+  `*_parsed` struct_time, so `main.py` can sort newest-first with a plain
+  string compare instead of coping with real-world feeds' inconsistent
+  raw date formats), `feed_title`/`feed_url` (provenance, for the combined
+  multi-feed list and for locating a feed again to remove it) — matching
+  `gauth.py`'s list-of-dict convention rather than a custom dataclass, so
+  caching is a direct `Cache.put_many`. `render.py` stays fetch-agnostic
+  per its M1 design; its pre-existing `parse_feed_entry(title,
+  html_or_text, base_url)` (built for M3, unused until now) turns one
+  entry's body into a `Document` for `render.DocumentView`, reused as-is.
+  `Settings.feed_urls: list[str]` (new, `settings.py`) holds subscriptions
+  in the same plaintext-JSON dataclass as everything else in Settings. The
+  News tab itself is `ListView#news-list`, the same lightbar pattern as
+  the Email pane, combining every subscribed feed's entries (like the
+  Tasks pane combines all Google tasklists) sorted newest-first, each row
+  `MM/DD  [Feed Title] Entry Title` (both truncated, same convention as
+  `_append_email_items`). `Enter`/`Space` opens `NewsEntryModal` (new;
+  modeled on `EventModal`/`TaskModal`'s shape — pushed WITHOUT a
+  `push_screen` callback, unlike `ThreadModal`, since there's no
+  follow-up action to relay back after Close), which parses the entry via
+  `render.parse_feed_entry` into a `render.DocumentView`. Item ids use
+  `_mk_id("n", entry["id"])`; because a feed entry's real id is very often
+  a URL (lossy once `_mk_id` sanitizes it), lookup goes through a rebuilt
+  `self._news_by_cid: dict[str, dict]` map rather than the `cid[2:]` slice
+  the Email/Tasks/Events lists use. Fully wired into this app's
+  cache-first/offline-capable data flow like every other source: a new
+  `Cache` category `"feed_entry"` (keyed by entry id); `_fetch_news_data`/
+  `_write_news_cache`/`_apply_news_data` follow the same fetch/apply split
+  and `run_worker(..., exclusive=True, group=...)` + generation-counter
+  (`_news_apply_gen`) pattern as `_apply_mail_data_async`/
+  `_apply_drive_files_async` (this list can be repopulated more than once
+  per session — cache load, live refresh, AND every feed add/remove in
+  Settings — so a bare `ListView.clear()` + deferred populate would hit
+  the same `DuplicateIds` race documented in AGENTS.md); wired into both
+  `_load_from_cache` (cache-first startup) and `_live_refresh_thread`
+  (startup live sync + `Ctrl+R`, which therefore refreshes News for free).
+  Each subscribed feed is fetched in its own try/except inside
+  `_fetch_news_data`, so one dead feed URL doesn't take the others down —
+  but, a deliberate design call not explicitly spelled out in the
+  originating brief: feed failures do **not** flip `self._online`/the
+  Synced-Offline header the way a Gmail/Calendar/Drive failure does,
+  because that flag is specifically about *Google* reachability
+  (AGENTS.md §1a) and feed URLs are unrelated third-party sites — a dead
+  RSS feed now just gets its own error `notify()`, not a false "Offline"
+  banner. Settings tab gained a feed-subscription manager
+  (`ListView#settings-feed-list` + `Input#settings-feed-url` +
+  `Button#settings-add-feed` + `Button#settings-remove-feed`, CSS reusing
+  `.settings-row`): adding a URL validates/dedupes, saves, appends a row,
+  and kicks a one-off background fetch (`_fetch_and_merge_one_feed`,
+  `thread=True`, group `"news-fetch-one"`) so that feed isn't empty in the
+  News tab until the next full refresh; removing drops the URL from
+  `Settings.feed_urls`, re-renders `#news-list` with that feed's cached
+  entries filtered out, and removes the row directly (`ListItem.remove()`)
+  rather than a full list clear+repopulate. New module-level helper
+  `_feed_list_item(url)` builds each Settings row and stashes the raw URL
+  as a plain `.feed_url` attribute on the `ListItem` (needed because
+  `_mk_id` can't be reversed for a URL-shaped id).
+  **Found and fixed along the way**: feed titles/entry titles are
+  untrusted external text, and the News-list row format literally wraps
+  the feed title in `[...]` — exactly the syntax Textual's
+  `Content.from_markup()` (what `Label`/`Static` route through by
+  default) uses for style tags, which silently swallowed
+  `"[Feed Title]"` during testing instead of displaying it. Confirmed
+  `rich.markup.escape()` does **not** reliably fix this (its tag-detection
+  regex didn't even touch a bracketed phrase containing a space, and
+  `Content.from_markup()` still ate it downstream) — the correct fix is
+  constructing the affected `Label`/`Static` widgets with `markup=False`
+  (a one-time constructor flag honored by every later `.update()` call),
+  used for `#news-entry-meta`, the News-list rows, and Settings'
+  feed-URL rows. Verified with a headless Textual `run_test` pilot (own
+  process, per AGENTS.md §6): mocked `fetchers.fetch_feed` with two
+  synthetic feeds; News tab reachable via `action_goto_tab_news`;
+  `#news-list` populates newest-first with correctly-escaped
+  `[Feed Title]` rows; `Enter` opens `NewsEntryModal` with rendered
+  content; Settings shows the 2 existing subscriptions; adding a feed
+  persists to `settings.json` (`load_settings()` round-trip), shows up in
+  both `#settings-feed-list` and (after the background one-off fetch)
+  `#news-list`; removing a feed persists too and shrinks both lists. Also
+  a plain `python -c "import google_tui.main"` compile/import smoke check.
+  (`google_tui/fetchers.py`, `google_tui/settings.py`, `google_tui/main.py`,
+  `pyproject.toml`, `AGENTS.md`, `README.md`, `ROADMAP.md` changed.)
 - **Browser tab — Web/Gopher/Gemini/Search (P1 M2).** Replaces the
   standalone Search tab in place at `Ctrl+4` (`TAB_ORDER` and
   `BINDINGS`/`action_goto_tab_browser` updated accordingly; Settings stays

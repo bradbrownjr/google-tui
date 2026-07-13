@@ -11,15 +11,15 @@ WITHOUT prior chat context. Read it top-to-bottom before touching code.
 
 ## 1. What the app does
 
-Five full-width **tabs** live in the blue bar (this IS the styled `Tabs`
+Six full-width **tabs** live in the blue bar (this IS the styled `Tabs`
 bar of the outer `TabbedContent#main-tabs`, not a separate status widget):
-**Mail**, **Calendar**, **Drive**, **Browser**, **Settings**. The Mail tab
-holds four **panes**: Email, Events, Tasks, Hermes. Tabs and panes are
-deliberately different concepts with different key prefixes (`Ctrl+#` for
-tabs, `Alt+#` for panes) — see §2.
+**Mail**, **Calendar**, **Drive**, **Browser**, **News**, **Settings**. The
+Mail tab holds four **panes**: Email, Events, Tasks, Hermes. Tabs and panes
+are deliberately different concepts with different key prefixes (`Ctrl+#`
+for tabs, `Alt+#` for panes) — see §2.
 
 ```
-┌[Mail¹]  Calendar²  Drive³  Browser⁴  Settings⁵──────────────────┐  ← blue bar,
+┌[Mail¹]  Calendar²  Drive³  Browser⁴  News⁵  Settings⁶───────────┐  ← blue bar,
 ├─ EMAIL (widened) ────────────┐ ┌─ EVENTS ─────────────────────┤    active tab
 │ ▸ Frank Krizan                │ │ ▸ 07/13 Tick/Flea Appt       │    has an
 │   Fwd: [DigiPi] …             │ │ ▸ 07/15 OHD Water Testing    │    accent-
@@ -51,7 +51,10 @@ of blocking on that.
   = the Monday's ISO date), `drive_listing` (key = folder id, only `root`
   is ever fetched today), `drive_file_meta`, `drive_file_text` (both keyed
   by file id, populated lazily — only after a live Drive preview actually
-  succeeds for that file, never pre-fetched for a whole folder).
+  succeeds for that file, never pre-fetched for a whole folder),
+  `gemini_cert` (key `f"{host}:{port}"`, Browser tab's Gemini TOFU pinning,
+  P1 M2), `feed_entry` (key = the entry's stable id — `entry.id` or
+  `entry.link` — News tab, P1 M3).
   **Design intent**: small "browse" rows (summaries/listings) are cheap to
   bulk-decrypt on every list population; large "content" rows (Drive text)
   are decrypted one at a time, only when opened. This is what makes
@@ -139,18 +142,65 @@ Other tabs:
   through `_browser_navigate` on confirm. Never gated by
   `self._require_online()` — that flag tracks Google reachability
   specifically, unrelated to arbitrary web/gopher/gemini fetches.
-- **Settings tab**: `Switch#settings-encrypt-switch` (encrypt-at-rest on/off)
-  + `RadioSet#settings-key-method` (passphrase vs. keyfile, hidden via
+- **News tab** (`Ctrl+5`, P1 M3): `ListView#news-list`, the same lightbar
+  pattern as the Email pane, showing entries from EVERY subscribed feed
+  combined (like the Tasks pane combines all Google tasklists), sorted
+  newest-first by `published` (an ISO-8601 UTC string `fetchers.fetch_feed`
+  derives from feedparser's normalized `*_parsed` struct_time, so sorting is
+  a plain string comparison — raw feed date formats vary too much to sort
+  directly). Each row: `MM/DD  [Feed Title] Entry Title` (both truncated,
+  same style as `_append_email_items`). Fetching is `fetchers.fetch_feed(url)`
+  (new; uses `feedparser`, HTTP done via `requests` like `fetch_http` for
+  consistent timeout/User-Agent handling, not feedparser's own URL-fetch
+  path) — returns plain dicts (`id`, `title`, `link`, `summary`, `published`,
+  `feed_title`, `feed_url`), matching `gauth.py`'s list-of-dict convention.
+  `Enter`/`Space` opens `NewsEntryModal` (modeled on `EventModal`/`TaskModal`
+  — pushed WITHOUT a callback, since unlike `ThreadModal` there's no
+  follow-up action to relay back), which parses the entry body via M1's
+  `render.parse_feed_entry(title, summary, base_url=link)` into a `Document`
+  shown in a `render.DocumentView`. Item ids use `_mk_id("n", entry["id"])`;
+  since a feed entry's real id is very often a URL, `_mk_id`'s sanitizing is
+  lossy in that direction, so `self._news_by_cid: dict[str, dict]` (cid ->
+  entry dict, rebuilt on every apply) is the lookup, not a `cid[2:]` slice
+  like the Email/Tasks/Events lists use. Cached under a new `Cache` category
+  `"feed_entry"` (keyed by entry id), fetched/applied via
+  `_fetch_news_data`/`_write_news_cache`/`_apply_news_data` exactly like the
+  other data sources (see §8, §2's `ListView.clear()` NOTE — `_apply_news_data`
+  uses the same generation-counter + awaited-`run_worker` pattern as
+  `_apply_mail_data`/`_apply_drive_files`, since it can be applied more than
+  once per session: cache load, live refresh, AND every add/remove in
+  Settings). Each subscribed feed is fetched in its own try/except inside
+  `_fetch_news_data` so one broken feed URL doesn't take down the others —
+  but, deliberately, a feed failure does NOT flip `self._online`/the
+  Synced-Offline header the way a Gmail/Calendar/Drive failure does: that
+  flag is specifically about Google reachability (§1a), and feed URLs are
+  unrelated third-party sites. Row/meta `Label`/`Static` widgets built from
+  feed content are constructed with `markup=False` — feed titles are
+  untrusted external text and Textual's `Content.from_markup()` (what
+  `Label`/`Static` route through by default) silently swallows anything
+  that looks like `[a tag]`, including a plain `"[Feed Title]"` with no
+  malicious intent; `rich.markup.escape()` does NOT reliably fix this
+  (confirmed empirically — its tag-detection regex doesn't even touch a
+  bracketed phrase containing a space, and `Content.from_markup()` still ate
+  it), so `markup=False` is the correct fix, not escaping.
+- **Settings tab** (`Ctrl+6`): `Switch#settings-encrypt-switch` (encrypt-at-rest
+  on/off) + `RadioSet#settings-key-method` (passphrase vs. keyfile, hidden via
   `.hidden` CSS class when encryption is off) + a "Clear local cache now"
-  button + a `Static` showing the cache file's path/size. See §1a for the
-  encryption model this drives.
+  button + a `Static` showing the cache file's path/size (see §1a for the
+  encryption model this drives) + a News-feed subscription manager
+  (`ListView#settings-feed-list` + `Input#settings-feed-url` +
+  `Button#settings-add-feed` + `Button#settings-remove-feed`) that edits
+  `Settings.feed_urls` directly (append/remove + `save_settings`) and kicks
+  a one-off background fetch (`_fetch_and_merge_one_feed`, `thread=True`,
+  group `"news-fetch-one"`) for a newly-added feed so the News tab isn't
+  empty for it until the next full refresh.
 
 ## 2. Key bindings
 
 | Key | Action |
 |-----|--------|
-| `Ctrl+1..5` | switch **tab** (Mail / Calendar / Drive / Browser / Settings) |
-| `Ctrl+Left/Right` | cycle tabs — the reliable fallback for `Ctrl+1..5` (see caveat below) |
+| `Ctrl+1..6` | switch **tab** (Mail / Calendar / Drive / Browser / News / Settings) |
+| `Ctrl+Left/Right` | cycle tabs — the reliable fallback for `Ctrl+1..6` (see caveat below) |
 | `Alt+1..4` | jump to a Mail **pane** (Email / Events / Tasks / Hermes); switches to the Mail tab first if needed |
 | `Alt+Left/Right/Up/Down` | move to the adjacent Mail pane (see `PANE_ADJACENCY` below) |
 | `Tab` / `Shift+Tab` | cycle Mail panes (no-op outside the Mail tab) |
@@ -298,7 +348,7 @@ almost certainly why — the fix would be routing that result through
 │   ├── gauth.py               # Google auth + Gmail/Cal/Tasks/Drive helpers
 │   ├── ask.py                 # Hermes Ask (LLM) + search backends
 │   ├── render.py              # protocol-agnostic Document/Block/Link model + DocumentView (P1 M1)
-│   ├── fetchers.py            # HTTP/Gopher/Gemini fetch for the Browser tab (P1 M2)
+│   ├── fetchers.py            # HTTP/Gopher/Gemini fetch (Browser, P1 M2) + feed fetch (News, P1 M3)
 │   ├── setup_instructions.py  # shared Google-account/AI-provider onboarding text
 │   ├── cache.py               # SQLite local cache, optional per-row Fernet encryption
 │   ├── settings.py            # plaintext Settings dataclass (settings.json)
@@ -376,16 +426,20 @@ user_cache_dir("google-tui")/cache.db`; `KEY_FILE_PATH` and `SETTINGS_PATH`
   anything was found (decides whether `LoadingModal` is needed).
 - Modals (all subclass `ModalScreen`): `LoadingModal`, `UnlockModal`,
   `ThreadModal`, `ComposeModal`, `EventModal`, `TaskModal`, `DayEventsModal`
-  (Calendar day/hour-slot overflow), `HelpModal` (`Ctrl+H`). `CalendarModal`/
-  `DriveModal`/`DriveFileModal`/`SearchModal` from the pre-tab-redesign
-  version are GONE — their content is inline in the Calendar/Drive/Search
-  `TabPane`s now; do not recreate them as modals.
+  (Calendar day/hour-slot overflow), `NewsEntryModal` (News tab, P1 M3),
+  `HelpModal` (`Ctrl+H`). `CalendarModal`/`DriveModal`/`DriveFileModal`/
+  `SearchModal` from the pre-tab-redesign version are GONE — their content
+  is inline in the Calendar/Drive/Search `TabPane`s now; do not recreate
+  them as modals.
 - `_mk_id(prefix, raw)` — MODULE-LEVEL helper (NOT a method) that sanitizes a
-  Google id into a valid Textual widget CSS id (`t-…`, `e-…`, `k-…`, `d-…`).
+  Google id (or, for News, a feed entry id — often a URL) into a valid
+  Textual widget CSS id (`t-…`, `e-…`, `k-…`, `d-…`, `n-…`, `sf-…`).
   MUST stay module-level: do not re-indent it into the class body, and do not
   name any method `_id` (collides with Textual's internal `DOMNode._id`).
-- Module-level helpers: `_fmt_date(s)`, `_mk_id`, `_tab_label(text, num)`,
-  `_event_day(e)`, `_is_previewable(mime)`.
+- Module-level helpers: `_fmt_date(s)`, `_mk_id`, `_feed_list_item(url)`
+  (News-feed subscription row, stashes the raw URL as a `.feed_url`
+  attribute since `_mk_id` can't be reversed for a URL-shaped id),
+  `_tab_label(text, num)`, `_event_day(e)`, `_is_previewable(mime)`.
 
 ## 4. Auth & secrets
 
@@ -507,6 +561,19 @@ Gotchas that cost time before:
   code in this Textual version — see the NOTE in §2. Not fixed this round
   (out of scope), but worth knowing before assuming Reply/Forward-from-
   ThreadModal works.
+- News tab (P1 M3): removing a feed in Settings drops it from `Settings.
+  feed_urls` and re-renders `#news-list` with that feed's entries filtered
+  out, but does NOT delete its old rows from the `feed_entry` cache
+  category — they just stop being fetched/shown until a full `Cache.
+  clear_all()`. Harmless (a few stale SQLite rows), consistent with how
+  Drive/mail data isn't actively pruned either, but worth knowing if a
+  cache-size audit ever looks suspiciously large after a lot of
+  add/remove churn. Also: a single unreachable feed URL notifies an error
+  and is skipped (per-feed try/except in `_fetch_news_data`) but
+  deliberately does NOT flip `self._online`/the Synced-Offline header —
+  that flag is Google-reachability-specific (§1a); don't "fix" this by
+  folding feed failures into the same `ok` flag as the Gmail/Calendar/Drive
+  fetches in `_live_refresh_thread`.
 
 ## 8. Common tasks a future session might do
 

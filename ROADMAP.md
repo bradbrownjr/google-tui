@@ -17,13 +17,13 @@ just checking it off here, so ROADMAP.md only ever shows what's still open.
 
 ## P1 — Major Feature Epics (ordered build sequence)
 
-Five epics remaining from the 2026-07-13 planning pass (Labels-as-folders,
+Four epics remaining from the 2026-07-13 planning pass (Labels-as-folders,
 multi-provider AI/onboarding, the Google Console setup guide, M1's shared
-rendering module, and M2's Browser tab all shipped — see CHANGELOG),
-ordered so each one's output is available to the epics
+rendering module, M2's Browser tab, and M3's News tab all shipped — see
+CHANGELOG), ordered so each one's output is available to the epics
 that build on it (shared render module before its consumers). The repo
 screenshot (M7) is deliberately LAST — take it once, after the major UI
-changes (M3, M5, M6 all add or reshape tabs) have landed, so it's a
+changes (M5, M6 add or reshape tabs) have landed, so it's a
 current snapshot instead of one that goes stale after the next epic. Each
 step is tagged with the Claude Code agent recommended for a future
 session tackling it — **Explore** for read-only research, **Plan** for
@@ -31,13 +31,6 @@ architecture/design before non-trivial code, **general-purpose** for the
 actual multi-step implementation, **claude-code-guide** where the step is
 specifically about the Claude Code CLI/SDK itself. Small one-shot steps
 with no real research/design component are left untagged (just do them).
-
-### M3 — News tab (RSS/Atom)
-- [ ] Implement feed fetch (`feedparser`) + an entry list using the same
-  lightbar `ListView` pattern as the Email pane, opening each entry
-  through M1's renderer. *(general-purpose)*
-- [ ] Feed subscription management (add/remove URLs) in Settings.
-  *(general-purpose)*
 
 ### M4 — Rich HTML email rendering
 - [ ] Route HTML-heavy Gmail bodies through M1's renderer inside
@@ -65,7 +58,7 @@ with no real research/design component are left untagged (just do them).
 
 ### M7 — Repo screenshot
 Last, on purpose — a single current snapshot taken once the major UI
-work above (M3 News, M5 Contacts, M6 Navigation — M2 Browser already
+work above (M5 Contacts, M6 Navigation — M2 Browser and M3 News already
 landed, see CHANGELOG) has landed, rather than one that goes stale after
 the next epic.
 - [ ] Build a fake dataset (dummy threads/events/tasks/Drive files, zero

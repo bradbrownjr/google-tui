@@ -15,12 +15,14 @@ gopher/gemini use only the stdlib (``socket``/``ssl``/``hashlib``).
 """
 from __future__ import annotations
 
+import calendar
 import datetime as dt
 import hashlib
 import socket
 import ssl
 from urllib.parse import urljoin, urlparse
 
+import feedparser
 import requests
 
 from . import render
@@ -284,3 +286,81 @@ def fetch_gemini(url: str, tofu: GeminiTofuStore, timeout: int = 15, _hop: int =
         raise BrowserFetchError("Client certificates aren't supported yet")
 
     raise BrowserFetchError(f"Unknown gemini status: {status}")
+
+
+# ---------------------------------------------------------------------------
+# Feeds (RSS/Atom) — News tab (M3)
+# ---------------------------------------------------------------------------
+
+
+def fetch_feed(url: str, timeout: int = 15) -> list[dict]:
+    """Fetch and parse an RSS/Atom feed, returning a list of plain dicts.
+
+    Deliberately returns dicts, not a custom dataclass — matches ``gauth.py``'s
+    convention of list-of-dict return values, which makes caching trivial
+    (``Cache.put_many`` stores dicts directly, see the ``feed_entry`` category
+    in ``main.py``). ``render.py`` stays fetch-agnostic per its module design
+    (see AGENTS.md) — this module owns the network call, same as
+    ``fetch_http``/``fetch_gopher``/``fetch_gemini`` above.
+
+    The HTTP fetch itself goes through ``requests`` (already a dependency,
+    already used by ``fetch_http``) rather than handing ``feedparser.parse()``
+    a bare URL, so this function gets the same timeout/User-Agent control as
+    every other fetcher in this module instead of relying on feedparser's own
+    (less configurable) URL-fetching path.
+
+    Each returned dict: ``id`` (stable — ``entry.id`` if present, else
+    ``entry.link``, else a synthetic fallback), ``title``, ``link``,
+    ``summary`` (the entry body — ``content`` if the feed provides full
+    content, else ``summary``/description; may be HTML or plain text, sniffed
+    by ``render.parse_feed_entry`` later), ``published`` (ISO-8601 UTC string
+    derived from feedparser's normalized ``*_parsed`` struct_time when
+    available — this makes newest-first sorting a plain string sort in
+    ``main.py``, instead of every caller having to cope with the many raw
+    date formats real-world feeds use), ``feed_title`` and ``feed_url`` (the
+    parsed feed's own title and the subscribed URL, so a combined
+    multi-feed view can show provenance and a feed can be located again for
+    removal).
+    """
+    try:
+        resp = requests.get(
+            url, timeout=timeout,
+            headers={"User-Agent": DEFAULT_USER_AGENT},
+        )
+    except requests.RequestException as e:
+        raise BrowserFetchError(f"Feed fetch failed: {e}") from e
+
+    if resp.status_code >= 400:
+        raise BrowserFetchError(f"HTTP {resp.status_code} for {url}")
+
+    parsed = feedparser.parse(resp.content)
+    if parsed.bozo and not parsed.entries:
+        reason = parsed.get("bozo_exception", "unknown parse error")
+        raise BrowserFetchError(f"Feed parse failed for {url}: {reason}")
+
+    feed_title = parsed.feed.get("title") or url
+
+    entries: list[dict] = []
+    for i, e in enumerate(parsed.entries):
+        if e.get("content"):
+            body = e["content"][0].get("value", "")
+        else:
+            body = e.get("summary", "")
+
+        struct = e.get("published_parsed") or e.get("updated_parsed")
+        if struct:
+            published = dt.datetime.fromtimestamp(
+                calendar.timegm(struct), tz=dt.timezone.utc).isoformat()
+        else:
+            published = e.get("published") or e.get("updated") or ""
+
+        entries.append({
+            "id": e.get("id") or e.get("link") or f"{url}#{i}",
+            "title": e.get("title") or "(untitled)",
+            "link": e.get("link", ""),
+            "summary": body,
+            "published": published,
+            "feed_title": feed_title,
+            "feed_url": url,
+        })
+    return entries

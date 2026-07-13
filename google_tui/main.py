@@ -1,7 +1,7 @@
-"""google-tui — multi-pane TUI for Gmail / Calendar / Tasks / Drive / Browser / Hermes.
+"""google-tui — multi-pane TUI for Gmail / Calendar / Tasks / Drive / Browser / News / Hermes.
 
-Top-level layout is five full-width TABS in the blue bar: Mail, Calendar,
-Drive, Browser, Settings (Ctrl+1..5). The Mail tab holds four PANES: Email,
+Top-level layout is six full-width TABS in the blue bar: Mail, Calendar,
+Drive, Browser, News, Settings (Ctrl+1..6). The Mail tab holds four PANES: Email,
 Events, Tasks, Hermes (Alt+1..4, or Alt+arrows to move relatively). See
 AGENTS.md for the full keybinding reference and the PANE_ADJACENCY rationale.
 """
@@ -51,9 +51,9 @@ PANE_ADJACENCY = {
     "hermes": {"left": "email", "up": "tasks"},
 }
 
-TAB_ORDER = ["tab-mail", "tab-calendar", "tab-drive", "tab-browser", "tab-settings"]
+TAB_ORDER = ["tab-mail", "tab-calendar", "tab-drive", "tab-browser", "tab-news", "tab-settings"]
 
-_SUPERSCRIPT = {1: "¹", 2: "²", 3: "³", 4: "⁴", 5: "⁵"}
+_SUPERSCRIPT = {1: "¹", 2: "²", 3: "³", 4: "⁴", 5: "⁵", 6: "⁶"}
 
 _PREVIEWABLE_PREFIXES = (
     "text/",
@@ -75,8 +75,8 @@ _KEY_METHOD_LABELS = {
 
 HELP_TEXT = """\
 GLOBAL
-  Ctrl+1..5        Switch tab (Mail / Calendar / Drive / Browser / Settings)
-  Ctrl+Left/Right  Cycle tabs (use this if Ctrl+1..5 doesn't reach the app —
+  Ctrl+1..6        Switch tab (Mail / Calendar / Drive / Browser / News / Settings)
+  Ctrl+Left/Right  Cycle tabs (use this if Ctrl+1..6 doesn't reach the app —
                    some terminals/browsers don't transmit Ctrl+digit)
   Alt+1..4         Jump to Mail pane (Email / Events / Tasks / Hermes)
   Alt+arrows       Move to the adjacent Mail pane
@@ -108,10 +108,17 @@ BROWSER TAB
   0-9 then Enter (page)  Jump to numbered link
   Esc (page)             Cancel a pending number entry
 
+NEWS TAB
+  Enter/Space   Open the selected entry (rendered via the shared Document view)
+  Entries from every subscribed feed are combined, newest first. Manage
+  subscriptions (add/remove feed URLs) from the Settings tab.
+
 SETTINGS TAB
   Switch        Toggle encrypt-at-rest for the local cache
   RadioSet      Choose passphrase-at-launch vs. local key file
   Button        Clear the local cache immediately
+  Input+Button  Add a News-tab feed subscription (URL)
+  Button        Remove the selected feed subscription
 
 Reply/Forward/Toggle-complete are disabled while offline (shown in the
 title bar as "Offline (cached HH:MM)"); browsing cached data still works.
@@ -129,6 +136,31 @@ def _fmt_date(s: str) -> str:
 def _mk_id(prefix: str, raw: str) -> str:
     safe = "".join(c if (c.isalnum() or c in "-_") else "-" for c in raw)
     return f"{prefix}-{safe}"
+
+
+def _feed_list_item(url: str) -> ListItem:
+    """Build one row for Settings' feed-subscription ListView.
+
+    Feed URLs are full of ``:``/``/`` characters that ``_mk_id`` sanitizes
+    away, so the widget id alone can't be reversed back to the original URL
+    (unlike, say, a Google Calendar event id). The raw URL is stashed as a
+    plain attribute on the ``ListItem`` instead — Textual widgets are regular
+    objects, so this is just attribute assignment, not a special API — and
+    read back by ``_remove_selected_feed``.
+    """
+    # markup=False: Label parses its string as Textual/Rich console markup by
+    # default (see AGENTS.md's TabPane-title NOTE for the flip side of this),
+    # and a feed URL is arbitrary external input that could legitimately
+    # contain "[" — left as markup, Textual's Content.from_markup() treats
+    # "[anything]" as a style-tag span and silently drops the brackets
+    # instead of displaying them literally. Confirmed `rich.markup.escape()`
+    # doesn't reliably fix this (it didn't even touch "[Feed One]" — its
+    # tag-detection regex doesn't consider a space tag-like — and
+    # Content.from_markup() ate it anyway); markup=False sidesteps the
+    # question entirely.
+    item = ListItem(Label(url, markup=False), id=_mk_id("sf", url))
+    item.feed_url = url
+    return item
 
 
 def _tab_label(text: str, num: int) -> str:
@@ -295,6 +327,7 @@ class GoogleTUI(App):
     #browser-url { width: 1fr; }
     #browser-status { width: auto; color: $text-muted; margin-left: 1; }
     #browser-doc { height: 1fr; border: round $panel-darken-1; padding: 0 1; }
+    #news-list { height: 1fr; }
     #help-bar { height: auto; background: $panel; padding: 0 1; }
     #help-context { color: $text; }
     #help-global { color: $text-muted; }
@@ -304,6 +337,8 @@ class GoogleTUI(App):
     .hidden { display: none; }
     #settings-key-method { height: auto; margin: 1 0; }
     #settings-cache-info { margin-top: 1; }
+    #settings-feed-list { height: 8; border: round $panel-darken-1; margin-bottom: 1; }
+    #settings-feed-url { width: 1fr; margin-right: 2; }
     #unlock-box { height: auto; }
     #onboarding-box { width: 90%; height: 80%; }
     #onboarding-scroll { height: 1fr; }
@@ -321,7 +356,8 @@ class GoogleTUI(App):
         ("ctrl+2", "goto_tab_calendar", "Calendar"),
         ("ctrl+3", "goto_tab_drive", "Drive"),
         ("ctrl+4", "goto_tab_browser", "Browser"),
-        ("ctrl+5", "goto_tab_settings", "Settings"),
+        ("ctrl+5", "goto_tab_news", "News"),
+        ("ctrl+6", "goto_tab_settings", "Settings"),
         ("ctrl+left", "cycle_tab_back", "Prev Tab"),
         ("ctrl+right", "cycle_tab", "Next Tab"),
         ("alt+1", "goto_pane_email", "Email"),
@@ -359,6 +395,8 @@ class GoogleTUI(App):
         self._loading_modal: LoadingModal | None = None
         self._mail_apply_gen = 0
         self._drive_apply_gen = 0
+        self._news_apply_gen = 0
+        self._news_by_cid: dict[str, dict] = {}
         self._browser_history: list[BrowserHistoryEntry] = []
         self._browser_hist_pos: int = -1
         self._browser_tofu: fetchers.GeminiTofuStore | None = None
@@ -430,8 +468,10 @@ class GoogleTUI(App):
             return "Enter Open Folder / Reload Preview"
         if tab == "tab-browser":
             return "Enter Load/Search   Alt+←/→ Back/Forward   Tab Toggle Focus   0-9+Enter Link"
+        if tab == "tab-news":
+            return "Enter/Space Open Entry"
         if tab == "tab-settings":
-            return "Toggle encryption   Choose key method   Clear local cache"
+            return "Toggle encryption   Choose key method   Clear local cache   Manage feeds"
         return ""
 
     def _update_help_bar(self) -> None:
@@ -492,7 +532,11 @@ class GoogleTUI(App):
                         yield Button("Go", id="browser-go")
                         yield Static("", id="browser-status")
                     yield DocumentView(id="browser-doc")
-            with TabPane(_tab_label("Settings", 5), id="tab-settings"):
+            with TabPane(_tab_label("News", 5), id="tab-news"):
+                with Container(id="news-section", classes="section"):
+                    yield Label("NEWS  (all subscribed feeds, newest first)", classes="pane-title-text")
+                    yield ListView(id="news-list")
+            with TabPane(_tab_label("Settings", 6), id="tab-settings"):
                 with VerticalScroll(id="settings-section", classes="section"):
                     yield Label("SETTINGS", classes="pane-title-text")
                     with Horizontal(classes="settings-row"):
@@ -527,6 +571,15 @@ class GoogleTUI(App):
                             id="settings-nous-key",
                         )
                         yield Button("Save", id="settings-save-nous-key")
+                    yield Label("News feeds (RSS/Atom)", classes="pane-title-text")
+                    yield ListView(
+                        *[_feed_list_item(u) for u in self.settings.feed_urls],
+                        id="settings-feed-list",
+                    )
+                    with Horizontal(classes="settings-row"):
+                        yield Input(placeholder="https://example.com/feed.xml", id="settings-feed-url")
+                        yield Button("Add feed", id="settings-add-feed")
+                    yield Button("Remove selected feed", id="settings-remove-feed")
         with Vertical(id="help-bar"):
             yield Static("", id="help-context")
             yield Static(HELP_GLOBAL, id="help-global")
@@ -611,6 +664,10 @@ class GoogleTUI(App):
         drive_files = self._cache.get("drive_listing", "root") or []
         self._apply_drive_files(drive_files, "root", "/")
 
+        feed_entries = list(self._cache.get_all("feed_entry").values())
+        if feed_entries:
+            self._apply_news_data(feed_entries)
+
         return had_mail or bool(drive_files)
 
     def _write_mail_cache(self, label_id, threads, events, tasks, tasklists) -> None:
@@ -622,7 +679,7 @@ class GoogleTUI(App):
         self._cache.put_many("tasklist", {tl["id"]: tl for tl in tasklists})
 
     def _live_refresh_thread(self) -> None:
-        mail = cal_month = cal_week = drive_files = labels = None
+        mail = cal_month = cal_week = drive_files = labels = news_entries = None
         ok = True
         try:
             mail = self._fetch_mail_data()
@@ -654,9 +711,20 @@ class GoogleTUI(App):
         except Exception as e:
             ok = False
             self.call_from_thread(self.notify, f"Drive error: {e}", severity="error")
-        self.call_from_thread(self._apply_live_refresh, ok, mail, cal_month, cal_week, drive_files, labels)
+        try:
+            # Not folded into the `ok` flag above: `ok` drives the
+            # Synced/Offline header, which is specifically about GOOGLE
+            # reachability (AGENTS.md §1a) — feed URLs are unrelated
+            # third-party sites, and per-feed failures are already reported
+            # individually inside _fetch_news_data.
+            news_entries = self._fetch_news_data()
+            self._write_news_cache(news_entries)
+        except Exception as e:
+            self.call_from_thread(self.notify, f"News error: {e}", severity="error")
+        self.call_from_thread(
+            self._apply_live_refresh, ok, mail, cal_month, cal_week, drive_files, labels, news_entries)
 
-    def _apply_live_refresh(self, ok: bool, mail, cal_month, cal_week, drive_files, labels) -> None:
+    def _apply_live_refresh(self, ok: bool, mail, cal_month, cal_week, drive_files, labels, news_entries=None) -> None:
         # Dismiss the modal FIRST: self.query_one(...) below resolves against
         # the currently active screen, and while LoadingModal is on top of
         # the stack, the base screen's widgets (#email-list etc.) aren't
@@ -678,6 +746,8 @@ class GoogleTUI(App):
             self._apply_cal_week(cal_week)
         if drive_files is not None:
             self._apply_drive_files(drive_files, "root", "/")
+        if news_entries is not None:
+            self._apply_news_data(news_entries)
         self._online = ok
         now = dt.datetime.now().strftime("%H:%M")
         self.sub_title = f"Synced {now}" if ok else f"Offline (cached {now})"
@@ -814,6 +884,7 @@ class GoogleTUI(App):
     def action_goto_tab_calendar(self): self._goto_tab("tab-calendar")
     def action_goto_tab_drive(self):    self._goto_tab("tab-drive")
     def action_goto_tab_browser(self):  self._goto_tab("tab-browser")
+    def action_goto_tab_news(self):     self._goto_tab("tab-news")
     def action_goto_tab_settings(self): self._goto_tab("tab-settings")
 
     def _cycle_tab(self, step: int) -> None:
@@ -836,6 +907,8 @@ class GoogleTUI(App):
             self.query_one("#drive-list").focus()
         elif tab_id == "tab-browser":
             self.query_one("#browser-url").focus()
+        elif tab_id == "tab-news":
+            self.query_one("#news-list").focus()
         elif tab_id == "tab-settings":
             self._update_settings_cache_info()
             self.query_one("#settings-encrypt-switch").focus()
@@ -960,7 +1033,15 @@ class GoogleTUI(App):
 
     # ---- contextual space ----
     def action_context_space(self) -> None:
-        if self._main_tabs().active != "tab-mail":
+        tab = self._main_tabs().active
+        if tab == "tab-news":
+            lst = self.query_one("#news-list")
+            item = lst.highlighted_child
+            entry = self._news_by_cid.get(item.id or "") if item is not None else None
+            if entry:
+                self.push_screen(NewsEntryModal(entry))
+            return
+        if tab != "tab-mail":
             return
         pane = PANE_IDS[self.active]
         if pane == "tasks":
@@ -987,6 +1068,10 @@ class GoogleTUI(App):
                 self.push_screen(TaskModal(t))
         elif cid.startswith("d-") or cid == "d-up":
             self._drive_open_selected()
+        elif cid.startswith("n-"):
+            entry = self._news_by_cid.get(cid)
+            if entry:
+                self.push_screen(NewsEntryModal(entry))
 
     def on_list_view_highlighted(self, event: ListView.Highlighted) -> None:
         if event.list_view.id != "drive-list":
@@ -1019,6 +1104,8 @@ class GoogleTUI(App):
             self._hermes_submit(event)
         elif event.input.id == "browser-url":
             self._browser_submit(event)
+        elif event.input.id == "settings-feed-url":
+            self._add_feed_url()
 
     def _hermes_submit(self, event: Input.Submitted) -> None:
         q = event.value.strip()
@@ -1517,6 +1604,118 @@ class GoogleTUI(App):
             else:
                 text_widget.write("(not available offline — open this file once while online to cache it)")
 
+    # ---- news tab (P1 M3) ----
+    def _fetch_news_data(self) -> list[dict]:
+        """Pure data, thread-safe (see AGENTS.md's fetch/apply-split NOTE).
+
+        Fetches every subscribed feed, wrapping each one in its OWN
+        try/except so a single unreachable/broken feed URL doesn't take the
+        whole News refresh (or any other feed) down with it — same defensive
+        style as the calendar/drive/labels blocks in `_live_refresh_thread`.
+        Deliberately does NOT feed into `ok`/`self._online` the way those
+        blocks do: `self._online` specifically tracks GOOGLE reachability
+        (see AGENTS.md §1a), and feed URLs are unrelated third-party sites —
+        a dead RSS feed should not flip the header to "Offline".
+        """
+        entries: list[dict] = []
+        for url in self.settings.feed_urls:
+            try:
+                entries.extend(fetchers.fetch_feed(url))
+            except Exception as e:
+                self.call_from_thread(self.notify, f"Feed error ({url}): {e}", severity="error")
+        return entries
+
+    def _write_news_cache(self, entries: list[dict]) -> None:
+        if self._cache and entries:
+            self._cache.put_many("feed_entry", {e["id"]: e for e in entries})
+
+    def _apply_news_data(self, entries: list[dict]) -> None:
+        # Same ListView.clear()-is-async trap as _apply_mail_data_async /
+        # _apply_drive_files_async (AGENTS.md §2): this can run more than
+        # once per session (cache load, live refresh, and again whenever a
+        # feed is added/removed in Settings), so clear+repopulate is a
+        # properly-awaited worker with a generation counter, not a bare
+        # clear() + call_after_refresh.
+        self._news_apply_gen += 1
+        gen = self._news_apply_gen
+        self.run_worker(self._apply_news_data_async(gen, entries), exclusive=True, group="news-apply")
+
+    async def _apply_news_data_async(self, gen: int, entries: list[dict]) -> None:
+        await self.query_one("#news-list").clear()
+        if gen != self._news_apply_gen:
+            return  # superseded by a newer _apply_news_data call
+        lst = self.query_one("#news-list")
+        self._news_by_cid = {}
+        for e in sorted(entries, key=lambda e: e.get("published") or "", reverse=True):
+            cid = _mk_id("n", e["id"])
+            self._news_by_cid[cid] = e
+            date = _fmt_date(e.get("published", "")).split(" ")[0]
+            feed_title = (e.get("feed_title") or "")[:20]
+            title = (e.get("title") or "(untitled)")[:40]
+            # feed_title/title come straight from someone else's RSS/Atom
+            # feed, and the row literally wraps feed_title in "[...]" — see
+            # the markup=False NOTE in _feed_list_item above for why this
+            # needs markup disabled rather than escaped: Textual's
+            # Content.from_markup() (what Label routes through) would
+            # otherwise silently swallow "[Feed Title]" as a bogus style tag.
+            line = f"{date}  [{feed_title}] {title}"
+            lst.append(ListItem(Label(line, markup=False), id=cid))
+
+    def _fetch_and_merge_one_feed(self, url: str) -> None:
+        """Background fetch for a single newly-added feed (Settings tab),
+        so the News list isn't empty for that feed until the next full
+        Ctrl+R/live refresh. Runs on a worker thread (`thread=True`), so —
+        per the fetch/apply split — it only touches `self._cache` (lock-
+        guarded, thread-safe) directly; the actual widget repopulation is
+        handed back to the main thread via `call_from_thread`.
+        """
+        try:
+            new_entries = fetchers.fetch_feed(url)
+        except Exception as e:
+            self.call_from_thread(self.notify, f"Feed error ({url}): {e}", severity="error")
+            return
+        if self._cache:
+            self._cache.put_many("feed_entry", {e["id"]: e for e in new_entries})
+            all_entries = list(self._cache.get_all("feed_entry").values())
+        else:
+            all_entries = new_entries
+        self.call_from_thread(self._apply_news_data, all_entries)
+
+    def _add_feed_url(self) -> None:
+        inp = self.query_one("#settings-feed-url", Input)
+        url = inp.value.strip()
+        if not url:
+            return
+        if url in self.settings.feed_urls:
+            self.notify("Already subscribed to that feed", severity="warning")
+            return
+        self.settings.feed_urls.append(url)
+        save_settings(self.settings)
+        inp.value = ""
+        self.query_one("#settings-feed-list", ListView).append(_feed_list_item(url))
+        self.notify(f"Added feed: {url}")
+        self.run_worker(
+            lambda: self._fetch_and_merge_one_feed(url),
+            thread=True, exclusive=False, group="news-fetch-one",
+        )
+
+    def _remove_selected_feed(self) -> None:
+        lst = self.query_one("#settings-feed-list", ListView)
+        item = lst.highlighted_child
+        if item is None:
+            self.notify("Select a feed to remove first", severity="warning")
+            return
+        url = getattr(item, "feed_url", None)
+        if url is None or url not in self.settings.feed_urls:
+            return
+        self.settings.feed_urls.remove(url)
+        save_settings(self.settings)
+        item.remove()
+        self.notify(f"Removed feed: {url}")
+        if self._cache:
+            remaining = [e for e in self._cache.get_all("feed_entry").values() if e.get("feed_url") != url]
+            self._apply_news_data(remaining)
+
     # ---- settings tab ----
     def _update_settings_cache_info(self) -> None:
         try:
@@ -1619,6 +1818,10 @@ class GoogleTUI(App):
             raw = self.query_one("#browser-url", Input).value.strip()
             if raw:
                 self._browser_navigate(raw, push_history=True)
+        elif event.button.id == "settings-add-feed":
+            self._add_feed_url()
+        elif event.button.id == "settings-remove-feed":
+            self._remove_selected_feed()
 
 
 # ============================================================================
@@ -1952,6 +2155,52 @@ class TaskModal(ModalScreen):
     def on_button_pressed(self, e):
         self.dismiss(None)
     def on_key(self, e):
+        if e.key == "escape":
+            self.dismiss(None)
+
+
+class NewsEntryModal(ModalScreen):
+    """Feed-entry detail — modeled closely on EventModal/TaskModal's shape
+    (a `.pane` Container + Close button, pushed WITHOUT a callback since,
+    unlike ThreadModal, there's no follow-up action to relay back to the app
+    after Close). The entry body is parsed via `render.parse_feed_entry()`
+    (M1) into a `Document` and shown in a `render.DocumentView` — the same
+    widget the Browser tab uses — rather than a plain RichLog, so HTML-ish
+    feed content (links, headings, paragraphs) renders properly instead of
+    being dumped as raw markup.
+    """
+
+    def __init__(self, entry: dict):
+        super().__init__()
+        self.entry = entry
+
+    def compose(self) -> ComposeResult:
+        with Container(id="news-box", classes="pane"):
+            yield Label("NEWS ENTRY", classes="pane-title-text")
+            yield Static(id="news-entry-meta", classes="muted", markup=False)
+            yield DocumentView(id="news-entry-doc")
+        with Horizontal(classes="btnrow"):
+            yield Button("Close", id="close")
+
+    def on_mount(self) -> None:
+        e = self.entry
+        feed_title = e.get("feed_title") or ""
+        published = _fmt_date(e.get("published", ""))
+        # feed_title is untrusted external text — see the markup=False NOTE
+        # in _feed_list_item; #news-entry-meta is constructed with
+        # markup=False in compose() below for exactly this reason (the flag
+        # is set once at construction and honored by every later update()
+        # call — there's no public setter to flip it after the fact).
+        self.query_one("#news-entry-meta", Static).update(f"{feed_title}   {published}".strip())
+        title = e.get("title") or "(untitled)"
+        body = e.get("summary") or ""
+        doc = render.parse_feed_entry(title, body, base_url=e.get("link", ""))
+        self.query_one("#news-entry-doc", DocumentView).document = doc
+
+    def on_button_pressed(self, e: Button.Pressed) -> None:
+        self.dismiss(None)
+
+    def on_key(self, e) -> None:
         if e.key == "escape":
             self.dismiss(None)
 

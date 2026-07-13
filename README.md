@@ -5,10 +5,10 @@ A multi-pane terminal UI (TUI) for your Google Workspace, built with
 
 ## Features
 
-Five full-width **tabs** live in the blue bar: **Mail**, **Calendar**,
-**Drive**, **Browser**, **Settings** (`Ctrl+1..5`). The Mail tab holds four
-**panes**: Email, Events, Tasks, Hermes (`Alt+1..4`, or `Alt+arrows` to move
-relatively).
+Six full-width **tabs** live in the blue bar: **Mail**, **Calendar**,
+**Drive**, **Browser**, **News**, **Settings** (`Ctrl+1..6`). The Mail tab
+holds four **panes**: Email, Events, Tasks, Hermes (`Alt+1..4`, or
+`Alt+arrows` to move relatively).
 
 **Works offline, to a degree.** The app is cache-first: whatever it fetched
 last time shows up instantly on launch, while it reconnects to Google in the
@@ -47,10 +47,15 @@ toggling a task) are disabled with a warning instead of failing silently.
   menu and every extracted search result — jump with digits + `Enter`.
   `Alt+Left/Right` are Back/Forward through this session's history (no
   re-fetching); `Tab` toggles focus between the address bar and the page.
+- **News tab:** an RSS/Atom reader — entries from every feed you subscribe
+  to (managed in Settings), combined into one lightbar list, newest first.
+  `Enter`/`Space` opens an entry, rendered through the same shared
+  Document view as the Browser tab.
 - **Settings tab:** turn on encrypt-at-rest for the local cache (off by
   default — it costs nothing until you ask for it), choose how the
   encryption key is handled, clear the local cache, pick your AI provider,
-  and set a Nous API key without hand-editing config files.
+  set a Nous API key, and manage your News-tab feed subscriptions (add/remove
+  URLs) — all without hand-editing config files.
 
 **First run with nothing configured?** google-tui still launches — an
 onboarding wizard walks you through whatever's missing (Google account,
@@ -60,7 +65,7 @@ full Google Cloud Console walkthrough.
 ## Layout & keys
 
 ```
-┌[Mail¹] Calendar² Drive³ Browser⁴ Settings⁵ ── Synced 14:32 ───┐  ← blue bar
+┌[Mail¹] Calendar² Drive³ Browser⁴ News⁵ Settings⁶ ── Synced 14:32 ┐  ← blue bar
 ├─ EMAIL ──────────────────────┐ ┌─ EVENTS ─────────────────────┤
 │ ▸ Frank Krizan                │ │ ▸ 07/13 Tick/Flea Appt       │
 │   Fwd: [DigiPi] …             │ │ ▸ 07/15 OHD Water Testing    │
@@ -74,8 +79,8 @@ full Google Cloud Console walkthrough.
 
 | Key | Action |
 |-----|--------|
-| `Ctrl+1..5` | switch tab (Mail / Calendar / Drive / Browser / Settings) |
-| `Ctrl+Left/Right` | cycle tabs — use this if `Ctrl+1..5` doesn't reach the app (common in browser-based terminals, which reserve `Ctrl+1..8` for switching *their own* tabs) |
+| `Ctrl+1..6` | switch tab (Mail / Calendar / Drive / Browser / News / Settings) |
+| `Ctrl+Left/Right` | cycle tabs — use this if `Ctrl+1..6` doesn't reach the app (common in browser-based terminals, which reserve `Ctrl+1..8` for switching *their own* tabs) |
 | `Alt+1..4` | jump to Mail pane (Email / Events / Tasks / Hermes) |
 | `Alt+Left/Right/Up/Down` | move to the adjacent Mail pane |
 | `Tab` / `Shift+Tab` | cycle Mail panes |
@@ -119,7 +124,7 @@ google-tui/
 │   ├── gauth.py          # Google auth + Gmail/Cal/Tasks/Drive/label helpers
 │   ├── ask.py            # AIProvider abstraction (Hermes/Claude Code/opencode/Gemini CLI) + search
 │   ├── render.py         # protocol-agnostic Document/Block/Link model + DocumentView
-│   ├── fetchers.py       # HTTP/Gopher/Gemini fetch for the Browser tab
+│   ├── fetchers.py       # HTTP/Gopher/Gemini fetch (Browser) + RSS/Atom feed fetch (News)
 │   ├── cache.py          # local SQLite cache, optional per-row encryption
 │   ├── settings.py       # user preferences (settings.json)
 │   ├── setup_instructions.py  # shared onboarding-wizard / SETUP.md text
@@ -137,6 +142,10 @@ google-tui/
   a one-shot CLI invocation.
 - Replying/forwarding uses Gmail threads and sets In-Reply-To automatically.
 - Drive plaintext rendering exports Google-native files (Docs→txt, Sheets→csv).
+- News tab feeds are fetched with `feedparser`; add/remove subscriptions from
+  the Settings tab. Entries are cached locally too, so previously-fetched
+  headlines are still there next launch even before the background refresh
+  finishes.
 - Local cache lives at `~/.cache/google-tui/cache.db`; preferences at
   `~/.config/google-tui/settings.json` (both via `platformdirs`, so the
   actual path follows XDG conventions on Linux). Encryption is off by
