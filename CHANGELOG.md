@@ -3,6 +3,21 @@
 Format: keep newest at top. One entry per meaningful change. Reference files
 touched and any breaking notes.
 
+## [2026-07-14] — Fix Ctrl+Left/Right tab cycling in Browser address bar
+
+### Fixed
+`#browser-url` (`main.py`) is a plain `Input`, and Textual's built-in
+Ctrl+Left/Right word-jump bindings on `Input` shadowed the App-level
+`cycle_tab_back`/`cycle_tab` bindings whenever the address bar had focus, so
+tab cycling silently stopped working there. New `TabCyclingInput` subclass
+redefines the same two keys (subclass `BINDINGS` for a given key override the
+base class's, confirmed with a standalone Textual pilot test) to delegate to
+the app's tab-cycle actions instead — Ctrl+Left/Right now always cycles tabs
+regardless of which pane/input has focus. Verified via a mocked `run_test`
+pilot (fake credentials/empty fetchers, zero live API calls): focusing
+`#browser-url` and pressing Ctrl+Right/Ctrl+Left correctly moved `#main-tabs`
+off `tab-browser`.
+
 ## [2026-07-14] — Per-commit versioning + cache size limits
 
 ### Added — the version bumps on every commit

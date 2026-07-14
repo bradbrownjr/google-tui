@@ -276,6 +276,26 @@ class GtHeader(Header):
         event.prevent_default()
 
 
+class TabCyclingInput(Input):
+    """Input's own Ctrl+Left/Right (word-jump) bindings shadow the App-level
+    tab-cycling bindings of the same keys whenever this widget has focus, so
+    Ctrl+Left/Right silently stop switching tabs while the address bar is
+    focused. Redefining the same keys here (subclass BINDINGS override the
+    base class's for a given key) restores tab-cycling; plain word-jump
+    within the URL bar isn't a loss anyone will miss.
+    """
+    BINDINGS = [
+        ("ctrl+left", "cycle_tab_back", "Prev Tab"),
+        ("ctrl+right", "cycle_tab", "Next Tab"),
+    ]
+
+    def action_cycle_tab_back(self) -> None:
+        self.app.action_cycle_tab_back()
+
+    def action_cycle_tab(self) -> None:
+        self.app.action_cycle_tab()
+
+
 def _fmt_date(s: str) -> str:
     try:
         d = dt.datetime.fromisoformat(s.replace("Z", "+00:00"))
@@ -816,7 +836,7 @@ class GoogleTUI(App):
                 with Container(id="browser-section", classes="section"):
                     with Horizontal(id="browser-bar"):
                         yield Static("WEB", id="browser-mode")
-                        yield Input(placeholder="URL, or type to search…", id="browser-url")
+                        yield TabCyclingInput(placeholder="URL, or type to search…", id="browser-url")
                         yield Button("Go", id="browser-go")
                         yield Static("", id="browser-status")
                     with Horizontal(id="browser-bookmarks"):

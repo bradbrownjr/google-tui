@@ -25,12 +25,6 @@ just checking it off here, so ROADMAP.md only ever shows what's still open.
 - [ ] **Threading depth.** Show full thread tree (multiple messages) with
   expand/collapse; today each thread shows the latest message only.
 - [ ] **Search within panes** (filter emails/tasks live as you type).
-- [ ] **Browser tab loses Ctrl+Left/Right.** `#browser-url` (`main.py:819`) is a
-  plain `Input`; Textual's built-in word-jump binding on Ctrl+Left/Right there
-  shadows the App-level `cycle_tab_back`/`cycle_tab` bindings (`main.py:605-606`),
-  so tab cycling silently stops working whenever the address bar has focus.
-  Needs an explicit override so Ctrl+Left/Right always reaches the tab bar
-  regardless of which widget has focus. *(Suggested model: Sonnet.)*
 - [ ] **Web browser: Alt+H home, fix Alt+Left history, slow Page Up/Down/End.**
   Add a home shortcut (Alt+H) to a configurable start URL. `action_switch_left`
   already calls `_browser_back()` when `tab-browser` is active
