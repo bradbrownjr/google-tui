@@ -3460,7 +3460,6 @@ class ComposeModal(ModalScreen):
         with Horizontal(classes="btnrow"):
             yield Button("Send", id="send")
             yield Button("Cancel", id="cancel")
-            yield Static("Ctrl+Enter to send", classes="muted")
         yield Static("", id="send-countdown")
 
     def on_mount(self) -> None:

@@ -5,16 +5,6 @@ Update this file as items are completed — move the completed item's entry
 into CHANGELOG.md under a new dated section (`## [YYYY-MM-DD]`) instead of
 just checking it off here, so ROADMAP.md only ever shows what's still open.
 
-## P0 — Safety (do before relying on it daily)
-
-- [ ] **Live send smoke test (supervised).** Now that Send has a 5-second
-  cancelable countdown (see CHANGELOG `[2026-07-13]`) instead of firing
-  immediately, do ONE real reply to a test thread with your own
-  `~/.hermes/google_token.json` and verify To/Subject/body/threading.
-  Needs a real Google token and an actual send, so it can't be done from
-  this sandbox — run it yourself when ready. Never auto-send in
-  unsupervised tests — mock `gauth.reply_to`/`forward` as usual.
-
 ## P2 — UX polish
 
 - [ ] **Task subtasks + add/delete.** `TaskDetailModal` shows subtasks

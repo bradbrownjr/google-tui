@@ -3,6 +3,24 @@
 Format: keep newest at top. One entry per meaningful change. Reference files
 touched and any breaking notes.
 
+## [2026-07-14] — P0 live send smoke test passed; drop Ctrl+Enter hint
+
+### Verified
+Real live send confirmed working end-to-end: a genuine message sent to
+bradbrownjr@outlook.com via the new Compose New (`c`) entry point, through
+the 5-second cancelable countdown (`[2026-07-13]`), delivered successfully.
+Closes the ROADMAP P0 item — done supervised, with a real
+`~/.hermes/google_token.json`, as that item required.
+
+### Changed
+Dropped the "Ctrl+Enter to send" hint `Static` next to Compose's Send/Cancel
+buttons — confirmed not firing in the user's terminal (most terminals don't
+send a byte sequence distinct from plain Enter for Ctrl+Enter at all, absent
+an enhanced keyboard protocol like Kitty's), so advertising it as a feature
+was misleading, and it looked out of place besides. Left the `Ctrl+Enter`
+handling itself in `ComposeModal.on_key` — harmless, and still works
+wherever the terminal actually supports it — just no longer promised in the UI.
+
 ## [2026-07-14] — Move Compose New to the Email pane; Ctrl+Enter to send
 
 ### Changed
