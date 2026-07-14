@@ -3,6 +3,22 @@
 Format: keep newest at top. One entry per meaningful change. Reference files
 touched and any breaking notes.
 
+## [2026-07-14] — Move Compose New to the Email pane; Ctrl+Enter to send
+
+### Changed
+The blank "Compose New" entry point moved from `Button#contacts-compose-new`
+(Contacts tab) to a new `c` key binding (`action_compose_new`) on the Email
+pane — a no-prefill compose is Email's job, not Contacts'. No-ops outside
+the Email pane. Per-contact "Compose Email" (prefills `to`) is unchanged,
+still reachable from a contact's detail view.
+
+### Added
+`ComposeModal` now sends on `Ctrl+Enter` from anywhere in the form (shared
+`_try_send()` helper backs both the Send button and the key), not just a
+mouse click — a "Ctrl+Enter to send" hint sits next to the buttons. Note
+some terminals don't distinguish Ctrl+Enter from plain Enter; the Send
+button remains the reliable fallback there.
+
 ## [2026-07-14] — Log every crash, not just caught error toasts
 
 ### Added

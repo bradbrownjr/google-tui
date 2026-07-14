@@ -294,9 +294,13 @@ Other tabs:
     the Routes API — it's part of paid Google Maps Platform, unlike the
     Workspace APIs the rest of this app uses).
 - **Contacts tab** (`Ctrl+8`, P1 M5): `Input#contacts-search` + `Button
-  #contacts-compose-new` + `Button#contacts-refresh` in a `Horizontal
-  #contacts-bar`, above `ListView#contacts-list` (lightbar, same pattern as
-  Email/News/Tasks). Backed by a new `gauth.list_contacts(svc)` (People API
+  #contacts-refresh` in a `Horizontal #contacts-bar`, above `ListView
+  #contacts-list` (lightbar, same pattern as Email/News/Tasks). The
+  standalone blank-compose entry point used to live here as `Button
+  #contacts-compose-new`; it moved to the Email pane's `c` binding since a
+  no-prefill compose is Email's job, not Contacts' — per-contact "Compose
+  Email" (prefilled `to`) stayed put, see below. Backed by a new
+  `gauth.list_contacts(svc)` (People API
   `people.connections().list(resourceName="people/me", personFields=
   "names,emailAddresses,phoneNumbers", pageSize=1000)`, paginated via
   `pageToken`, returns `{resource_name, name, email, phone}` dicts) through
@@ -325,9 +329,10 @@ Other tabs:
   `_on_contact_modal_result` → `_open_compose_new(email)`, same
   `push_screen(..., callback)` + `call_after_refresh` deferral pattern as
   every other modal-result relay in this app — see the push_screen timing
-  NOTE below). `Button#contacts-compose-new` opens a blank compose with no
-  prefill. New `rapidfuzz` dependency (`pyproject.toml`) — same helper also
-  powers Compose's To-field autocomplete, see the ComposeModal note below.
+  NOTE below). The Email pane's `c` binding (`action_compose_new`) calls
+  the same `_open_compose_new()` with no `to` prefill. New `rapidfuzz`
+  dependency (`pyproject.toml`) — same helper also powers Compose's To-field
+  autocomplete, see the ComposeModal note below.
 - **In-app Google re-authorization** (`Button#settings-reauth-google` in
   Settings → General, and `Button#onboarding-reauth-google` in
   `OnboardingWizardModal` when `"google"` is a diagnosed problem — see
@@ -426,6 +431,7 @@ Other tabs:
 | `Alt+Left/Right/Up/Down` | move to the adjacent Mail pane (see `PANE_ADJACENCY` below) on the Mail tab; back/forward through session history on the Browser tab; cycle Settings sub-tabs (General/AI Provider/News Feeds/Search/Navigation) on the Settings tab (`Alt+Up/Down` still only does Mail-pane adjacency — no vertical cycling defined for Settings) |
 | `Tab` / `Shift+Tab` | cycle Mail panes (no-op outside the Mail tab) |
 | `l` | focus + open `Select#email-label-select`'s dropdown (Email pane only — no-op elsewhere) |
+| `c` | compose new (Email pane only — no-op elsewhere; blank `ComposeModal(mode="new")`, same as the old `contacts-compose-new` button, which moved here) |
 | `r` `a` `f` | reply / reply-all / forward (Email pane) — blocked with a warning notify while offline |
 | `Space` | contextual (`action_context_space`): expand/collapse the highlighted row in place (Email — see `_toggle_thread_expand`, NOT `ThreadModal`), toggle complete (Tasks — blocked while offline), event detail (Events); no-op elsewhere |
 | `Enter` | open selected item's detail (`ListView.Selected` / `DataTable.CellSelected`) |

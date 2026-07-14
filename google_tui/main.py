@@ -195,7 +195,8 @@ GLOBAL
 
 MAIL TAB
   Email pane:   Enter open thread, Space expand/collapse (shows snippet),
-                l open folder picker, r Reply, a Reply All, f Forward
+                l open folder picker, c Compose new, r Reply, a Reply All,
+                f Forward
   Events pane:  Enter/Space open event detail
   Tasks pane:   Space toggle complete, Enter open detail
   Hermes pane:  type a question, Enter to ask
@@ -254,8 +255,8 @@ CONTACTS TAB
                     Google Contacts — no re-query as you type
   Enter/Space       Open the highlighted contact's detail (name/email/phone),
                     with a "Compose Email" button to start a new message to them
-  Compose New       Open a blank Compose (To/Subject/Body all empty)
   Refresh           Re-fetch contacts from Google now
+  (Blank Compose New moved to the Email pane's "c" key)
   Contacts are fetched lazily (once, the first time you open this tab, not
   on every startup/Ctrl+R) since they change far less often than mail/
   calendar/drive. Needs the contacts.readonly scope on your Google token —
@@ -643,6 +644,7 @@ class GoogleTUI(App):
         ("r", "reply", "Reply"),
         ("a", "reply_all", "Reply All"),
         ("f", "forward", "Forward"),
+        ("c", "compose_new", "Compose"),
         ("l", "focus_label_select", "Folder"),
         ("space", "context_space", "Context"),
         ("[", "cal_prev", "Prev"),
@@ -800,7 +802,7 @@ class GoogleTUI(App):
         if tab == "tab-mail":
             pane = PANE_IDS[self.active]
             if pane == "email":
-                return "Enter Open   r Reply   a Reply All   f Forward   Space Expand   l Folder"
+                return "Enter Open   c Compose   r Reply   a Reply All   f Forward   Space Expand   l Folder"
             if pane == "events":
                 return "Enter/Space Detail"
             if pane == "tasks":
@@ -820,7 +822,7 @@ class GoogleTUI(App):
         if tab == "tab-settings":
             return "Alt+←/→ Switch Section   Toggle encryption   Choose key method   Clear local cache   Manage feeds   Search provider   Routes API key"
         if tab == "tab-contacts":
-            return "Type to search   Enter/Space Detail   Compose New   Refresh"
+            return "Type to search   Enter/Space Detail (compose to contact)   Refresh"
         return ""
 
     def _update_help_bar(self) -> None:
@@ -905,7 +907,6 @@ class GoogleTUI(App):
                     yield Label("CONTACTS", classes="pane-title-text")
                     with Horizontal(id="contacts-bar", classes="btnrow"):
                         yield Input(placeholder="Search contacts (name or email)…", id="contacts-search")
-                        yield Button("Compose New", id="contacts-compose-new")
                         yield Button("Refresh", id="contacts-refresh")
                     yield ListView(id="contacts-list")
             with TabPane(_tab_label("Settings", 8), id="tab-settings"):
@@ -1613,6 +1614,10 @@ class GoogleTUI(App):
         tid = self._selected_thread()
         if tid:
             self.push_screen(ComposeModal(self.svc, tid, mode="forward"), self._on_compose_result)
+    def action_compose_new(self):
+        if self._main_tabs().active != "tab-mail" or PANE_IDS[self.active] != "email":
+            return
+        self._open_compose_new()
 
     def action_focus_label_select(self) -> None:
         if self._main_tabs().active != "tab-mail" or PANE_IDS[self.active] != "email":
@@ -2972,8 +2977,6 @@ class GoogleTUI(App):
             else:
                 self._contacts_auth_broken = True
                 self._refresh_contacts_list()
-        elif event.button.id == "contacts-compose-new":
-            self._open_compose_new()
 
 
 # ============================================================================
@@ -3457,6 +3460,7 @@ class ComposeModal(ModalScreen):
         with Horizontal(classes="btnrow"):
             yield Button("Send", id="send")
             yield Button("Cancel", id="cancel")
+            yield Static("Ctrl+Enter to send", classes="muted")
         yield Static("", id="send-countdown")
 
     def on_mount(self) -> None:
@@ -3546,11 +3550,14 @@ class ComposeModal(ModalScreen):
                 self.dismiss(None)
             return
         if e.button.id == "send":
-            if self._countdown_timer is not None:
-                return  # already counting down
-            if not self.query_one("#c-to").value.strip():
-                return
-            self._start_send_countdown()
+            self._try_send()
+
+    def _try_send(self) -> None:
+        if self._countdown_timer is not None:
+            return  # already counting down
+        if not self.query_one("#c-to").value.strip():
+            return
+        self._start_send_countdown()
 
     def _start_send_countdown(self) -> None:
         self._countdown_remaining = self.SEND_COUNTDOWN_SECONDS
@@ -3597,6 +3604,9 @@ class ComposeModal(ModalScreen):
         self.dismiss("sent")
 
     def on_key(self, e) -> None:
+        if e.key == "ctrl+enter":
+            self._try_send()
+            return
         if e.key == "escape":
             suggestions = self.query_one("#c-to-suggestions", ListView)
             if "hidden" not in suggestions.classes:
