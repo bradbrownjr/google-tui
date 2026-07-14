@@ -140,3 +140,118 @@ class Cache:
         with self._lock:
             self._conn.execute("DELETE FROM cache_items")
             self._conn.commit()
+        self.vacuum()
+
+    # ---- size accounting & pruning -------------------------------------
+    #
+    # Everything in this cache is refetchable, and (since the historyId /
+    # modifiedTime revalidation went in) re-fetching a pruned row is cheap and
+    # automatic. That's what makes eviction safe: pruning can only ever cost a
+    # little latency the next time you open that thread/file, never data.
+    #
+    # Age is measured by `updated_at`, which is refreshed every time a row is
+    # re-written — i.e. on every refresh that still sees it. That makes it a
+    # "last seen" stamp rather than a "first cached" one, which is exactly the
+    # semantics you want: a thread still in your inbox or an entry still in a
+    # feed keeps getting touched and never ages out, while a thread that fell
+    # off the list, a feed entry that scrolled away, or a Drive file you haven't
+    # opened in months goes stale and becomes evictable.
+
+    def db_size(self) -> int:
+        """Bytes actually on disk (0 if the file doesn't exist yet)."""
+        try:
+            return CACHE_DB_PATH.stat().st_size
+        except FileNotFoundError:
+            return 0
+
+    def stats(self) -> dict:
+        """Size accounting for the Settings pane: total bytes on disk, row
+        count, and a per-category breakdown (rows + approximate payload bytes).
+
+        Category bytes are the summed payload lengths, so they add up to a bit
+        less than the file on disk — SQLite has page overhead, indexes, and free
+        pages left behind by deletes. Reported separately rather than fudged.
+        """
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT category, COUNT(*), SUM(LENGTH(payload)), MIN(updated_at) "
+                "FROM cache_items GROUP BY category"
+            ).fetchall()
+        cats = [
+            {"category": c, "rows": n, "bytes": int(b or 0), "oldest": oldest}
+            for c, n, b, oldest in rows
+        ]
+        cats.sort(key=lambda c: c["bytes"], reverse=True)
+        return {
+            "db_bytes": self.db_size(),
+            "payload_bytes": sum(c["bytes"] for c in cats),
+            "rows": sum(c["rows"] for c in cats),
+            "categories": cats,
+        }
+
+    def vacuum(self) -> None:
+        """Reclaim disk. A DELETE only frees SQLite *pages*, it does not shrink
+        the file — without this, pruning would report freeing space while the
+        file on disk stayed exactly as large, which is the one thing a user
+        watching a size number will not forgive."""
+        try:
+            with self._lock:
+                self._conn.execute("VACUUM")
+                self._conn.commit()
+        except sqlite3.Error:
+            pass  # e.g. VACUUM inside a transaction; not worth failing a prune over
+
+    def prune(self, max_age_days: int = 0, max_bytes: int = 0) -> dict:
+        """Enforce the retention window and the size cap. Both are opt-in: 0
+        means "no limit". Returns {"by_age": n, "by_size": n} rows removed."""
+        removed_age = 0
+        removed_size = 0
+
+        if max_age_days > 0:
+            cutoff = (
+                datetime.datetime.now(datetime.timezone.utc)
+                - datetime.timedelta(days=max_age_days)
+            ).isoformat()
+            with self._lock:
+                cur = self._conn.execute(
+                    "DELETE FROM cache_items WHERE updated_at < ?", (cutoff,))
+                removed_age = cur.rowcount or 0
+                self._conn.commit()
+
+        # Size cap: evict least-recently-seen rows until the payload total fits.
+        # We budget against summed payload bytes (not the file size) because the
+        # file only shrinks at VACUUM, so using it as the loop condition would
+        # never converge. Vacuum once at the end instead.
+        if max_bytes > 0:
+            with self._lock:
+                total = self._conn.execute(
+                    "SELECT COALESCE(SUM(LENGTH(payload)), 0) FROM cache_items"
+                ).fetchone()[0]
+                if total > max_bytes:
+                    over = total - max_bytes
+                    freed = 0
+                    doomed: list[tuple[str, str]] = []
+                    for cat, key, size in self._conn.execute(
+                        "SELECT category, key, LENGTH(payload) FROM cache_items "
+                        "ORDER BY updated_at ASC"
+                    ):
+                        doomed.append((cat, key))
+                        freed += size
+                        if freed >= over:
+                            break
+                    self._conn.executemany(
+                        "DELETE FROM cache_items WHERE category = ? AND key = ?", doomed)
+                    removed_size = len(doomed)
+                    self._conn.commit()
+
+        if removed_age or removed_size:
+            self.vacuum()
+        return {"by_age": removed_age, "by_size": removed_size}
+
+
+def human_bytes(n: int) -> str:
+    for unit in ("B", "KB", "MB", "GB"):
+        if n < 1024 or unit == "GB":
+            return f"{n:.0f} {unit}" if unit == "B" else f"{n:.1f} {unit}"
+        n /= 1024.0
+    return f"{n:.1f} GB"

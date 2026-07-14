@@ -3,6 +3,60 @@
 Format: keep newest at top. One entry per meaningful change. Reference files
 touched and any breaking notes.
 
+## [2026-07-14] — Per-commit versioning + cache size limits
+
+### Added — the version bumps on every commit
+`hooks/pre-commit` runs `scripts/bump_version.py`, which bumps the patch version
+in `google_tui/__init__.py` (the source of truth) and keeps `pyproject.toml` in
+lockstep, then stages both so the bump lands **in** the commit. That's what makes
+the updater's "updated to vX.Y.Z" message mean anything — without it every
+version was 0.1.0 forever.
+
+Activate once per clone (this also enables the existing `post-merge` hook):
+
+    git config core.hooksPath hooks
+
+The hook no-ops during merge/rebase/cherry-pick (those replay commits that
+already carry a version) and when nothing is staged. `bump_version.py` also
+takes `--minor` / `--major` / `--show` by hand. `updater.describe()` now prefers
+an *exact* tag on HEAD and otherwise reports `v{__version__} (sha)` — it no
+longer falls back to a bare `git describe` like `v0.2.0-3-gabc1234`, which
+contradicted the version the app reports about itself.
+
+### Added — cache size accounting + Outlook-style limits
+Settings → General now shows what the cache is actually costing you: total on
+disk, item count, and a breakdown by what's using it (biggest first, with
+friendly names — "Email (full messages)", "Drive (file contents)"), so someone
+tight on space can see *what* to prune. Per-label thread-summary categories are
+merged in the breakdown rather than listed three times.
+
+Two opt-in limits, both defaulting to **no limit** (silently discarding
+someone's offline data by default would be a rude surprise):
+
+- **Keep cached data for** — Forever / 30 days / 90 days / 6 months / 1 year.
+- **Limit cache size to** — No limit / 50 MB / 100 MB / 250 MB / 500 MB / 1 GB.
+  Evicts least-recently-seen items until the cache fits.
+
+Applied on launch and immediately whenever you change one, plus an "Apply limits
+now" button. New `Cache.stats()` / `Cache.prune()` / `Cache.vacuum()`
+(`google_tui/cache.py`).
+
+Two things make eviction safe rather than lossy. First, **nothing here is
+irreplaceable** — every row is a copy of something Google still has, and since
+the historyId/modifiedTime revalidation went in, a pruned row is re-fetched
+automatically the next time you open it. Pruning costs a little latency, never
+data. Second, age is measured by `updated_at`, which is **rewritten every time a
+row is re-seen** on a refresh — so it's a "last seen" stamp, not "first cached".
+Mail still in your inbox and articles still in a feed keep getting touched and
+never expire; only things that fell off the list, or a Drive file you haven't
+opened in months, age out. `prune()` VACUUMs afterwards, because a SQLite DELETE
+frees pages without shrinking the file — and reporting freed space while the
+number on screen doesn't move is the one thing a user watching it won't forgive.
+
+Off-menu values in a hand-edited `settings.json` (`"cache_max_mb": 42`) now snap
+to the nearest offered option instead of crashing the Settings tab with
+Textual's `InvalidSelectValueError`.
+
 ## [2026-07-14] — Cache revalidation + startup update check
 
 ### Changed — stop re-downloading data we already have

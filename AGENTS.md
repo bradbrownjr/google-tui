@@ -845,6 +845,47 @@ you should not relax them without a very good reason:
 Disable with `--no-update`, `GOOGLE_TUI_NO_UPDATE=1`, or Settings → General.
 It no-ops (reporting "no update") when the package isn't a git checkout.
 
+### Versioning
+
+`__version__` in `google_tui/__init__.py` is the source of truth;
+`pyproject.toml` is kept in lockstep. **The patch version bumps on every
+commit** — `hooks/pre-commit` runs `scripts/bump_version.py` and stages both
+files, so the bump is part of the commit. Activate the hooks once per clone:
+
+```bash
+git config core.hooksPath hooks
+```
+
+Don't hand-edit the version to "fix" it; run `scripts/bump_version.py
+--minor|--major` if you need a bigger jump. The hook deliberately no-ops during
+merge/rebase/cherry-pick and when nothing is staged.
+
+### Cache limits & pruning
+
+`Cache.prune(max_age_days, max_bytes)` enforces the two opt-in limits in
+Settings → General (`cache_retention_days`, `cache_max_mb`; both default 0 ==
+unlimited). It runs on launch and whenever a limit changes, always on a worker
+thread — the DELETEs are indexed and cheap but the `VACUUM` after them rewrites
+the DB file, which is long enough to stutter the UI on a large cache.
+
+Two invariants make eviction safe, and any new cached category must preserve
+them:
+
+* **Everything in the cache is refetchable.** Combined with the
+  historyId/modifiedTime revalidation above, a pruned row silently re-fetches
+  the next time it's needed. Never cache something that can't be reconstructed
+  from Google, or pruning becomes data loss.
+* **`updated_at` is a "last seen" stamp, not "first cached".** It's rewritten on
+  every `put`, and every refresh re-puts the rows it still sees. That's what
+  makes age-based pruning correct: rows still present upstream never age out;
+  only rows that fell off the list (or content you haven't opened in months) do.
+  If you ever make writes conditional to "save a write", you break this and
+  age-based pruning starts deleting live data.
+
+Always `VACUUM` after deleting — SQLite frees pages but doesn't shrink the file,
+so without it the Settings size readout wouldn't move and the prune would look
+like it did nothing.
+
 **Keeping venv deps in sync across machines**: `pip install -e .` (README
 Setup) only installs what `pyproject.toml` lists AT THAT MOMENT — a later
 `git pull` that adds a new dependency (e.g. `feedparser` for the News tab,

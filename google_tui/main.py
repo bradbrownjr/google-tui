@@ -88,6 +88,70 @@ _PREVIEWABLE_PREFIXES = (
 )
 _PREVIEWABLE_EXTRA = {"application/json", "application/xml"}
 
+# Outlook-style cache limits (Settings -> General). 0 means "no limit" in both,
+# and is the default: this app's cache is small for most people, and silently
+# throwing away their offline data by default would be a rude surprise.
+_RETENTION_CHOICES = [
+    ("Forever", 0),
+    ("30 days", 30),
+    ("90 days", 90),
+    ("6 months", 180),
+    ("1 year", 365),
+]
+_CACHE_SIZE_CHOICES = [
+    ("No limit", 0),
+    ("50 MB", 50),
+    ("100 MB", 100),
+    ("250 MB", 250),
+    ("500 MB", 500),
+    ("1 GB", 1024),
+]
+
+# Friendly names for the cache categories in the size breakdown — the raw table
+# names ("thread_summary:INBOX", "drive_file_text") mean nothing to a user
+# trying to work out what's eating their disk.
+_CACHE_CATEGORY_LABELS = {
+    "thread_body": "Email (full messages)",
+    "thread_summary": "Email (list)",
+    "drive_file_text": "Drive (file contents)",
+    "drive_file_meta": "Drive (file details)",
+    "drive_listing": "Drive (folders)",
+    "feed_entry": "News articles",
+    "contact": "Contacts",
+    "event": "Calendar events",
+    "cal_month": "Calendar (month view)",
+    "cal_week": "Calendar (week view)",
+    "task": "Tasks",
+    "tasklist": "Task lists",
+    "label": "Mail folders",
+    "gemini_cert": "Gemini certificates",
+}
+
+
+def _cache_category_label(category: str) -> str:
+    # thread_summary is stored per-label ("thread_summary:INBOX"), so collapse
+    # the suffix before looking the name up.
+    base = category.split(":", 1)[0]
+    return _CACHE_CATEGORY_LABELS.get(base, base)
+
+
+def _plural(n: int, word: str) -> str:
+    return word if n == 1 else word + "s"
+
+
+def _nearest_choice(choices: list[tuple[str, int]], value: int) -> int:
+    """Coerce a settings value onto one of a Select's offered options.
+
+    settings.json is a plain file people can (and do) hand-edit, and Textual's
+    Select raises InvalidSelectValueError if handed a `value` that isn't in its
+    options — i.e. a stray `"cache_max_mb": 42` would crash the Settings tab on
+    open. Snap to the nearest offered value instead of exploding.
+    """
+    allowed = [v for _, v in choices]
+    if value in allowed:
+        return value
+    return min(allowed, key=lambda v: abs(v - value))
+
 HELP_GLOBAL = (
     "Ctrl+# / Ctrl+←→ Tab   Alt+# Pane   Alt+←→↑↓ Move Pane   "
     "Ctrl+P Commands   F2 Mouse   Ctrl+H Help   Ctrl+Q Quit"
@@ -828,7 +892,31 @@ class GoogleTUI(App):
                                         value=(self.settings.key_method == "keyfile"),
                                         id="rb-keyfile",
                                     )
-                                yield Button("Clear local cache now", id="settings-clear-cache")
+                                yield Label("Local cache", classes="pane-title-text")
+                                with Horizontal(classes="settings-row"):
+                                    yield Label("Keep cached data for")
+                                    yield Select(
+                                        _RETENTION_CHOICES,
+                                        value=_nearest_choice(_RETENTION_CHOICES,
+                                                              self.settings.cache_retention_days),
+                                        allow_blank=False, id="settings-cache-retention")
+                                with Horizontal(classes="settings-row"):
+                                    yield Label("Limit cache size to")
+                                    yield Select(
+                                        _CACHE_SIZE_CHOICES,
+                                        value=_nearest_choice(_CACHE_SIZE_CHOICES,
+                                                              self.settings.cache_max_mb),
+                                        allow_blank=False, id="settings-cache-max")
+                                yield Static(
+                                    "Limits are applied on launch and whenever you change them. "
+                                    "Evicting is safe: everything here is a copy of something "
+                                    "Google still has, and anything dropped is re-fetched the "
+                                    "next time you open it. Items are aged by when they were "
+                                    "last seen, so mail still in your inbox never expires.",
+                                    id="settings-cache-note", classes="muted")
+                                with Horizontal(classes="btnrow"):
+                                    yield Button("Apply limits now", id="settings-prune-cache")
+                                    yield Button("Clear local cache now", id="settings-clear-cache")
                                 yield Static("", id="settings-cache-info", classes="muted")
                         with TabPane("AI Provider", id="settings-tab-ai"):
                             with VerticalScroll(id="settings-ai-scroll"):
@@ -970,6 +1058,11 @@ class GoogleTUI(App):
         self._browser_tofu = fetchers.GeminiTofuStore(self._cache)
         if reset:
             self._cache.clear_all()
+        # Enforce the retention window / size cap once per launch, quietly and
+        # off-thread. Deliberately AFTER _load_from_cache paints: pruning is
+        # housekeeping, and it should never be the thing standing between you
+        # and your inbox appearing on screen.
+        self._prune_cache(announce=False)
         had_data = self._load_from_cache()
         if not had_data:
             # true first run — nothing cached yet, nothing to show
@@ -1144,6 +1237,16 @@ class GoogleTUI(App):
         self._current_label_id = value
 
     def on_select_changed(self, event: Select.Changed) -> None:
+        if event.select.id == "settings-cache-retention":
+            self.settings.cache_retention_days = int(event.value)
+            save_settings(self.settings)
+            self._prune_cache()  # apply immediately — a limit you have to
+            return               # remember to trigger isn't a limit
+        if event.select.id == "settings-cache-max":
+            self.settings.cache_max_mb = int(event.value)
+            save_settings(self.settings)
+            self._prune_cache()
+            return
         if event.select.id != "email-label-select":
             return
         new_id = event.value
@@ -2553,15 +2656,93 @@ class GoogleTUI(App):
             self.screen.dismiss("resolved")
 
     def _update_settings_cache_info(self) -> None:
-        try:
-            size = cache_mod.CACHE_DB_PATH.stat().st_size
-            info = f"{cache_mod.CACHE_DB_PATH}  ({size:,} bytes)"
-        except FileNotFoundError:
+        """Disk usage readout under the cache buttons: total on disk, then the
+        breakdown by what's actually using it, biggest first — the point being
+        that someone tight on space can see it's (say) Drive file contents, not
+        mail, and prune accordingly."""
+        human = cache_mod.human_bytes
+        if not self._cache:
             info = f"{cache_mod.CACHE_DB_PATH}  (not created yet)"
+        else:
+            try:
+                st = self._cache.stats()
+            except Exception as e:
+                self._safe_update("#settings-cache-info", f"(couldn't read cache size: {e})")
+                return
+            # Merge categories that share a display name before ranking them:
+            # thread summaries are stored per-label ("thread_summary:INBOX",
+            # "thread_summary:ALL", ...), and listing "Email (list)" three times
+            # tells the reader nothing useful about where their disk went.
+            merged: dict[str, dict] = {}
+            for c in st["categories"]:
+                m = merged.setdefault(
+                    _cache_category_label(c["category"]), {"bytes": 0, "rows": 0})
+                m["bytes"] += c["bytes"]
+                m["rows"] += c["rows"]
+            ranked = sorted(merged.items(), key=lambda kv: kv[1]["bytes"], reverse=True)
+
+            lines = [f"{cache_mod.CACHE_DB_PATH}",
+                     f"On disk: {human(st['db_bytes'])}   ({st['rows']:,} {_plural(st['rows'], 'item')})"]
+            for name, m in ranked[:8]:
+                if not m["rows"]:
+                    continue
+                lines.append(f"   {name:<24} {human(m['bytes']):>9}   "
+                             f"{m['rows']:,} {_plural(m['rows'], 'item')}")
+            if not st["rows"]:
+                lines.append("   (empty)")
+            info = "\n".join(lines)
+        self._safe_update("#settings-cache-info", info)
+
+    def _safe_update(self, selector: str, text: str) -> None:
         try:
-            self.query_one("#settings-cache-info").update(info)
+            self.query_one(selector).update(text)
         except Exception:
             pass
+
+    def _prune_cache(self, announce: bool = True) -> None:
+        """Enforce the configured retention window / size cap.
+
+        Runs on a worker thread: the DELETEs are indexed and cheap, but the
+        VACUUM that follows them rewrites the database file, and on a large
+        cache that's long enough to stutter the UI if done on the event loop.
+        No-ops when no limit is set, so the default config pays nothing.
+        """
+        if not self._cache:
+            return
+        if not self.settings.cache_retention_days and not self.settings.cache_max_mb:
+            if announce:
+                self.notify("No cache limits set — nothing to apply.")
+            self._update_settings_cache_info()
+            return
+        self.run_worker(lambda: self._prune_cache_thread(announce),
+                        thread=True, exclusive=True, group="cache-prune")
+
+    def _prune_cache_thread(self, announce: bool) -> None:
+        cache = self._cache
+        if cache is None:
+            return
+        before = cache.db_size()
+        try:
+            removed = cache.prune(
+                max_age_days=self.settings.cache_retention_days,
+                max_bytes=self.settings.cache_max_mb * 1024 * 1024,
+            )
+        except Exception as e:
+            if announce:
+                self.call_from_thread(self.notify, f"Cache prune failed: {e}", severity="error")
+            return
+        freed = max(0, before - cache.db_size())
+        self.call_from_thread(self._apply_prune_result, removed, freed, announce)
+
+    def _apply_prune_result(self, removed: dict, freed: int, announce: bool) -> None:
+        self._update_settings_cache_info()
+        n = removed["by_age"] + removed["by_size"]
+        if not announce:
+            return
+        if n:
+            self.notify(f"Removed {n:,} cached item(s), freed {cache_mod.human_bytes(freed)}.")
+        else:
+            self.notify("Cache is already within your limits.")
 
     def on_switch_changed(self, event: Switch.Changed) -> None:
         if event.switch.id == "settings-show-sender-address-switch":
@@ -2671,6 +2852,8 @@ class GoogleTUI(App):
                 self._cache.clear_all()
             self.notify("Local cache cleared.")
             self._update_settings_cache_info()
+        elif event.button.id == "settings-prune-cache":
+            self._prune_cache()
         elif event.button.id == "settings-save-nous-key":
             key = self.query_one("#settings-nous-key", Input).value.strip()
             self.settings.nous_api_key = key or None

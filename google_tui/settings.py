@@ -29,6 +29,12 @@ class Settings:
     searxng_url: str | None = None  # base URL of a SearXNG instance, e.g. https://searx.example.org
     routes_api_key: str | None = None  # Google Routes API key (Navigation tab, M6)
     check_for_updates: bool = True  # fast-forward the git checkout on launch (see updater.py)
+    # Cache limits (Outlook-style). Both are opt-in; 0 == no limit. Enforced on
+    # launch and on demand from Settings -> General; see Cache.prune(). Nothing
+    # in the cache is irreplaceable — everything is refetchable and revalidated
+    # — so eviction costs a little latency, never data.
+    cache_retention_days: int = 0  # drop cached items not seen in this many days
+    cache_max_mb: int = 0  # evict least-recently-seen items to stay under this
 
 
 def load_settings() -> Settings:

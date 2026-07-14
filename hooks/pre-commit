@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# Bumps the patch version on every commit, so each commit carries its own
+# version number and the updater's "updated to vX.Y.Z" message actually means
+# something to whoever is reading it.
+#
+# Not active by default — git hooks aren't installed by cloning. Activate once
+# per clone (this also picks up hooks/post-merge):
+#   git config core.hooksPath hooks
+set -e
+
+repo_root="$(git rev-parse --show-toplevel)"
+
+# Don't bump mid-merge/rebase/cherry-pick. Those replay or combine commits that
+# already carry their own version, and bumping here would either fight the
+# incoming change or spuriously re-version somebody else's commit.
+if [ -e "$repo_root/.git/MERGE_HEAD" ] ||
+   [ -d "$repo_root/.git/rebase-merge" ] ||
+   [ -d "$repo_root/.git/rebase-apply" ] ||
+   [ -e "$repo_root/.git/CHERRY_PICK_HEAD" ]; then
+    exit 0
+fi
+
+# Nothing staged (e.g. `git commit` that's about to fail anyway) -> nothing to
+# version. Avoids leaving a stray version bump behind after an aborted commit.
+if git diff --cached --quiet; then
+    exit 0
+fi
+
+python3 "$repo_root/scripts/bump_version.py" > /dev/null
+git add "$repo_root/google_tui/__init__.py" "$repo_root/pyproject.toml"
+echo "pre-commit: version -> $(python3 "$repo_root/scripts/bump_version.py" --show)"

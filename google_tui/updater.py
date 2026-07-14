@@ -69,7 +69,13 @@ def describe(root: Path | None = None) -> str:
     from . import __version__
     if root is None:
         return f"v{__version__}"
-    rc, tag = _git(root, "describe", "--tags")
+    # An exact tag on HEAD wins — that's a deliberate release marker. Otherwise
+    # __version__ is authoritative (hooks/pre-commit bumps it on every commit,
+    # so it's already unique per commit) and we just append the sha to pin it.
+    # Note we do NOT fall back to a bare `git describe`: that yields things like
+    # "v0.2.0-3-gabc1234", which contradicts the version the app reports about
+    # itself.
+    rc, tag = _git(root, "describe", "--tags", "--exact-match")
     if rc == 0 and tag:
         return tag if tag[:1] == "v" else f"v{tag}"
     rc, sha = _git(root, "rev-parse", "--short", "HEAD")
