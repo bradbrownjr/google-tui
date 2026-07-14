@@ -19,6 +19,7 @@ class Settings:
     kdf_salt: str | None = None  # base64, passphrase mode only
     canary: str | None = None  # base64 Fernet token of a known string, passphrase mode only
     default_label_id: str = "INBOX"  # Gmail label id shown in the Email pane on launch
+    show_sender_address: bool = False  # show raw "Name <addr>" in the Email list vs. name-only
     ai_provider: str = "hermes"  # "hermes" | "claude_code" | "opencode" | "gemini_cli"
     nous_api_key: str | None = None  # overrides ~/.hermes/config.yaml if set
     feed_urls: list[str] = field(default_factory=list)  # subscribed RSS/Atom feeds (News tab, P1 M3)

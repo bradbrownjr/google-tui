@@ -303,6 +303,80 @@ XDG-env-overridable; the resulting test file was deleted immediately
 after inspection. Scratch test scripts deleted when done, no committed
 `tests/` dir.
 
+### Fixed (live-usage bug reports)
+- **Space-expand on a multi-message thread only showed the latest message.**
+  A "(5)" thread's Space-to-expand inline preview
+  (`main._toggle_thread_expand`) only ever echoed the last message's Gmail
+  `snippet` field — `gauth.list_threads` never fetched the other messages'
+  content in the first place. Now, for any thread with `count > 1`, expand
+  triggers a background fetch of the full thread (`gauth.get_thread`, the
+  same call `ThreadModal`/Enter already used) and renders one line per
+  message (From + a short body snippet) via new `_thread_expanded_text`,
+  caching the result per thread in `self._thread_full_cache` so repeated
+  collapse/expand doesn't re-fetch. Falls back to the old single-snippet
+  text (plus a "press Enter for full thread" hint) if the background fetch
+  fails.
+- **Email pane defaulted to All Mail instead of Inbox.** `Settings.
+  default_label_id` already defaults to `"INBOX"` in code, but an existing
+  local `settings.json` written before that default existed (or after
+  manually selecting All Mail once) permanently overrode it — nothing in
+  `load_settings`/`save_settings` ever revisits an already-persisted value.
+  No code change needed; fixed by resetting the affected `settings.json`. If
+  you're still seeing All Mail on launch, switch the Email pane's label
+  dropdown to Inbox once — it persists from then on.
+- **Contacts tab before Settings in the tab order.** `TAB_ORDER`, the
+  `compose()` `TabPane` block order (Contacts' block moved earlier, ahead of
+  Settings'), the on-screen tab numbers (`_tab_label`), and the `Ctrl+7`/
+  `Ctrl+8` bindings (now Contacts/Settings respectively, was Settings/
+  Contacts) all updated together so the visual order and the keyboard
+  shortcuts stay consistent.
+- **Contacts pane filled the screen with "(no name)" rows when the Google
+  token was missing or expired.** Root cause: `_load_from_cache` always
+  re-renders whatever contacts happen to be on disk from a prior session
+  regardless of whether the *current* token is valid, and the row renderer
+  unconditionally printed the literal string `"(no name)"` for any entry
+  without a display name (common for real Google "other contacts" too).
+  Fixed two ways: (1) new `GoogleTUI._google_creds_ok()` (same check
+  `_diagnose_setup` uses) gates the Contacts tab's lazy fetch, the Refresh
+  button, and rendering itself — when the token is missing/invalid, the
+  pane shows one explanatory row ("Not connected — Google token is missing
+  or expired. Reconnect from Settings -> General to load contacts.")
+  instead of stale/blank data, tracked via new `self._contacts_auth_broken`
+  and cleared automatically on the next successful fetch or in-app re-auth;
+  (2) `_apply_contacts_list_async` (and `ComposeModal._update_to_suggestions`'s
+  To-field autocomplete) now skip contacts with neither name nor email, and
+  show the email address instead of "(no name)" when only the email is
+  present.
+- **Sender addresses shown in the Email list by default.** New `Settings.
+  show_sender_address` (default `False`) plus a "Show sender address in
+  list" switch in Settings → General. Off (the new default): the list shows
+  just the sender's display name, parsed from the raw `From` header via
+  `email.utils.parseaddr` (falls back to the bare address if there's no
+  name to parse). On: shows the original raw `"Name <addr>"` text, same as
+  before this change. New module-level `_format_sender` backs both
+  `_email_collapsed_line` and `_thread_expanded_text`; toggling the switch
+  re-renders the currently-loaded list immediately, no restart needed.
+
+**Verification:** `python -c "import ast; ast.parse(...)"` on `main.py`/
+`settings.py`; three headless `run_test` pilot scripts (own process each,
+per AGENTS.md §6) against a fabricated dataset with `gauth.get_credentials`/
+`services`/every `list_*`/`get_thread` mocked — (1) a 5-message thread's
+Space-expand showed all 5 fabricated messages' senders and body text; (2)
+with `get_credentials` raising, `Ctrl+7` opened Contacts (confirming the new
+tab order) and rendered exactly one row containing "reconnect"/"not
+connected" and no "(no name)" text; `Ctrl+8` opened Settings and its new
+switch defaulted to off; (3) a fabricated thread's collapsed line showed
+name-only by default, then showed the full `Name <addr>` text immediately
+after toggling the new switch live, no restart. One process hygiene note:
+these scratch scripts wiped and reused the *real* `~/.config/google-tui`/
+`~/.cache/google-tui` (mirroring `scripts/generate_screenshot.py`'s reset
+step) instead of isolated `XDG_CONFIG_HOME`/`XDG_CACHE_HOME` like this
+project's other verification runs — the live `settings.json` was restored
+by hand afterward (`default_label_id: "INBOX"`, `show_sender_address:
+false`), and the cache was left cleared (harmless; repopulates from Google
+on next launch). Future scratch scripts here should isolate `XDG_*` like
+the `[2026-07-13]` entries above did.
+
 ## [2026-07-13]
 
 ### Fixed (live-testing bug reports, second pass)

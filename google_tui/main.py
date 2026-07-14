@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import base64
 import datetime as dt
+import email.utils
 import re
 import urllib.parse
 from dataclasses import dataclass
@@ -55,8 +56,8 @@ PANE_ADJACENCY = {
     "hermes": {"left": "email", "up": "tasks"},
 }
 
-TAB_ORDER = ["tab-mail", "tab-calendar", "tab-drive", "tab-browser", "tab-news", "tab-navigation", "tab-settings",
-             "tab-contacts"]
+TAB_ORDER = ["tab-mail", "tab-calendar", "tab-drive", "tab-browser", "tab-news", "tab-navigation", "tab-contacts",
+             "tab-settings"]
 SETTINGS_TAB_ORDER = ["settings-tab-general", "settings-tab-ai", "settings-tab-feeds", "settings-tab-search",
                        "settings-tab-navigation"]
 
@@ -286,15 +287,42 @@ def _export_itinerary(result: "fetchers.RouteResult") -> Path:
     return path
 
 
-def _email_collapsed_line(th: dict) -> str:
+def _format_sender(raw: str, show_address: bool) -> str:
+    """Render a raw "From" header for the list: full "Name <addr>" text only
+    when the user opted in via Settings' "Show sender address in list"
+    (default off); otherwise just the display name, falling back to the
+    address itself when there's no name to show (e.g. bare "addr@x.com")."""
+    if show_address:
+        return raw
+    name, addr = email.utils.parseaddr(raw)
+    return name or addr
+
+
+def _email_collapsed_line(th: dict, show_sender_address: bool = False) -> str:
     mark = "•" if th["unread"] else " "
     subj = th["subject"] or "(no subject)"
-    return f"{mark} {th['from'][:36]:<36} {subj[:60]}  ({th['count']})"
+    frm = _format_sender(th["from"], show_sender_address)
+    return f"{mark} {frm[:36]:<36} {subj[:60]}  ({th['count']})"
 
 
-def _append_email_items(email_list, threads) -> None:
+def _thread_expanded_text(th: dict, msgs: list[dict], show_sender_address: bool = False) -> str:
+    """Space-expand preview for a multi-message thread: one line per message
+    (From + a short body snippet), so a "(N)" thread actually shows all N
+    messages inline instead of just the latest one's snippet."""
+    lines = [_email_collapsed_line(th, show_sender_address)]
+    for m in msgs:
+        frm = _format_sender((m.get("from") or "").strip(), show_sender_address)
+        snippet = (m.get("body") or "").strip().replace("\n", " ")
+        if len(snippet) > 80:
+            snippet = snippet[:80].rstrip() + "…"
+        lines.append(f"    {frm[:36]:<36} {snippet}")
+    return "\n".join(lines)
+
+
+def _append_email_items(email_list, threads, show_sender_address: bool = False) -> None:
     for th in threads:
-        email_list.append(ListItem(Label(_email_collapsed_line(th)), id=_mk_id("t", th["threadId"])))
+        email_list.append(ListItem(Label(_email_collapsed_line(th, show_sender_address)),
+                                    id=_mk_id("t", th["threadId"])))
 
 
 def _event_day(e: dict) -> int | None:
@@ -473,8 +501,8 @@ class GoogleTUI(App):
         ("ctrl+4", "goto_tab_browser", "Browser"),
         ("ctrl+5", "goto_tab_news", "News"),
         ("ctrl+6", "goto_tab_navigation", "Navigation"),
-        ("ctrl+7", "goto_tab_settings", "Settings"),
-        ("ctrl+8", "goto_tab_contacts", "Contacts"),
+        ("ctrl+7", "goto_tab_contacts", "Contacts"),
+        ("ctrl+8", "goto_tab_settings", "Settings"),
         ("ctrl+left", "cycle_tab_back", "Prev Tab"),
         ("ctrl+right", "cycle_tab", "Next Tab"),
         ("alt+1", "goto_pane_email", "Email"),
@@ -524,6 +552,12 @@ class GoogleTUI(App):
         # every list repopulate (refresh/label change); no persistence needed.
         self._expanded_thread_ids: set[str] = set()
         self._threads_cache: dict[str, dict] = {}
+        # Full per-message fetch backing the Space-expand preview once a
+        # thread has >1 message (see _toggle_thread_expand) — keyed by
+        # thread_id, populated lazily on first expand, kept for the rest of
+        # the session (naturally reset on app restart, same as the caches
+        # above it).
+        self._thread_full_cache: dict[str, list[dict]] = {}
         self._nav_last_result: "fetchers.RouteResult | None" = None
         # Contacts tab (P1 M5) — lazy-fetched: contacts change rarely, so
         # (unlike mail/calendar/drive/news) they're NOT pulled on every
@@ -534,6 +568,11 @@ class GoogleTUI(App):
         self._contacts_by_cid: dict[str, dict] = {}
         self._contacts_apply_gen = 0
         self._contacts_fetch_started = False
+        # True when the current Google token is missing/invalid (checked via
+        # _google_creds_ok()) — gates the Contacts pane between rendering
+        # (possibly stale) contacts and a single "not connected" notice
+        # pointing at Settings, instead of dumping stale/blank-name rows.
+        self._contacts_auth_broken = False
 
     # ---- data layer ----
     @cached_property
@@ -689,7 +728,15 @@ class GoogleTUI(App):
                     yield RichLog(id="nav-log", markup=False, wrap=True)
                     with Horizontal(id="nav-actions", classes="btnrow"):
                         yield Button("Export itinerary to file", id="nav-export")
-            with TabPane(_tab_label("Settings", 7), id="tab-settings"):
+            with TabPane(_tab_label("Contacts", 7), id="tab-contacts"):
+                with Container(id="contacts-section", classes="section"):
+                    yield Label("CONTACTS", classes="pane-title-text")
+                    with Horizontal(id="contacts-bar", classes="btnrow"):
+                        yield Input(placeholder="Search contacts (name or email)…", id="contacts-search")
+                        yield Button("Compose New", id="contacts-compose-new")
+                        yield Button("Refresh", id="contacts-refresh")
+                    yield ListView(id="contacts-list")
+            with TabPane(_tab_label("Settings", 8), id="tab-settings"):
                 with Container(id="settings-section", classes="section"):
                     yield Label("SETTINGS", classes="pane-title-text")
                     with TabbedContent(id="settings-tabs"):
@@ -705,6 +752,10 @@ class GoogleTUI(App):
                                     "tokens ~weekly — see SETUP.md §4).",
                                     id="settings-reauth-note", classes="muted",
                                 )
+                                with Horizontal(classes="settings-row"):
+                                    yield Label("Show sender address in list")
+                                    yield Switch(value=self.settings.show_sender_address,
+                                                 id="settings-show-sender-address-switch")
                                 with Horizontal(classes="settings-row"):
                                     yield Label("Encrypt local cache at rest")
                                     yield Switch(value=self.settings.encrypt_at_rest, id="settings-encrypt-switch")
@@ -801,14 +852,6 @@ class GoogleTUI(App):
                                 yield Static("Requires Cloud Billing linked to your Google Cloud project "
                                               "(SETUP.md §6) -- free up to 10,000 calls/month.",
                                               id="settings-routes-note", classes="muted")
-            with TabPane(_tab_label("Contacts", 8), id="tab-contacts"):
-                with Container(id="contacts-section", classes="section"):
-                    yield Label("CONTACTS", classes="pane-title-text")
-                    with Horizontal(id="contacts-bar", classes="btnrow"):
-                        yield Input(placeholder="Search contacts (name or email)…", id="contacts-search")
-                        yield Button("Compose New", id="contacts-compose-new")
-                        yield Button("Refresh", id="contacts-refresh")
-                    yield ListView(id="contacts-list")
         with Vertical(id="help-bar"):
             yield Static("", id="help-context")
             yield Static(HELP_GLOBAL, id="help-global")
@@ -832,6 +875,16 @@ class GoogleTUI(App):
         if not ask.any_provider_reachable(nous_api_key=self.settings.nous_api_key):
             problems.append("ai")
         return problems
+
+    def _google_creds_ok(self) -> bool:
+        """Cheap, local-first check (same call as _diagnose_setup's "google"
+        check) for whether the current token is present/valid — used to gate
+        the Contacts pane between showing data and a "not connected" notice."""
+        try:
+            gauth.get_credentials()
+            return True
+        except Exception:
+            return False
 
     def _on_onboarding_result(self, _result) -> None:
         self.call_after_refresh(self._continue_startup)
@@ -1052,7 +1105,7 @@ class GoogleTUI(App):
         await self.query_one("#email-list").clear()
         if gen != self._mail_apply_gen:
             return  # superseded by a newer apply call
-        _append_email_items(self.query_one("#email-list"), threads)
+        _append_email_items(self.query_one("#email-list"), threads, self.settings.show_sender_address)
         self._threads_cache = {t["threadId"]: t for t in threads}
 
     def _apply_mail_data(self, threads, events, tasks, tasklists) -> None:
@@ -1079,7 +1132,7 @@ class GoogleTUI(App):
         if gen != self._mail_apply_gen:
             return  # superseded by a newer _apply_mail_data call
 
-        _append_email_items(self.query_one("#email-list"), threads)
+        _append_email_items(self.query_one("#email-list"), threads, self.settings.show_sender_address)
         self._threads_cache = {t["threadId"]: t for t in threads}
 
         event_list = self.query_one("#event-list")
@@ -1165,8 +1218,12 @@ class GoogleTUI(App):
         elif tab_id == "tab-contacts":
             self.query_one("#contacts-search").focus()
             if not self._contacts_fetch_started:
-                self._contacts_fetch_started = True
-                self.run_worker(self._contacts_fetch_thread, thread=True, exclusive=True, group="contacts-fetch")
+                if self._google_creds_ok():
+                    self._contacts_fetch_started = True
+                    self.run_worker(self._contacts_fetch_thread, thread=True, exclusive=True, group="contacts-fetch")
+                else:
+                    self._contacts_auth_broken = True
+                    self._refresh_contacts_list()
         self._update_help_bar()
 
     # ---- pane switching (Mail tab) ----
@@ -1265,30 +1322,66 @@ class GoogleTUI(App):
     # UI — see ROADMAP's separate P2 "Threading depth" item). Mutates just the
     # one highlighted ListItem's Label text in place; deliberately does NOT
     # call ListView.clear()/repopulate (see AGENTS.md's ListView.clear() NOTE
-    # for why that's a trap this sidesteps entirely by not going there). ----
-    def _toggle_thread_expand(self, thread_id: str) -> None:
-        th = self._threads_cache.get(thread_id)
-        if not th:
-            return
-        if thread_id in self._expanded_thread_ids:
-            self._expanded_thread_ids.discard(thread_id)
-            text = _email_collapsed_line(th)
-        else:
-            self._expanded_thread_ids.add(thread_id)
-            snippet = (th.get("snippet") or "").strip()
-            if len(snippet) > 100:
-                snippet = snippet[:100].rstrip() + "…"
-            extra_parts = []
-            if snippet:
-                extra_parts.append(snippet)
-            if th.get("count", 1) > 1:
-                extra_parts.append(f"({th['count']} messages)")
-            extra = ("\n    " + "  ".join(extra_parts)) if extra_parts else ""
-            text = _email_collapsed_line(th) + extra
+    # for why that's a trap this sidesteps entirely by not going there).
+    # For a >1-message thread this fetches the full thread (same gauth call
+    # as ThreadModal/Enter) so the inline preview shows every message, not
+    # just the latest one's snippet — cached in self._thread_full_cache so
+    # repeated collapse/expand of the same thread doesn't re-fetch. ----
+    def _set_thread_label(self, thread_id: str, text: str) -> None:
         try:
             self.query_one(f"#{_mk_id('t', thread_id)} Label", Label).update(text)
         except Exception:
             pass
+
+    def _toggle_thread_expand(self, thread_id: str) -> None:
+        th = self._threads_cache.get(thread_id)
+        if not th:
+            return
+        show_addr = self.settings.show_sender_address
+        if thread_id in self._expanded_thread_ids:
+            self._expanded_thread_ids.discard(thread_id)
+            self._set_thread_label(thread_id, _email_collapsed_line(th, show_addr))
+            return
+        self._expanded_thread_ids.add(thread_id)
+        if th.get("count", 1) > 1:
+            cached = self._thread_full_cache.get(thread_id)
+            if cached is not None:
+                self._set_thread_label(thread_id, _thread_expanded_text(th, cached, show_addr))
+            else:
+                self._set_thread_label(thread_id, _email_collapsed_line(th, show_addr) + "\n    Loading messages…")
+                self.run_worker(lambda: self._fetch_thread_preview(thread_id),
+                                 thread=True, exclusive=False, group="thread-preview")
+            return
+        snippet = (th.get("snippet") or "").strip()
+        if len(snippet) > 100:
+            snippet = snippet[:100].rstrip() + "…"
+        text = _email_collapsed_line(th, show_addr) + (("\n    " + snippet) if snippet else "")
+        self._set_thread_label(thread_id, text)
+
+    def _fetch_thread_preview(self, thread_id: str) -> None:
+        try:
+            msgs = gauth.get_thread(self.svc, thread_id)
+        except Exception:
+            self.call_from_thread(self._apply_thread_preview_error, thread_id)
+            return
+        self.call_from_thread(self._apply_thread_preview, thread_id, msgs)
+
+    def _apply_thread_preview(self, thread_id: str, msgs: list[dict]) -> None:
+        self._thread_full_cache[thread_id] = msgs
+        th = self._threads_cache.get(thread_id)
+        if not th or thread_id not in self._expanded_thread_ids:
+            return
+        self._set_thread_label(thread_id, _thread_expanded_text(th, msgs, self.settings.show_sender_address))
+
+    def _apply_thread_preview_error(self, thread_id: str) -> None:
+        th = self._threads_cache.get(thread_id)
+        if not th or thread_id not in self._expanded_thread_ids:
+            return
+        snippet = (th.get("snippet") or "").strip()
+        if len(snippet) > 100:
+            snippet = snippet[:100].rstrip() + "…"
+        extra = (f"\n    {snippet}  " if snippet else "\n    ") + f"({th['count']} messages — press Enter for full thread)"
+        self._set_thread_label(thread_id, _email_collapsed_line(th, self.settings.show_sender_address) + extra)
 
     # ---- tasks ----
     def _selected_task(self) -> dict | None:
@@ -2061,21 +2154,34 @@ class GoogleTUI(App):
         try:
             contacts = self._fetch_contacts_data()
         except Exception as e:
-            self.call_from_thread(
-                self.notify,
-                f"Contacts unavailable: {e} — re-run the OAuth flow with the "
-                f"contacts.readonly scope (see SETUP.md §7), then restart.",
-                severity="error",
-            )
+            # Distinguish "token itself is broken" (point at Settings, don't
+            # show stale/blank rows) from a one-off/transient API error
+            # (leave whatever's on screen alone).
+            if not self._google_creds_ok():
+                self.call_from_thread(self._apply_contacts_auth_broken)
+            else:
+                self.call_from_thread(
+                    self.notify,
+                    f"Contacts unavailable: {e} — re-run the OAuth flow with the "
+                    f"contacts.readonly scope (see SETUP.md §7), then restart.",
+                    severity="error",
+                )
             return
         self._write_contacts_cache(contacts)
         self.call_from_thread(self._apply_contacts_data, contacts)
+
+    def _apply_contacts_auth_broken(self) -> None:
+        self._contacts_auth_broken = True
+        self.notify("Google token missing or expired — reconnect in Settings to load contacts.",
+                     severity="error")
+        self._refresh_contacts_list()
 
     def _apply_contacts_data(self, contacts: list[dict]) -> None:
         """Main-thread widget mutation half of the fetch/apply split.
         Stashes the full list (backs ComposeModal's To-field autocomplete,
         which reads self.app._contacts_cache directly) and re-renders the
         list through the current search filter."""
+        self._contacts_auth_broken = False
         self._contacts_cache = contacts
         self._refresh_contacts_list()
 
@@ -2100,12 +2206,21 @@ class GoogleTUI(App):
             return  # superseded by a newer call
         lst = self.query_one("#contacts-list")
         self._contacts_by_cid = {}
+        if self._contacts_auth_broken:
+            lst.append(ListItem(Label(
+                "Not connected — Google token is missing or expired.\n"
+                "Reconnect from Settings -> General to load contacts.",
+                markup=False)))
+            return
         for c in _fuzzy_filter_contacts(self._contacts_cache, query):
+            name = (c.get("name") or "").strip()
+            addr = (c.get("email") or "").strip()
+            if not name and not addr:
+                continue  # no usable info at all — not worth a row
             cid = _mk_id("ct", c.get("resource_name", ""))
             self._contacts_by_cid[cid] = c
-            name = (c.get("name") or "(no name)")[:30]
-            email = (c.get("email") or "")[:40]
-            lst.append(ListItem(Label(f"{name:<30} {email}", markup=False), id=cid))
+            label = f"{name[:30]:<30} {addr[:40]}" if name else addr[:40]
+            lst.append(ListItem(Label(label, markup=False), id=cid))
 
     def _open_contact_detail(self, cid: str) -> None:
         c = self._contacts_by_cid.get(cid)
@@ -2218,6 +2333,11 @@ class GoogleTUI(App):
             pass
 
     def on_switch_changed(self, event: Switch.Changed) -> None:
+        if event.switch.id == "settings-show-sender-address-switch":
+            self.settings.show_sender_address = event.value
+            save_settings(self.settings)
+            self._apply_email_list(list(self._threads_cache.values()))
+            return
         if event.switch.id != "settings-encrypt-switch":
             return
         try:
@@ -2353,8 +2473,12 @@ class GoogleTUI(App):
             save_settings(self.settings)
             self.notify("Routes API key saved.")
         elif event.button.id == "contacts-refresh":
-            self._contacts_fetch_started = True
-            self.run_worker(self._contacts_fetch_thread, thread=True, exclusive=True, group="contacts-fetch")
+            if self._google_creds_ok():
+                self._contacts_fetch_started = True
+                self.run_worker(self._contacts_fetch_thread, thread=True, exclusive=True, group="contacts-fetch")
+            else:
+                self._contacts_auth_broken = True
+                self._refresh_contacts_list()
         elif event.button.id == "contacts-compose-new":
             self._open_compose_new()
 
@@ -2831,7 +2955,8 @@ class ComposeModal(ModalScreen):
         self._suggest_render_gen = getattr(self, "_suggest_render_gen", 0) + 1
         gen = self._suggest_render_gen
         for i, c in enumerate(matches):
-            label = f"{c.get('name') or '(no name)'}  <{c.get('email','')}>"
+            name, addr = c.get("name"), c.get("email", "")
+            label = f"{name}  <{addr}>" if name else addr
             item = ListItem(Label(label, markup=False), id=f"sug-{gen}-{i}")
             item.contact_email = c.get("email", "")
             suggestions.append(item)
