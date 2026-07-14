@@ -25,7 +25,7 @@ from textual.worker import get_current_worker  # noqa: F401 (kept for future thr
 
 from . import gauth
 from . import ask
-from .ask import needs_agent, google_search
+from .ask import needs_agent
 from . import setup_instructions
 from . import fetchers
 from . import render
@@ -52,7 +52,7 @@ PANE_ADJACENCY = {
 }
 
 TAB_ORDER = ["tab-mail", "tab-calendar", "tab-drive", "tab-browser", "tab-news", "tab-settings"]
-SETTINGS_TAB_ORDER = ["settings-tab-general", "settings-tab-ai", "settings-tab-feeds"]
+SETTINGS_TAB_ORDER = ["settings-tab-general", "settings-tab-ai", "settings-tab-feeds", "settings-tab-search"]
 
 _SUPERSCRIPT = {1: "¹", 2: "²", 3: "³", 4: "⁴", 5: "⁵", 6: "⁶"}
 
@@ -105,6 +105,9 @@ DRIVE TAB
 
 BROWSER TAB
   Enter (address bar)    Load URL, or run a search (bare text w/ no scheme searches)
+  Bookmark buttons       Starter destinations (Google/Wikipedia/Gopherpedia/
+                         Gemini Protocol) shown until you navigate anywhere,
+                         then hidden for the rest of the session
   Alt+Left / Alt+Right   Back / forward through this session's history
   Tab                    Toggle focus: address bar <-> page content
   0-9 then Enter (page)  Jump to numbered link
@@ -116,8 +119,8 @@ NEWS TAB
   subscriptions (add/remove feed URLs) from the Settings tab.
 
 SETTINGS TAB
-  Sub-tabs      General / AI Provider / News Feeds — Alt+Left/Right cycles
-                between them while the Settings tab is active
+  Sub-tabs      General / AI Provider / News Feeds / Search — Alt+Left/Right
+                cycles between them while the Settings tab is active
   Switch        Toggle encrypt-at-rest for the local cache (General)
   RadioSet      Choose passphrase-at-launch vs. local key file (General)
   Button        Clear the local cache immediately (General)
@@ -125,6 +128,10 @@ SETTINGS TAB
   Input+Button  Set/save the Nous API key (AI Provider)
   Input+Button  Add a News-tab feed subscription (URL) (News Feeds)
   Button        Remove the selected feed subscription (News Feeds)
+  RadioSet      Choose the Browser tab's search provider: Google /
+                DuckDuckGo / SearXNG (Search)
+  Input+Button  Set Google Custom Search API key + Search Engine ID, or a
+                SearXNG instance URL, then save (Search)
 
 Reply/Forward/Toggle-complete are disabled while offline (shown in the
 title bar as "Offline (cached HH:MM)"); browsing cached data still works.
@@ -236,7 +243,7 @@ def _classify_address(raw: str) -> tuple[str, str]:
     An explicit scheme always wins; a single dotted-word-with-no-space is
     treated as a bare domain and gets "https://" prepended; everything else
     (including any input containing a space) is a web search via
-    ``ask.google_search``. ``search:`` is an explicit escape hatch for the
+    ``fetchers.run_search``. ``search:`` is an explicit escape hatch for the
     rare case of wanting to search for literally "example.com".
     """
     raw = raw.strip()
@@ -253,36 +260,16 @@ def _classify_address(raw: str) -> tuple[str, str]:
     return "search", raw
 
 
-_SEARCH_RESULT_URL_RE = re.compile(r'(https?://[^\s<>"\')]+)')
-
-
-def _search_result_document(query: str, raw_text: str) -> render.Document:
-    """Turn ``hermes web search``'s opaque stdout into a rendered Document.
-
-    The CLI's output format isn't guaranteed/structured, so rather than
-    parse structure out of it, every ``https?://...`` token found by regex
-    becomes a numbered clickable Link, and everything else is left as plain
-    paragraph text — a lightweight, format-agnostic approach that still
-    satisfies "numbered-link nav" uniformly with the other three Browser
-    modes.
-    """
-    blocks: list[render.Block] = []
-    links: list[render.Link] = []
-    n = 0
-
-    def _sub(m: re.Match) -> str:
-        nonlocal n
-        n += 1
-        url = m.group(1).rstrip(").,")
-        links.append(render.Link(number=n, url=url, text=url, kind="content"))
-        return f"[{n}]"
-
-    for line in raw_text.split("\n"):
-        if not line.strip():
-            continue
-        blocks.append(render.Block(kind="paragraph", text=_SEARCH_RESULT_URL_RE.sub(_sub, line)))
-
-    return render.Document(title=f"Search: {query}", blocks=blocks, links=links, source_url="")
+# Browser tab "new tab page" bookmarks — starter destinations covering all
+# three non-search protocols this tab speaks (see fetchers.py). Shown as a
+# button row under the address bar until the user navigates anywhere (first
+# successful page load or search), then hidden for the rest of the session.
+_BROWSER_BOOKMARKS = [
+    ("Google", "https://www.google.com"),
+    ("Wikipedia", "https://en.wikipedia.org"),
+    ("Gopherpedia", "gopher://gopher.floodgap.com"),
+    ("Gemini Protocol", "gemini://geminiprotocol.net/"),
+]
 
 
 @dataclass
@@ -355,6 +342,8 @@ class GoogleTUI(App):
     #browser-mode { width: 10; color: $accent; text-style: bold; content-align: center middle; }
     #browser-url { width: 1fr; }
     #browser-status { width: auto; color: $text-muted; margin-left: 1; }
+    #browser-bookmarks { height: 3; align: left middle; }
+    #browser-bookmarks Button { min-width: 3; width: auto; height: 3; margin-right: 1; }
     #browser-doc { height: 1fr; border: round $panel-darken-1; padding: 0 1; }
     #news-list { height: 1fr; }
     #help-bar { height: auto; background: $panel; padding: 0 1; }
@@ -368,6 +357,8 @@ class GoogleTUI(App):
     #settings-cache-info { margin-top: 1; }
     #settings-feed-list { height: 8; border: round $panel-darken-1; margin-bottom: 1; }
     #settings-feed-url { width: 1fr; margin-right: 2; }
+    #settings-google-cse-key, #settings-google-cse-id, #settings-searxng-url { width: 40; margin-right: 2; }
+    #settings-google-group, #settings-searxng-group { height: auto; }
     #unlock-box { height: auto; }
     #onboarding-box { width: 90%; height: 80%; }
     #onboarding-scroll { height: 1fr; }
@@ -430,6 +421,7 @@ class GoogleTUI(App):
         self._browser_history: list[BrowserHistoryEntry] = []
         self._browser_hist_pos: int = -1
         self._browser_tofu: fetchers.GeminiTofuStore | None = None
+        self._browser_started: bool = False
         # Email pane's Space-to-expand (inline snippet preview, not the full
         # ThreadModal — see AGENTS.md's Email-pane NOTE). Naturally resets on
         # every list repopulate (refresh/label change); no persistence needed.
@@ -506,7 +498,7 @@ class GoogleTUI(App):
         if tab == "tab-news":
             return "Enter/Space Open Entry"
         if tab == "tab-settings":
-            return "Alt+←/→ Switch Section   Toggle encryption   Choose key method   Clear local cache   Manage feeds"
+            return "Alt+←/→ Switch Section   Toggle encryption   Choose key method   Clear local cache   Manage feeds   Search provider"
         return ""
 
     def _update_help_bar(self) -> None:
@@ -566,6 +558,9 @@ class GoogleTUI(App):
                         yield Input(placeholder="URL, or type to search…", id="browser-url")
                         yield Button("Go", id="browser-go")
                         yield Static("", id="browser-status")
+                    with Horizontal(id="browser-bookmarks"):
+                        for i, (label, _url) in enumerate(_BROWSER_BOOKMARKS):
+                            yield Button(label, id=f"browser-bookmark-{i}")
                     yield DocumentView(id="browser-doc")
             with TabPane(_tab_label("News", 5), id="tab-news"):
                 with Container(id="news-section", classes="section"):
@@ -622,6 +617,46 @@ class GoogleTUI(App):
                                     yield Input(placeholder="https://example.com/feed.xml", id="settings-feed-url")
                                     yield Button("Add feed", id="settings-add-feed")
                                 yield Button("Remove selected feed", id="settings-remove-feed")
+                        with TabPane("Search", id="settings-tab-search"):
+                            with VerticalScroll(id="settings-search-scroll"):
+                                yield Label("Web search provider (Browser tab)", classes="pane-title-text")
+                                with RadioSet(id="settings-search-provider"):
+                                    yield RadioButton(
+                                        "Google", value=(self.settings.search_provider == "google"),
+                                        id="rb-search-google",
+                                    )
+                                    yield RadioButton(
+                                        "DuckDuckGo", value=(self.settings.search_provider == "duckduckgo"),
+                                        id="rb-search-duckduckgo",
+                                    )
+                                    yield RadioButton(
+                                        "SearXNG", value=(self.settings.search_provider == "searxng"),
+                                        id="rb-search-searxng",
+                                    )
+                                google_group_classes = "" if self.settings.search_provider == "google" else "hidden"
+                                with Vertical(id="settings-google-group", classes=google_group_classes):
+                                    with Horizontal(classes="settings-row"):
+                                        yield Label("Google Custom Search API key")
+                                        yield Input(
+                                            value=self.settings.google_cse_api_key or "", password=True,
+                                            id="settings-google-cse-key",
+                                        )
+                                    with Horizontal(classes="settings-row"):
+                                        yield Label("Search Engine ID (cx)")
+                                        yield Input(
+                                            value=self.settings.google_cse_id or "",
+                                            id="settings-google-cse-id",
+                                        )
+                                searxng_group_classes = "" if self.settings.search_provider == "searxng" else "hidden"
+                                with Vertical(id="settings-searxng-group", classes=searxng_group_classes):
+                                    with Horizontal(classes="settings-row"):
+                                        yield Label("SearXNG instance URL")
+                                        yield Input(
+                                            value=self.settings.searxng_url or "",
+                                            placeholder="https://searx.example.org",
+                                            id="settings-searxng-url",
+                                        )
+                                yield Button("Save search settings", id="settings-save-search")
         with Vertical(id="help-bar"):
             yield Static("", id="help-context")
             yield Static(HELP_GLOBAL, id="help-global")
@@ -1322,7 +1357,7 @@ class GoogleTUI(App):
             return fetchers.fetch_gopher(target)
         if mode == "gemini":
             return fetchers.fetch_gemini(target, self._browser_tofu)
-        return _search_result_document(target, google_search(target))
+        return fetchers.run_search(target, self.settings)
 
     def _browser_fetch_thread(self, mode: str, target: str, display_url: str, push_history: bool) -> None:
         try:
@@ -1374,6 +1409,13 @@ class GoogleTUI(App):
             doc_view.focus()
         except Exception:
             pass
+
+        if not self._browser_started:
+            self._browser_started = True
+            try:
+                self.query_one("#browser-bookmarks").add_class("hidden")
+            except Exception:
+                pass
 
     def _browser_prompt_gemini_input(self, exc: fetchers.GeminiInputRequired, push_history: bool) -> None:
         try:
@@ -1858,6 +1900,22 @@ class GoogleTUI(App):
             label = next(l for l, v in ask.PROVIDER_CHOICES if v == pid)
             self.notify(f"AI provider set to {label}")
             return
+        if event.radio_set.id == "settings-search-provider":
+            provider_map = {
+                "rb-search-google": ("google", "Google"),
+                "rb-search-duckduckgo": ("duckduckgo", "DuckDuckGo"),
+                "rb-search-searxng": ("searxng", "SearXNG"),
+            }
+            provider, label = provider_map.get(event.pressed.id, ("google", "Google"))
+            self.settings.search_provider = provider
+            save_settings(self.settings)
+            try:
+                self.query_one("#settings-google-group").set_class(provider != "google", "hidden")
+                self.query_one("#settings-searxng-group").set_class(provider != "searxng", "hidden")
+            except Exception:
+                pass
+            self.notify(f"Search provider set to {label}")
+            return
         if event.radio_set.id != "settings-key-method":
             return
         if not self.settings.encrypt_at_rest:
@@ -1915,6 +1973,20 @@ class GoogleTUI(App):
             self._add_feed_url()
         elif event.button.id == "settings-remove-feed":
             self._remove_selected_feed()
+        elif event.button.id == "settings-save-search":
+            key = self.query_one("#settings-google-cse-key", Input).value.strip()
+            cx = self.query_one("#settings-google-cse-id", Input).value.strip()
+            searxng_url = self.query_one("#settings-searxng-url", Input).value.strip()
+            self.settings.google_cse_api_key = key or None
+            self.settings.google_cse_id = cx or None
+            self.settings.searxng_url = searxng_url or None
+            save_settings(self.settings)
+            self.notify("Search settings saved.")
+        elif event.button.id is not None and event.button.id.startswith("browser-bookmark-"):
+            idx = int(event.button.id.removeprefix("browser-bookmark-"))
+            _label, url = _BROWSER_BOOKMARKS[idx]
+            self.query_one("#browser-url", Input).value = url
+            self._browser_navigate(url, push_history=True)
 
 
 # ============================================================================

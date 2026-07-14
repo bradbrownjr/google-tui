@@ -22,6 +22,10 @@ class Settings:
     ai_provider: str = "hermes"  # "hermes" | "claude_code" | "opencode" | "gemini_cli"
     nous_api_key: str | None = None  # overrides ~/.hermes/config.yaml if set
     feed_urls: list[str] = field(default_factory=list)  # subscribed RSS/Atom feeds (News tab, P1 M3)
+    search_provider: str = "google"  # "google" | "duckduckgo" | "searxng" (Browser tab Search mode)
+    google_cse_api_key: str | None = None  # Google Custom Search JSON API key
+    google_cse_id: str | None = None  # Programmable Search Engine ID ("cx")
+    searxng_url: str | None = None  # base URL of a SearXNG instance, e.g. https://searx.example.org
 
 
 def load_settings() -> Settings:

@@ -128,30 +128,50 @@ Other tabs:
     modifiedTime,createdTime,parents,webViewLink"`.
 - **Browser tab** (`Ctrl+4`, P1 M2): address bar (`Input#browser-url`) + a
   mode badge (`Static#browser-mode`: WEB/GOPHER/GEMINI/SEARCH) + a
-  `render.DocumentView` (`#browser-doc`) rendering whatever came back.
-  Address-bar submission is classified by `_classify_address()` (omnibox
-  heuristic: explicit `http(s)://`/`gopher://`/`gemini://` wins; a single
-  dotted-word-with-no-space gets `https://` prepended; everything else,
-  including any text containing a space, is a web search via the existing
-  `ask.google_search` — same backend the old standalone Search tab used,
-  now reached as a Browser mode instead of a separate tab). Fetching lives
-  in `google_tui/fetchers.py` (`fetch_http`/`fetch_gopher`/`fetch_gemini`),
-  never in `render.py` (which stays I/O-free) or `main.py` directly — every
-  `fetch_*` is blocking and run via `self.run_worker(fn, thread=True,
-  exclusive=True, group="browser-fetch")`, same fetch/apply split as the
-  rest of the app. History is an in-memory `list[BrowserHistoryEntry]`
-  (already-fetched `Document`s, not just URLs — Back/Forward never
-  re-fetches) — session-lifetime only, no SQLite cache category for page
-  content. `Alt+Left/Right` are back/forward (not `[`/`]`) when the Browser
-  tab is active; `Tab`/`Shift+Tab` toggle focus between the address bar and
-  the page. Gemini's TOFU cert pinning uses a new `Cache` category
-  (`"gemini_cert"`, key `f"{host}:{port}"`) via `fetchers.GeminiTofuStore`;
-  Gemini status 1x (input) and cross-host 3x (redirect) responses raise
+  `render.DocumentView` (`#browser-doc`) rendering whatever came back. A
+  "new tab page" row of starter-destination buttons (`Horizontal
+  #browser-bookmarks`, between `#browser-bar` and `#browser-doc`) — module-
+  level `_BROWSER_BOOKMARKS` list (Google/Wikipedia/Gopherpedia/Gemini
+  Protocol, one per non-search protocol) — is visible until the first
+  successful page load or search of the session, then gets `.hidden`'d
+  permanently (`self._browser_started: bool`, flipped inside
+  `_browser_apply_document`) and never reappears; clicking a bookmark
+  (`on_button_pressed`'s `browser-bookmark-<i>` branch) navigates exactly
+  like typed address-bar input. Address-bar submission is classified by
+  `_classify_address()` (omnibox heuristic: explicit
+  `http(s)://`/`gopher://`/`gemini://` wins; a single dotted-word-with-no-
+  space gets `https://` prepended; everything else, including any text
+  containing a space, is a web search via `fetchers.run_search` — see
+  below). Fetching lives in `google_tui/fetchers.py`
+  (`fetch_http`/`fetch_gopher`/`fetch_gemini`/`run_search` and its three
+  backends), never in `render.py` (which stays I/O-free) or `main.py`
+  directly — every `fetch_*`/search call is blocking and run via
+  `self.run_worker(fn, thread=True, exclusive=True, group="browser-fetch")`,
+  same fetch/apply split as the rest of the app. History is an in-memory
+  `list[BrowserHistoryEntry]` (already-fetched `Document`s, not just URLs —
+  Back/Forward never re-fetches) — session-lifetime only, no SQLite cache
+  category for page content. `Alt+Left/Right` are back/forward (not `[`/`]`)
+  when the Browser tab is active; `Tab`/`Shift+Tab` toggle focus between the
+  address bar and the page. Gemini's TOFU cert pinning uses a new `Cache`
+  category (`"gemini_cert"`, key `f"{host}:{port}"`) via
+  `fetchers.GeminiTofuStore`; Gemini status 1x (input) and cross-host 3x
+  (redirect) responses raise
   `fetchers.GeminiInputRequired`/`GeminiRedirectConfirm`, each handled by a
   small modal (`GeminiInputModal`/`ConfirmModal`) that resumes navigation
   through `_browser_navigate` on confirm. Never gated by
   `self._require_online()` — that flag tracks Google reachability
-  specifically, unrelated to arbitrary web/gopher/gemini fetches.
+  specifically, unrelated to arbitrary web/gopher/gemini/search fetches.
+  Search mode: `fetchers.run_search(query, settings)` dispatches to
+  `search_google_cse`/`search_duckduckgo`/`search_searxng` per
+  `Settings.search_provider` (default `"google"`), with DuckDuckGo (no API
+  key needed) as the fallback for every path — see CHANGELOG `[2026-07-14]`
+  for the exact fallback chain. This replaced the old `ask.google_search`
+  shell-out to `hermes web search`, which stopped working once that
+  subcommand disappeared from the installed `hermes` CLI (see the removed
+  P3 ROADMAP item, now in CHANGELOG). Every search result becomes a real
+  numbered `render.Link` via `fetchers._search_results_to_document`, so
+  Search results get the same digit + `Enter` navigation as Gopher/Gemini
+  menus and HTTP page links.
 - **News tab** (`Ctrl+5`, P1 M3): `ListView#news-list`, the same lightbar
   pattern as the Email pane, showing entries from EVERY subscribed feed
   combined (like the Tasks pane combines all Google tasklists), sorted
@@ -194,13 +214,14 @@ Other tabs:
   bracketed phrase containing a space, and `Content.from_markup()` still ate
   it), so `markup=False` is the correct fix, not escaping.
 - **Settings tab** (`Ctrl+6`): nested `TabbedContent#settings-tabs` (mirrors
-  the Calendar tab's `#cal-tabs` Month/Week pattern), three sub-tabs,
+  the Calendar tab's `#cal-tabs` Month/Week pattern), four sub-tabs,
   `Alt+Left/Right` cycles between them while the Settings tab is active
   (`_cycle_settings_tab`, modeled on `_cycle_tab`, targets
   `SETTINGS_TAB_ORDER = ["settings-tab-general", "settings-tab-ai",
-  "settings-tab-feeds"]` instead of `TAB_ORDER`). Each sub-tab's content is
-  wrapped in its own `VerticalScroll` (independent scrolling per section,
-  not one giant outer scroll around the whole `TabbedContent`):
+  "settings-tab-feeds", "settings-tab-search"]` instead of `TAB_ORDER`).
+  Each sub-tab's content is wrapped in its own `VerticalScroll` (independent
+  scrolling per section, not one giant outer scroll around the whole
+  `TabbedContent`):
   - `TabPane#settings-tab-general`: `Switch#settings-encrypt-switch`
     (encrypt-at-rest on/off) + `RadioSet#settings-key-method` (passphrase
     vs. keyfile, hidden via `.hidden` CSS class when encryption is off) + a
@@ -216,10 +237,17 @@ Other tabs:
     a one-off background fetch (`_fetch_and_merge_one_feed`, `thread=True`,
     group `"news-fetch-one"`) for a newly-added feed so the News tab isn't
     empty for it until the next full refresh.
-  - A 4th sub-tab (`settings-tab-search`, Browser search providers) is a
-    planned follow-up — not added here, but the structure (a plain sibling
-    `TabPane` inside `#settings-tabs`) makes that a drop-in addition; extend
-    `SETTINGS_TAB_ORDER` too if/when it lands.
+  - `TabPane#settings-tab-search` (Browser tab search provider, added
+    2026-07-14): `RadioSet#settings-search-provider`
+    (`rb-search-google`/`rb-search-duckduckgo`/`rb-search-searxng`, backing
+    `Settings.search_provider`) + two conditionally-`.hidden` groups
+    (`#settings-google-group`: `Input#settings-google-cse-key` +
+    `Input#settings-google-cse-id`; `#settings-searxng-group`:
+    `Input#settings-searxng-url`) that `on_radio_set_changed`'s
+    `settings-search-provider` branch shows/hides based on the current
+    selection (both can be hidden at once, when DuckDuckGo is selected) +
+    `Button#settings-save-search`. See the Browser tab entry above and
+    CHANGELOG `[2026-07-14]` for the search backends this configures.
 
 ## 2. Key bindings
 
@@ -228,7 +256,7 @@ Other tabs:
 | `Ctrl+1..6` | switch **tab** (Mail / Calendar / Drive / Browser / News / Settings) |
 | `Ctrl+Left/Right` | cycle tabs — the reliable fallback for `Ctrl+1..6` (see caveat below) |
 | `Alt+1..4` | jump to a Mail **pane** (Email / Events / Tasks / Hermes); switches to the Mail tab first if needed |
-| `Alt+Left/Right/Up/Down` | move to the adjacent Mail pane (see `PANE_ADJACENCY` below) on the Mail tab; back/forward through session history on the Browser tab; cycle Settings sub-tabs (General/AI Provider/News Feeds) on the Settings tab (`Alt+Up/Down` still only does Mail-pane adjacency — no vertical cycling defined for Settings) |
+| `Alt+Left/Right/Up/Down` | move to the adjacent Mail pane (see `PANE_ADJACENCY` below) on the Mail tab; back/forward through session history on the Browser tab; cycle Settings sub-tabs (General/AI Provider/News Feeds/Search) on the Settings tab (`Alt+Up/Down` still only does Mail-pane adjacency — no vertical cycling defined for Settings) |
 | `Tab` / `Shift+Tab` | cycle Mail panes (no-op outside the Mail tab) |
 | `l` | focus + open `Select#email-label-select`'s dropdown (Email pane only — no-op elsewhere) |
 | `r` `a` `f` | reply / reply-all / forward (Email pane) — blocked with a warning notify while offline |
@@ -398,9 +426,9 @@ almost certainly why — the fix would be routing that result through
 │   ├── __init__.py            # exports main, gauth, ask
 │   ├── __main__.py            # `python -m google_tui` → GoogleTUI().run()
 │   ├── gauth.py               # Google auth + Gmail/Cal/Tasks/Drive helpers
-│   ├── ask.py                 # Hermes Ask (LLM) + search backends
+│   ├── ask.py                 # Hermes Ask (LLM) providers (Browser search moved to fetchers.py)
 │   ├── render.py              # protocol-agnostic Document/Block/Link model + DocumentView (P1 M1)
-│   ├── fetchers.py            # HTTP/Gopher/Gemini fetch (Browser, P1 M2) + feed fetch (News, P1 M3)
+│   ├── fetchers.py            # HTTP/Gopher/Gemini fetch + web search (Browser, P1 M2) + feed fetch (News, P1 M3)
 │   ├── setup_instructions.py  # shared Google-account/AI-provider onboarding text
 │   ├── cache.py               # SQLite local cache, optional per-row Fernet encryption
 │   ├── settings.py            # plaintext Settings dataclass (settings.json)
@@ -451,9 +479,13 @@ user_cache_dir("google-tui")/cache.db`; `KEY_FILE_PATH` and `SETTINGS_PATH`
 - `needs_agent(q)` — keyword heuristic; if True, question is delegated to the
   full Hermes agent via `subprocess` shelling `hermes "<question>" --print`.
 - `ask_hermes_agent(q)` — runs `hermes` and returns stdout.
-- `google_search(q)` — shells `hermes web search "<q>" --print`, returns text.
 - `build_ctx()` — pulls live threads/events/tasks into a compact text block
   for LLM context.
+- `google_search(q)` (the old `hermes web search` shell-out) was REMOVED
+  2026-07-14 — the Browser tab's Search mode now goes through
+  `fetchers.run_search` instead (see the Browser tab entry in §1 and
+  CHANGELOG). Don't recreate a search function here; `fetchers.py` owns all
+  Browser-tab network I/O, search included.
 
 `main.py`:
 - `GoogleTUI(App)` — main screen. Holds `self.svc`, `self.settings`,
@@ -568,9 +600,10 @@ live TTY app when you can't attach one. `pip install cairosvg` (into the
 project `.venv`) to convert those to PNG for visual review.
 
 Gotchas that cost time before:
-- Mock `ask.ask_llm`, `ask.ask_hermes_agent`, `ask.google_search`, and
-  `gauth.reply_to`/`forward`/`set_task_status` in tests to avoid network + real
-  email sends.
+- Mock `ask.ask_llm`, `ask.ask_hermes_agent`,
+  `fetchers.search_google_cse`/`search_duckduckgo`/`search_searxng` (or
+  `fetchers.run_search` directly), and `gauth.reply_to`/`forward`/
+  `set_task_status` in tests to avoid network + real email sends.
 - Do NOT assert on `ListView.highlighted`/`highlighted_child` after setting the
   attribute directly (read-only setters differ between versions). Drive selection
   through key presses instead.
@@ -625,17 +658,14 @@ Gotchas that cost time before:
   other binaries show metadata + "no text preview" (no download-to-`less` or
   in-terminal image rendering — that would need `textual-image`, not
   currently a dependency).
-- The Browser tab's Search mode uses `hermes web search` (shell-out) —
-  requires `hermes` CLI on PATH. **Verified during M2 that this subcommand
-  does not exist in the `hermes` CLI installed in this environment**
-  (`hermes web search "..."` prints argparse's top-level usage/"invalid
-  choice: 'web'" instead of running a search — the CLI's command set has
-  moved on since `ask.google_search` was written). `ask.google_search`
-  itself was left unchanged (pre-existing, out of scope for M2 — the
-  Browser tab's `_search_result_document()` just linkifies whatever comes
-  back, gracefully degrading to a document with no links if the shell-out
-  fails). Worth fixing in a follow-up: find the current equivalent
-  `hermes` subcommand (or API) for a web search.
+- **FIXED 2026-07-14** (was open since M2): the Browser tab's Search mode
+  used to shell out to `hermes web search`, a subcommand that no longer
+  exists in the installed `hermes` CLI — it degraded to an empty-links
+  Document instead of crashing, but was effectively dead. Replaced with
+  real search backends (`fetchers.run_search` → Google Custom Search /
+  DuckDuckGo / SearXNG, configurable in Settings' new Search sub-tab,
+  DuckDuckGo as the no-config fallback). See the Browser tab entry in §1
+  and CHANGELOG `[2026-07-14]` for the full design.
 - LLM model is hardcoded `tencent/hy3:free`; change in `ask.py` only.
 - Tab numbers are always-shown-dimmed, not hide-until-modifier-held — see the
   NOTE in §2 for why (no key-release event in Textual 8.2.8).

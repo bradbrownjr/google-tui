@@ -132,3 +132,60 @@ pick a provider:
 Whichever you pick, google-tui builds your Google context locally (recent
 email/events) and hands it to that provider as part of the prompt — no
 separate Google integration needed inside the AI CLI itself.
+
+## 9. Browser tab search — Google Custom Search setup (optional)
+
+The Browser tab's Search mode (bare text with no scheme in the address
+bar) works out of the box with **DuckDuckGo** — no account, no API key,
+nothing to configure. If you'd rather use **Google** search results (the
+default provider — Settings → Search sub-tab), you need two things from a
+*separate* Google product than the Workspace APIs above: the **Custom
+Search JSON API** and a **Programmable Search Engine**. This is a
+different console than the OAuth setup in §1–7, so don't reuse those
+credentials here.
+
+1. **Create (or reuse) a Programmable Search Engine.**
+   1. Go to [programmablesearchengine.google.com](https://programmablesearchengine.google.com/)
+      and sign in with the same Google account (any account works — this
+      doesn't need to be the account whose Gmail/Calendar/Drive google-tui
+      reads).
+   2. **Add** → give it any name (e.g. "google-tui search").
+   3. Under **What to search**, choose **Search the entire web** — a
+      Programmable Search Engine defaults to a curated list of sites
+      otherwise, which isn't what you want for a general-purpose Browser
+      tab.
+   4. Click **Create**, then open the new search engine's **Overview** —
+      or **Setup** → **Basics** on older UI — and copy the **Search engine
+      ID**. This is the value that goes in google-tui's Settings as
+      `google_cse_id` (labeled "Search Engine ID (cx)" in the Search
+      sub-tab — Google's API calls this parameter `cx`).
+
+2. **Enable the Custom Search JSON API and get an API key.**
+   1. Go back to [console.cloud.google.com](https://console.cloud.google.com/)
+      — you can use the same project from §1, or a fresh one; this API
+      isn't affected by the OAuth consent/test-user setup in §3–4.
+   2. **APIs & Services** → **Enabled APIs & services** → **+ Enable APIs
+      and Services** → search for and enable **Custom Search API**.
+   3. **APIs & Services** → **Credentials** → **+ Create Credentials** →
+      **API key**. This mints a plain API key (not an OAuth client — no
+      consent screen, no test users, no expiry).
+   4. Optional but recommended: click the new key → **Restrict key** →
+      under **API restrictions**, limit it to **Custom Search API** only,
+      so a leaked key can't be used against your other enabled APIs.
+   5. Copy the key — this is `google_cse_api_key` in google-tui's Settings
+      (labeled "Google Custom Search API key," entered as a password-style
+      field).
+
+3. **Enter both values in google-tui.** Settings tab → **Search** sub-tab
+   → paste the API key and Search Engine ID into their fields → **Save
+   search settings**. With `search_provider` left on the default
+   **Google**, the Browser tab's Search mode now calls the real Custom
+   Search JSON API; if the call ever fails (bad key, quota exceeded,
+   network issue), it automatically falls back to DuckDuckGo for that
+   search rather than showing an error.
+
+**Free tier:** the Custom Search JSON API includes 100 free queries/day;
+beyond that it's billed per 1,000 queries. Fine for a personal tool used
+interactively; if you expect to blow past 100 searches/day, either enable
+billing on this API specifically or just leave `search_provider` on
+DuckDuckGo, which has no quota at all for this app's usage pattern.

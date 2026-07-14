@@ -15,9 +15,11 @@ prompt.
     agent already, so both plain questions and action-shaped ones go through
     the same one-shot CLI call (`opencode run`, `claude -p`, `gemini -p`).
 
-Search button:
-  - We could not find a hardcoded searxng URL, so we shell `hermes` web search,
-    which already knows the configured searxng backend. Returns text results.
+Browser-tab web search (Google CSE / DuckDuckGo / SearXNG) lives in
+`fetchers.py` (`run_search` and friends), not here — this module's
+`google_search`/`hermes web search` shell-out was removed once that
+subcommand stopped existing in the installed `hermes` CLI; see
+CHANGELOG for the fix.
 """
 from __future__ import annotations
 import os
@@ -212,16 +214,3 @@ def get_provider(provider_id: str, *, nous_api_key: str | None = None) -> AIProv
 def any_provider_reachable(nous_api_key: str | None = None) -> bool:
     return any(get_provider(pid, nous_api_key=nous_api_key).is_reachable()
               for pid in PROVIDER_CLASSES)
-
-
-def google_search(query: str, timeout: int = 90) -> str:
-    """Run a web search via the hermes CLI (uses its searxng backend)."""
-    try:
-        r = subprocess.run(["hermes", "web", "search", query],
-                           capture_output=True, text=True, timeout=timeout)
-        out = (r.stdout or "") + (r.stderr or "")
-        return out.strip() or "(no results)"
-    except subprocess.TimeoutExpired:
-        return "(search timed out)"
-    except Exception as e:
-        return f"(search error: {e})"

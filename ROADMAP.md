@@ -96,14 +96,6 @@ the next epic.
   method currently clears the cache and asks for a restart rather than
   rebuilding `self._cache` with the new key in-session. Fine for now; worth
   revisiting if restart-to-apply proves annoying in practice.
-- [ ] **`hermes web search` subcommand no longer exists.** Discovered while
-  implementing the Browser tab's Search mode (M2): the installed `hermes`
-  CLI's argparse command set doesn't include `web`/`search` anymore (`hermes
-  web search "<q>"` prints top-level usage / "invalid choice: 'web'"
-  instead of running a search) — `ask.google_search`'s shell-out is stale
-  against the current CLI. Find the current equivalent (subcommand or API)
-  and fix `ask.google_search`; until then, the Browser tab's Search mode
-  degrades gracefully (a Document with no links) rather than crashing.
 
 ## P4 — Nice-to-have
 

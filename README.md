@@ -46,21 +46,28 @@ toggling a task) are disabled with a warning instead of failing silently.
   available offline too.
 - **Browser tab:** an address bar that speaks `http(s)://`, `gopher://`,
   and `gemini://` (with TOFU cert trust), plus a Search mode for bare
-  text (no scheme) via your configured searxng backend (shells `hermes web
-  search`). Numbered `[N]` links in the page — like every Gopher/Gemini
-  menu and every extracted search result — jump with digits + `Enter`.
-  `Alt+Left/Right` are Back/Forward through this session's history (no
-  re-fetching); `Tab` toggles focus between the address bar and the page.
+  text (no scheme) via a configurable real search provider — Google
+  (Custom Search JSON API), DuckDuckGo (no API key needed, the default
+  fallback), or your own SearXNG instance, picked in Settings. A "new tab
+  page" row of bookmark buttons (Google, Wikipedia, Gopherpedia, Gemini
+  Protocol) sits under the address bar until you navigate anywhere, then
+  disappears for the rest of the session. Numbered `[N]` links in the
+  page — like every Gopher/Gemini menu and every search result — jump
+  with digits + `Enter`. `Alt+Left/Right` are Back/Forward through this
+  session's history (no re-fetching); `Tab` toggles focus between the
+  address bar and the page.
 - **News tab:** an RSS/Atom reader — entries from every feed you subscribe
   to (managed in Settings), combined into one lightbar list, newest first.
   `Enter`/`Space` opens an entry, rendered through the same shared
   Document view as the Browser tab.
-- **Settings tab:** three sub-tabs (`Alt+Left/Right` cycles between them
+- **Settings tab:** four sub-tabs (`Alt+Left/Right` cycles between them
   while the Settings tab is active) — **General** (encrypt-at-rest for the
   local cache, off by default; choose how the encryption key is handled;
   clear the local cache), **AI Provider** (pick your AI provider, set a
-  Nous API key), and **News Feeds** (manage your News-tab feed
-  subscriptions — add/remove URLs) — all without hand-editing config files.
+  Nous API key), **News Feeds** (manage your News-tab feed subscriptions —
+  add/remove URLs), and **Search** (pick the Browser tab's search provider
+  — Google/DuckDuckGo/SearXNG — and set the API key/Search Engine ID or
+  instance URL it needs) — all without hand-editing config files.
 
 **First run with nothing configured?** google-tui still launches — an
 onboarding wizard walks you through whatever's missing (Google account,
@@ -87,7 +94,7 @@ full Google Cloud Console walkthrough.
 | `Ctrl+1..6` | switch tab (Mail / Calendar / Drive / Browser / News / Settings) |
 | `Ctrl+Left/Right` | cycle tabs — use this if `Ctrl+1..6` doesn't reach the app (common in browser-based terminals, which reserve `Ctrl+1..8` for switching *their own* tabs) |
 | `Alt+1..4` | jump to Mail pane (Email / Events / Tasks / Hermes) |
-| `Alt+Left/Right/Up/Down` | move to the adjacent Mail pane; on the Browser tab, back/forward through history; on the Settings tab, cycle General/AI Provider/News Feeds |
+| `Alt+Left/Right/Up/Down` | move to the adjacent Mail pane; on the Browser tab, back/forward through history; on the Settings tab, cycle General/AI Provider/News Feeds/Search |
 | `Tab` / `Shift+Tab` | cycle Mail panes |
 | `l` | open the folder/label picker (Email pane) |
 | `r` `a` `f` | reply / reply-all / forward (Email pane, disabled while offline) |

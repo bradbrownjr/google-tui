@@ -3,6 +3,132 @@
 Format: keep newest at top. One entry per meaningful change. Reference files
 touched and any breaking notes.
 
+## [2026-07-14]
+
+### Added
+- **Browser tab "new tab page" bookmarks row.** A row of four starter-
+  destination buttons (`#browser-bookmarks`, a `Horizontal` right below
+  `#browser-bar`, before `#browser-doc`) demonstrating the tab's multi-
+  protocol nature — one shortcut per non-search protocol the tab already
+  speaks: Google (`https://www.google.com`), Wikipedia
+  (`https://en.wikipedia.org`), Gopherpedia (`gopher://gopher.floodgap.com`),
+  and Gemini Protocol (`gemini://geminiprotocol.net/`) — a new module-level
+  `_BROWSER_BOOKMARKS` list near `_classify_address` in `main.py`. This is a
+  session-lifetime "new tab page" pattern, not a persistent bookmark bar:
+  `self._browser_started: bool` (new `__init__` attribute) flips to `True`
+  the first time `_browser_apply_document` runs on a genuinely successful
+  page load, at which point `#browser-bookmarks` gets the existing `.hidden`
+  CSS class and never reappears for the rest of the session (the
+  Gemini-input-required/redirect-confirm intermediate branches deliberately
+  don't trigger this — only a real successful apply does). Clicking a
+  bookmark button (`on_button_pressed`'s new `event.button.id.startswith(
+  "browser-bookmark-")` branch, looking the index up in
+  `_BROWSER_BOOKMARKS`) sets `#browser-url`'s value and calls
+  `_browser_navigate(url, push_history=True)` — the same path typed input
+  already used through the `browser-go` button.
+
+### Fixed
+- **Browser tab Search mode was broken — `hermes web search` doesn't exist
+  anymore.** Replaced the shell-out (`ask.google_search` → `hermes web
+  search "<q>"`, which just prints argparse's top-level usage on the
+  installed `hermes` CLI — documented as a known-broken P3 ROADMAP item
+  since M2) with three real search backends implemented directly in
+  `fetchers.py`, configurable in a new Settings sub-tab, defaulting to
+  Google:
+  - `search_google_cse(query, api_key, cse_id)` — Google Custom Search
+    JSON API (`GET https://www.googleapis.com/customsearch/v1`), parsing
+    `response.json()["items"]` (`title`/`link`/`snippet`). Needs an API key
+    + a Programmable Search Engine ID ("cx") — SETUP.md gets a new §9
+    walking through creating both, matching the existing Google Cloud
+    Console walkthrough's style.
+  - `search_duckduckgo(query)` — DuckDuckGo's non-JS HTML results page
+    (`GET https://html.duckduckgo.com/html/`), needs a real browser-like
+    `User-Agent` (confirmed empirically: DDG's HTML endpoint 403s this
+    app's normal `DEFAULT_USER_AGENT`). Outbound links are wrapped in a
+    DDG redirector (`//duckduckgo.com/l/?uddg=<url-encoded-target>&...`) —
+    unwrapped via `urllib.parse.parse_qs`/`unquote` so numbered links go
+    straight to the real target. No API key needed — this is the reliable
+    no-config-needed baseline every other provider path falls back to.
+    Regex/string extraction, not a real HTML parser (DDG's markup can
+    drift); returns a valid empty-results `Document` rather than raising
+    if nothing parses, matching this app's existing degrade-gracefully
+    philosophy.
+  - `search_searxng(query, base_url)` — a self-hosted/public SearXNG
+    instance's JSON output (`GET {base_url}/search?format=json`), parsing
+    `response.json()["results"]` (`title`/`url`/`content`). Some public
+    instances disable `format=json`; on any exception this falls back
+    *within the same function* to fetching the same URL without
+    `format=json` and routing the HTML response through the existing
+    `render.parse_html` (already used by `fetch_http`) instead of writing
+    a second bespoke parser.
+  - `_search_results_to_document(query, results)` — shared helper: turns a
+    flat `list[tuple[title, url, snippet]]` into a `Document` with real
+    numbered `render.Link`s, giving Search results the exact same `[N]` +
+    digit + `Enter` navigation every other Browser mode (Gopher/Gemini
+    menus, HTTP page links) already has — a genuine improvement over the
+    old `_search_result_document()` (removed, along with the now-unused
+    `_SEARCH_RESULT_URL_RE`), which only regex-linkified bare `https?://`
+    tokens out of `hermes`'s opaque, unstructured stdout.
+  - `run_search(query, settings)` — the dispatcher, with DuckDuckGo as the
+    fallback for every path: `search_provider == "google"` tries
+    `search_google_cse` only if BOTH `google_cse_api_key` and
+    `google_cse_id` are set, and falls through to `search_duckduckgo` on
+    ANY exception (or immediately, with no half-configured API attempt, if
+    either key is missing); `search_provider == "searxng"` tries
+    `search_searxng` only if `searxng_url` is set, same fallback-on-
+    exception behavior; `search_provider == "duckduckgo"` calls
+    `search_duckduckgo` directly. `main.py`'s `_browser_fetch_dispatch`
+    search branch now just calls `fetchers.run_search(target, self.settings)`.
+  - `ask.google_search` (the old shell-out) removed entirely — grepped the
+    whole repo first to confirm its Browser-tab call site was the only
+    caller (the Hermes Ask pane's `needs_agent`/`ask_hermes_agent`/
+    `AIProvider` classes are a separate, untouched surface).
+  - New Settings sub-tab, `TabPane#settings-tab-search` (4th sibling inside
+    `TabbedContent#settings-tabs`, appended to `SETTINGS_TAB_ORDER` so
+    `Alt+Left/Right` cycling picks it up): `RadioSet#settings-search-provider`
+    (Google/DuckDuckGo/SearXNG) plus two conditionally-`.hidden` field
+    groups (`#settings-google-group`: API key + Search Engine ID Inputs;
+    `#settings-searxng-group`: instance URL Input) that show/hide both at
+    compose time and live (`on_radio_set_changed`'s new
+    `settings-search-provider` branch) — both groups can be hidden
+    simultaneously when DuckDuckGo is selected. `Button#settings-save-search`
+    writes the three new `Settings` fields (empty Input → `None`, matching
+    the existing Nous-key-Save convention) and calls `save_settings`.
+  - New `Settings` fields: `search_provider` (default `"google"`),
+    `google_cse_api_key`, `google_cse_id`, `searxng_url` (all
+    `str | None`, `settings.py`).
+  - `HELP_TEXT`'s `SETTINGS TAB`/`BROWSER TAB` sections and
+    `_context_help_text`'s `tab-settings` branch updated for the new
+    sub-tab and the bookmarks row.
+
+### Verification
+Headless `run_test` + `pilot`, each Textual scenario its own process (per
+AGENTS.md §6), all network mocked (`fetchers.search_google_cse`/
+`search_duckduckgo`/`search_searxng`/`run_search`/`fetch_http`, plus
+`gauth.get_credentials` mocked and `app.svc` short-circuited to `None` so
+the background live-refresh thread's real Gmail/Calendar/Drive calls fail
+fast inside their own try/excepts instead of touching the network) —
+bookmarks row visible with 4 buttons on a fresh Browser visit, clicking one
+navigates (mocked `fetch_http` invoked, `#browser-doc`'s document updates)
+and the row hides afterward; typing free text into `#browser-url` and
+submitting calls `fetchers.run_search` with the typed text and `app.settings`,
+and the resulting Document's numbered `[N]` links are present and
+activatable via digit + `Enter` (verified navigating to link `[1]`'s real
+URL); the Settings Search sub-tab's Google/SearXNG field groups show/hide
+correctly both at compose time (`Settings.search_provider` pre-set to each
+of the 3 values across separate processes) and live (simulated `RadioSet`
+click); saving search settings round-trips through `settings.json` via
+`load_settings()`. Separately, `fetchers.run_search`'s fallback logic and
+each backend's response parsing were unit-tested directly with NO Textual
+involved (mocked `requests.get`) — google-unconfigured/raises-on-call,
+searxng-unconfigured/raises-on-call, DuckDuckGo HTML parsing + redirect
+unwrapping + graceful-empty-on-failure, Google CSE item parsing, SearXNG
+JSON-then-HTML-fallback. `python -c "import google_tui.main"` compiles
+cleanly. Confirmed the real `~/.config/google-tui`/`~/.cache/google-tui`
+were untouched throughout (tests ran under isolated `XDG_CONFIG_HOME`/
+`XDG_CACHE_HOME`). Scratch test scripts deleted when done (no committed
+`tests/` dir, per AGENTS.md §6).
+
 ## [2026-07-13]
 
 ### Fixed (live-testing bug reports, second pass)

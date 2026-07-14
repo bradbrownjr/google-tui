@@ -18,9 +18,10 @@ from __future__ import annotations
 import calendar
 import datetime as dt
 import hashlib
+import re
 import socket
 import ssl
-from urllib.parse import urljoin, urlparse
+from urllib.parse import parse_qs, unquote, urljoin, urlparse
 
 import feedparser
 import requests
@@ -364,3 +365,177 @@ def fetch_feed(url: str, timeout: int = 15) -> list[dict]:
             "feed_url": url,
         })
     return entries
+
+
+# ---------------------------------------------------------------------------
+# Web search — Browser tab Search mode (replaces the defunct
+# ``hermes web search`` shell-out, see ROADMAP/CHANGELOG). Three backends
+# (Google Programmable Search / DuckDuckGo HTML / SearXNG), each turned into
+# a ``render.Document`` with real numbered ``[N]`` links so Search results
+# navigate exactly like Gopher/Gemini menus and HTTP page links do.
+# ---------------------------------------------------------------------------
+
+# A browser-like User-Agent is required here: DuckDuckGo's HTML endpoint
+# (unlike its JSON/instant-answer API) 403s requests carrying a generic/
+# empty or clearly-non-browser User-Agent — confirmed empirically against
+# this app's default ``DEFAULT_USER_AGENT``.
+_DDG_USER_AGENT = (
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/124.0.0.0 Safari/537.36"
+)
+
+_TAG_RE = re.compile(r"<[^>]+>")
+_DDG_A_RE = re.compile(r'<a\s+([^>]*\bclass="result__a"[^>]*)>(.*?)</a>', re.S)
+_DDG_SNIPPET_RE = re.compile(
+    r'\bclass="result__snippet"[^>]*>(.*?)</(?:a|div)>', re.S)
+_HREF_RE = re.compile(r'href="([^"]*)"')
+
+
+def _strip_tags(html: str) -> str:
+    return render.decode_html_entities(_TAG_RE.sub("", html)).strip()
+
+
+def _unwrap_ddg_redirect(href: str) -> str:
+    """DuckDuckGo's HTML results wrap outbound links in a redirector
+    (``//duckduckgo.com/l/?uddg=<url-encoded-target>&rut=...``) — unwrap it
+    so numbered links go straight to the real target.
+    """
+    if not href:
+        return href
+    candidate = "https:" + href if href.startswith("//") else href
+    parsed = urlparse(candidate)
+    if parsed.netloc.endswith("duckduckgo.com") and parsed.path.startswith("/l/"):
+        qs = parse_qs(parsed.query)
+        target = qs.get("uddg")
+        if target:
+            return unquote(target[0])
+    return href
+
+
+def _search_results_to_document(query: str, results: list[tuple[str, str, str]]) -> render.Document:
+    """Shared helper: turn a flat list of ``(title, url, snippet)`` tuples
+    into a ``Document`` with real numbered ``[N]`` links — matching how
+    every other Browser mode (Gopher/Gemini menus, HTTP page links) already
+    supports digit + ``Enter`` navigation.
+    """
+    if not results:
+        return render.Document(
+            title=f"Search: {query}",
+            blocks=[render.Block(kind="paragraph", text="(no results)")],
+            links=[],
+        )
+
+    blocks: list[render.Block] = []
+    links: list[render.Link] = []
+    for i, (title, url, snippet) in enumerate(results, start=1):
+        label = title or url
+        links.append(render.Link(number=i, url=url, text=label, kind="content"))
+        blocks.append(render.Block(kind="paragraph", text=f"[{i}] {label}"))
+        if snippet:
+            blocks.append(render.Block(kind="paragraph", text=f"    {snippet}"))
+
+    return render.Document(title=f"Search: {query}", blocks=blocks, links=links)
+
+
+def search_google_cse(query: str, api_key: str, cse_id: str, timeout: int = 15) -> render.Document:
+    """Google Programmable Search (Custom Search JSON API). Needs an API
+    key + Search Engine ID ("cx") — see SETUP.md for how to create both.
+    """
+    resp = requests.get(
+        "https://www.googleapis.com/customsearch/v1",
+        params={"key": api_key, "cx": cse_id, "q": query},
+        timeout=timeout,
+    )
+    resp.raise_for_status()
+    items = resp.json().get("items", [])
+    results = [(item.get("title", ""), item.get("link", ""), item.get("snippet", ""))
+               for item in items]
+    return _search_results_to_document(query, results)
+
+
+def search_duckduckgo(query: str, timeout: int = 15) -> render.Document:
+    """DuckDuckGo's non-JS HTML results page. No API key needed — this is
+    the no-config-needed baseline every other search path falls back to.
+    """
+    try:
+        resp = requests.get(
+            "https://html.duckduckgo.com/html/",
+            params={"q": query},
+            headers={"User-Agent": _DDG_USER_AGENT},
+            timeout=timeout,
+        )
+        resp.raise_for_status()
+    except requests.RequestException:
+        return _search_results_to_document(query, [])
+
+    titles_urls: list[tuple[str, str]] = []
+    for attrs, inner in _DDG_A_RE.findall(resp.text):
+        href_m = _HREF_RE.search(attrs)
+        href = _unwrap_ddg_redirect(href_m.group(1)) if href_m else ""
+        title = _strip_tags(inner)
+        if href:
+            titles_urls.append((title, href))
+
+    snippets = [_strip_tags(s) for s in _DDG_SNIPPET_RE.findall(resp.text)]
+
+    results = []
+    for i, (title, url) in enumerate(titles_urls):
+        snippet = snippets[i] if i < len(snippets) else ""
+        results.append((title, url, snippet))
+
+    return _search_results_to_document(query, results)
+
+
+def search_searxng(query: str, base_url: str, timeout: int = 15) -> render.Document:
+    """SearXNG instance search. Tries JSON output first (most instances
+    support ``format=json``); some public instances disable it, in which
+    case this falls back to fetching the plain HTML results page and
+    routing it through the existing ``render.parse_html`` rather than
+    writing a second bespoke parser.
+    """
+    url = f"{base_url.rstrip('/')}/search"
+    try:
+        resp = requests.get(
+            url, params={"q": query, "format": "json"},
+            headers={"User-Agent": DEFAULT_USER_AGENT}, timeout=timeout,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        results = [(r.get("title", ""), r.get("url", ""), r.get("content", ""))
+                   for r in data.get("results", [])]
+        return _search_results_to_document(query, results)
+    except Exception:
+        resp = requests.get(
+            url, params={"q": query},
+            headers={"User-Agent": DEFAULT_USER_AGENT}, timeout=timeout,
+        )
+        resp.raise_for_status()
+        return render.parse_html(resp.text, base_url=resp.url)
+
+
+def run_search(query: str, settings, timeout: int = 15) -> render.Document:
+    """Dispatch to the configured search provider, with DuckDuckGo as the
+    reliable no-config-needed fallback for every path — see AGENTS.md /
+    the task brief for the exact fallback chain. This is what replaces the
+    old, now-broken ``hermes web search`` shell-out.
+    """
+    provider = settings.search_provider
+
+    if provider == "google":
+        if settings.google_cse_api_key and settings.google_cse_id:
+            try:
+                return search_google_cse(query, settings.google_cse_api_key,
+                                          settings.google_cse_id, timeout=timeout)
+            except Exception:
+                return search_duckduckgo(query, timeout=timeout)
+        return search_duckduckgo(query, timeout=timeout)
+
+    if provider == "searxng":
+        if settings.searxng_url:
+            try:
+                return search_searxng(query, settings.searxng_url, timeout=timeout)
+            except Exception:
+                return search_duckduckgo(query, timeout=timeout)
+        return search_duckduckgo(query, timeout=timeout)
+
+    return search_duckduckgo(query, timeout=timeout)
