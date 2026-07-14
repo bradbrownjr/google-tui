@@ -48,6 +48,84 @@ def services() -> dict:
     }
 
 
+# Keep in sync with SETUP.md §7's scope list — that file documents the same
+# set for the manual first-time flow that mints TOKEN_PATH in the first
+# place (reauthorize() below can't run at all until that's happened once).
+GOOGLE_SCOPES = [
+    "https://www.googleapis.com/auth/gmail.modify",
+    "https://www.googleapis.com/auth/calendar",
+    "https://www.googleapis.com/auth/drive",
+    "https://www.googleapis.com/auth/tasks",
+    "https://www.googleapis.com/auth/contacts.readonly",
+]
+
+
+def reauthorize(scopes: list[str] | None = None) -> None:
+    """Runs a fresh Google OAuth "installed app" consent flow and overwrites
+    TOKEN_PATH with the result — the in-app replacement for the manual
+    "write a one-off script and run it" process SETUP.md §7 used to be the
+    only option for.
+
+    Reuses the OAuth CLIENT (client_id/client_secret/token_uri) already
+    embedded in the EXISTING token file, so the user never has to re-find or
+    re-paste their downloaded client_secret.json for a re-auth — only a
+    genuinely first-ever setup (no TOKEN_PATH yet) still needs that, since
+    there is no existing client to reuse. That first-time case still goes
+    through the manual SETUP.md walkthrough; this function deliberately
+    doesn't try to replace it.
+
+    BLOCKS the calling thread until the user finishes the browser consent
+    flow (or it times out) — this can take minutes, not just a network
+    round trip, so callers MUST run this on a worker thread, never the main
+    thread (same rule as every other gauth call in this app — see
+    AGENTS.md's fetch/apply split).
+    """
+    if not os.path.exists(TOKEN_PATH):
+        raise RuntimeError(
+            f"No existing token at {TOKEN_PATH} — this looks like a first-time "
+            "setup, which still needs the manual OAuth client walkthrough in "
+            "SETUP.md (§1-7). Re-authorizing an EXISTING token never needs "
+            "that again after this first time."
+        )
+    tok = json.load(open(TOKEN_PATH))
+    client_id = tok.get("client_id")
+    client_secret = tok.get("client_secret")
+    token_uri = tok.get("token_uri") or "https://oauth2.googleapis.com/token"
+    if not client_id or not client_secret:
+        raise RuntimeError(
+            f"{TOKEN_PATH} is missing client_id/client_secret — can't reuse it "
+            "for re-authorization. Re-run the manual flow in SETUP.md §7."
+        )
+    # Imported lazily: only this one function needs it, and it's a fairly
+    # heavy optional dependency (pulls in a local HTTP server + a browser
+    # launcher) that every other gauth call has no use for.
+    from google_auth_oauthlib.flow import InstalledAppFlow
+
+    client_config = {
+        "installed": {
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+            "token_uri": token_uri,
+            "redirect_uris": ["http://localhost"],
+        }
+    }
+    flow = InstalledAppFlow.from_client_config(client_config, scopes=scopes or GOOGLE_SCOPES)
+    # access_type="offline" + prompt="consent": without BOTH of these, a
+    # RE-consent (the normal case here — the user has already granted access
+    # once before) very often does NOT come back with a refresh_token at
+    # all, since Google only issues one on a truly first-ever consent by
+    # default. Forcing both guarantees a fresh refresh_token every time,
+    # which is the entire point of a flow meant to replace an expired one.
+    # port=0 lets the OS pick a free local port instead of hardcoding one
+    # that might already be in use.
+    creds = flow.run_local_server(
+        port=0, access_type="offline", prompt="consent", open_browser=True, timeout_seconds=300,
+    )
+    with open(TOKEN_PATH, "w") as f:
+        f.write(creds.to_json())
+
+
 # ----------------------------------------------------------------------------
 # Gmail (threaded)
 # ----------------------------------------------------------------------------

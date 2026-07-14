@@ -59,12 +59,14 @@ Google Cloud tutorial, this is the same place under a new name.
 the test users you list can complete the OAuth flow, and Google expires
 each test user's authorization (and the refresh token that comes with it)
 **7 days** after they consent. For a personal single-user CLI tool this
-is the normal, expected setup — you'll just need to re-run the local auth
-flow (step 6) roughly weekly, or whenever google-tui reports an expired
-token. Switching to "In production" removes the 7-day cap, but Gmail's
-scopes are considered "restricted," so publishing may prompt Google's
-formal verification review — usually more overhead than it's worth for a
-tool only you use.
+is the normal, expected setup — you'll just need to re-authorize roughly
+weekly, or whenever google-tui reports an expired token. **After the
+first-time setup below, that's a "Re-authorize Google account" button in
+Settings → General, not a script to write and run** — see §7's note.
+Switching to "In production" removes the 7-day cap, but Gmail's scopes are
+considered "restricted," so publishing may prompt Google's formal
+verification review — usually more overhead than it's worth for a tool
+only you use.
 
 ## 5. Create an OAuth client
 
@@ -102,7 +104,7 @@ driving directions:
 Skip this section entirely if you don't need the Navigation tab — every
 other API in this project is free.
 
-## 7. Run the local auth flow to mint a token
+## 7. Run the local auth flow to mint a token (first time only)
 
 google-tui reads Google credentials from `~/.hermes/google_token.json` —
 a small JSON file with an access token, a `refresh_token`, and the scopes
@@ -122,6 +124,21 @@ https://www.googleapis.com/auth/contacts.readonly
 Save the resulting credentials as `~/.hermes/google_token.json`. Once
 that file exists, launch `google-tui` — the onboarding wizard won't
 appear again for the Google side of setup.
+
+**This manual script is only needed ONCE, ever** — to bootstrap the very
+first token, since only that step actually creates an OAuth *client*
+(client_id/client_secret) for google-tui to use, and there's no way to
+invent one from inside the app. Every time after that — the routine
+**7-day expiry** from §4, or adding a new scope like `contacts.readonly`
+to an older token — use the **"Re-authorize Google account" button in
+Settings → General** instead: it reuses the OAuth client already embedded
+in your existing token file, opens your browser to Google's consent
+screen, and writes the refreshed token back for you. No script, no console
+commands, no scopes list to retype. The same button also appears on the
+first-run onboarding screen if google-tui detects your token has expired
+or gone missing — but note it only helps if `~/.hermes/google_token.json`
+already exists (even an expired one); a truly first-ever setup with no
+token file at all still needs the manual flow above once.
 
 ## 8. AI provider setup (Ask pane)
 

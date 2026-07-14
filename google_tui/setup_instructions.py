@@ -22,6 +22,11 @@ GOOGLE ACCOUNT SETUP (Gmail / Calendar / Drive / Tasks)
 6. Run the local auth flow once with that client secret to mint a token
    file with Gmail/Calendar/Drive/Tasks scopes and a refresh_token.
 7. Point google-tui at that token file in Settings.
+
+This walkthrough (steps 1-6) is only needed ONCE, ever, to create the OAuth
+client. If a token already exists but expired (the usual 7-day Testing-app
+cap) or is missing a scope, use the "Re-authorize Google account" button
+below/in Settings instead — no script to write or run.
 """
 
 AI_PROVIDER_SETUP_STEPS = """\

@@ -73,14 +73,18 @@ toggling a task) are disabled with a warning instead of failing silently.
   API and linking Cloud Billing (it's part of paid Google Maps Platform,
   unlike the other APIs this app uses).
 - **Settings tab:** five sub-tabs (`Alt+Left/Right` cycles between them
-  while the Settings tab is active) — **General** (encrypt-at-rest for the
-  local cache, off by default; choose how the encryption key is handled;
-  clear the local cache), **AI Provider** (pick your AI provider, set a
-  Nous API key), **News Feeds** (manage your News-tab feed subscriptions —
-  add/remove URLs), **Search** (pick the Browser tab's search provider
-  — Google/DuckDuckGo/SearXNG — and set the API key/Search Engine ID or
-  instance URL it needs), and **Navigation** (set the Routes API key used
-  by the Navigation tab) — all without hand-editing config files.
+  while the Settings tab is active) — **General** (a "Re-authorize Google
+  account" button — opens your browser for sign-in, no console commands
+  needed, use it whenever a tab shows an auth error or roughly weekly since
+  Google expires test-app tokens after 7 days, see [SETUP.md](SETUP.md) §4;
+  encrypt-at-rest for the local cache, off by default; choose how the
+  encryption key is handled; clear the local cache), **AI Provider** (pick
+  your AI provider, set a Nous API key), **News Feeds** (manage your
+  News-tab feed subscriptions — add/remove URLs), **Search** (pick the
+  Browser tab's search provider — Google/DuckDuckGo/SearXNG — and set the
+  API key/Search Engine ID or instance URL it needs), and **Navigation**
+  (set the Routes API key used by the Navigation tab) — all without
+  hand-editing config files.
 - **Contacts tab:** your Google Contacts, searchable live with fuzzy
   matching as you type. `Enter`/`Space` opens a contact's detail (name,
   email, phone) with a "Compose Email" button; a "Compose New" button

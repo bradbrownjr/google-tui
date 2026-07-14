@@ -534,6 +534,10 @@ class GoogleTUI(App):
         self._contacts_by_cid: dict[str, dict] = {}
         self._contacts_apply_gen = 0
         self._contacts_fetch_started = False
+        # In-app Google re-authorization — guards against a double-click
+        # spawning two concurrent OAuth local-server flows.
+        self._google_reauth_in_progress = False
+        self._google_reauth_status_id: str | None = None
 
     # ---- data layer ----
     @cached_property
@@ -695,6 +699,16 @@ class GoogleTUI(App):
                     with TabbedContent(id="settings-tabs"):
                         with TabPane("General", id="settings-tab-general"):
                             with VerticalScroll(id="settings-general-scroll"):
+                                yield Label("Google account", classes="pane-title-text")
+                                yield Button("Re-authorize Google account", id="settings-reauth-google")
+                                yield Static(
+                                    "Opens your browser for Google sign-in — no console commands to "
+                                    "copy. Use this if a tab shows an auth error, if you just added a "
+                                    "new scope (e.g. Contacts), or proactively before your token expires "
+                                    "(Google expires test-user tokens ~weekly — see SETUP.md §4).",
+                                    id="settings-reauth-note", classes="muted",
+                                )
+                                yield Static("", id="settings-reauth-status", classes="muted")
                                 with Horizontal(classes="settings-row"):
                                     yield Label("Encrypt local cache at rest")
                                     yield Switch(value=self.settings.encrypt_at_rest, id="settings-encrypt-switch")
@@ -2161,6 +2175,88 @@ class GoogleTUI(App):
             self.notify(f"Export failed: {e}", severity="error")
 
     # ---- settings tab ----
+    # ---- Google re-authorization (in-app OAuth flow, replaces the old
+    # copy-a-script-and-run-it-yourself process) ----
+    def _start_google_reauth(self, button_id: str, status_id: str | None = None) -> None:
+        if self._google_reauth_in_progress:
+            return  # already running — the local server binds its own port
+                    # (port=0), so a second click wouldn't conflict, just confuse
+        self._google_reauth_in_progress = True
+        try:
+            self.query_one(f"#{button_id}", Button).disabled = True
+        except Exception:
+            pass
+        self._google_reauth_status_id = status_id
+        self.notify(
+            "Opening your browser for Google sign-in… complete the consent "
+            "screen there. (If no browser opens, check the terminal/log for "
+            "the URL to open manually.)"
+        )
+        if status_id:
+            try:
+                self.query_one(f"#{status_id}", Static).update("Waiting for browser sign-in…")
+            except Exception:
+                pass
+        self.run_worker(self._google_reauth_thread, thread=True, exclusive=True, group="google-reauth")
+
+    def _google_reauth_thread(self) -> None:
+        # gauth.reauthorize BLOCKS until the browser consent flow completes
+        # (or times out) — same "never on the main thread" rule as every
+        # other gauth call in this app, doubly so here since this one can
+        # block for minutes waiting on a human, not just a network round trip.
+        try:
+            gauth.reauthorize()
+        except Exception as e:
+            self.call_from_thread(self._on_google_reauth_error, e)
+            return
+        self.call_from_thread(self._on_google_reauth_success)
+
+    def _on_google_reauth_success(self) -> None:
+        self._google_reauth_in_progress = False
+        for bid in ("settings-reauth-google", "onboarding-reauth-google"):
+            try:
+                self.query_one(f"#{bid}", Button).disabled = False
+            except Exception:
+                pass
+        status_id = getattr(self, "_google_reauth_status_id", None)
+        if status_id:
+            try:
+                self.query_one(f"#{status_id}", Static).update("Re-authorized.")
+            except Exception:
+                pass
+        self.notify("Google re-authorized.")
+        # Rebuild self.svc with the fresh credentials and pull live data
+        # immediately — unlike the encrypt-at-rest settings, re-auth doesn't
+        # touch the cache/encryption key, so there's no reason to make the
+        # user restart the app to see it take effect.
+        try:
+            self.svc = gauth.services()
+        except Exception as e:
+            self.notify(f"Re-authorized, but couldn't rebuild the Google connection: {e}", severity="error")
+            return
+        self.run_worker(self._live_refresh_thread, thread=True, exclusive=True)
+        # If this fired from the forced first-run onboarding modal, close it
+        # out through the same path Retry uses — _on_onboarding_result defers
+        # to _continue_startup via call_after_refresh (push_screen callback
+        # timing NOTE, §2).
+        if isinstance(self.screen, OnboardingWizardModal):
+            self.screen.dismiss("resolved")
+
+    def _on_google_reauth_error(self, error: Exception) -> None:
+        self._google_reauth_in_progress = False
+        for bid in ("settings-reauth-google", "onboarding-reauth-google"):
+            try:
+                self.query_one(f"#{bid}", Button).disabled = False
+            except Exception:
+                pass
+        status_id = getattr(self, "_google_reauth_status_id", None)
+        if status_id:
+            try:
+                self.query_one(f"#{status_id}", Static).update(f"Re-authorization failed: {error}")
+            except Exception:
+                pass
+        self.notify(f"Google re-authorization failed: {error}", severity="error")
+
     def _update_settings_cache_info(self) -> None:
         try:
             size = cache_mod.CACHE_DB_PATH.stat().st_size
@@ -2264,7 +2360,9 @@ class GoogleTUI(App):
         self._update_settings_cache_info()
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "settings-clear-cache":
+        if event.button.id == "settings-reauth-google":
+            self._start_google_reauth(button_id="settings-reauth-google", status_id="settings-reauth-status")
+        elif event.button.id == "settings-clear-cache":
             if self._cache:
                 self._cache.clear_all()
             self.notify("Local cache cleared.")
@@ -2334,6 +2432,13 @@ class OnboardingWizardModal(ModalScreen):
             with VerticalScroll(id="onboarding-scroll"):
                 yield Static(self._body_text(), id="onboarding-text")
             with Horizontal(classes="btnrow"):
+                if "google" in self._problems:
+                    # Only useful if a token file already exists (expired/
+                    # missing scope) — gauth.reauthorize() reuses the OAuth
+                    # client embedded in it. A genuinely first-ever setup
+                    # (no token file yet) still needs the manual walkthrough
+                    # below; this button will just surface that as an error.
+                    yield Button("Re-authorize Google account", id="onboarding-reauth-google")
                 yield Button("Retry", id="onboarding-retry")
                 yield Button("Continue anyway", id="onboarding-continue")
 
@@ -2348,6 +2453,13 @@ class OnboardingWizardModal(ModalScreen):
     def on_button_pressed(self, e: Button.Pressed) -> None:
         if e.button.id == "onboarding-continue":
             self.dismiss("continue")
+            return
+        if e.button.id == "onboarding-reauth-google":
+            # _start_google_reauth lives on the App (needs self.svc/
+            # self._online/etc.), not this modal — on success it dismisses
+            # this screen itself (checks isinstance(self.screen,
+            # OnboardingWizardModal)) rather than round-tripping back here.
+            self._app_ref._start_google_reauth(button_id="onboarding-reauth-google")
             return
         problems = self._app_ref._diagnose_setup()
         if problems:
