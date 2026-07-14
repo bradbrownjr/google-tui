@@ -897,6 +897,20 @@ automatically whenever a pull touches `pyproject.toml`. If a machine's
 `google-tui` fails on import with a missing module right after a pull, check
 whether `core.hooksPath` is set there before assuming something else broke.
 
+### Logging (`~/.local/state/google-tui/log/google-tui.log`)
+
+`GoogleTUI.notify()` overrides `App.notify()` — every `notify()` call in the
+app funnels through it (including from `ModalScreen`s, which proxy through
+`Widget.notify` -> `self.app.notify`) — and appends `error`/`warning`
+severity notifications to this file before showing the toast. `Google
+TUI._handle_exception()` similarly overrides Textual's single choke point for
+*every* unhandled exception (message-handler or worker; `run_worker` defaults
+to `exit_on_error=True`) and logs the full traceback there before the app
+exits. Check this file first for anything reported as "it crashed" or "I saw
+an error toast but missed it" — a crash previously only ever reached the
+terminal itself, which is easy to lose (confirmed: piping a run through `tee`
+alone was enough to make one vanish with no trace at all, exit code 0).
+
 ## 6. Testing without a TTY
 
 Textual needs a real terminal, so headless tests use Textual's `run_test`

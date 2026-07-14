@@ -3,6 +3,21 @@
 Format: keep newest at top. One entry per meaningful change. Reference files
 touched and any breaking notes.
 
+## [2026-07-14] — Log every crash, not just caught error toasts
+
+### Added
+`GoogleTUI._handle_exception()` now overrides Textual's `App._handle_
+exception` — the single method every unhandled exception reaches before the
+app tears down and exits, whether it came from a message handler or a
+worker (`run_worker` defaults to `exit_on_error=True`, and most gauth calls
+in this file run on one) — and logs the full traceback to LOG_FILE before
+calling through to Textual's own handling. Previously a crash only ever
+reached the terminal itself: gone the moment the pane closed, and (per this
+session) a bare `google-tui | tee` pipe alone was enough to lose one
+entirely with no trace and exit code 0. `on_mount` also logs a "starting"
+line with the running version, so log sessions are demarcated. Documented
+in AGENTS.md §5.
+
 ## [2026-07-14] — Fix duplicate startup toast, log errors to a file
 
 ### Fixed

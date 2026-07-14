@@ -731,6 +731,21 @@ class GoogleTUI(App):
             _logger.log(logging.ERROR if severity == "error" else logging.WARNING, message)
         super().notify(message, title=title, severity=severity, timeout=timeout, markup=markup)
 
+    def _handle_exception(self, error: Exception) -> None:
+        """Every unhandled exception in the app — from a message handler OR
+        a worker (run_worker defaults to exit_on_error=True, and most gauth
+        calls in this file go through one) — reaches this single method
+        before Textual tears down the screen and exits. Previously that
+        traceback only ever reached the terminal itself: fine if you're
+        watching, gone the moment the pane closed or the session was piped
+        through something that swallowed it (confirmed: piping through
+        `tee` alone was enough to lose one). Logging it here first means a
+        crash always leaves a full traceback in LOG_FILE no matter what was
+        capturing the terminal at the time.
+        """
+        _logger.error("Unhandled exception -- app exiting", exc_info=error)
+        super()._handle_exception(error)
+
     # ---- data layer ----
     @cached_property
     def svc(self):
@@ -1049,6 +1064,7 @@ class GoogleTUI(App):
 
     # ---- startup: resolve encryption key, then cache-first load + background sync ----
     def on_mount(self) -> None:
+        _logger.info("google-tui %s starting", updater.describe())
         self._focus_pane(0)
         self._update_help_bar()
         problems = self._diagnose_setup()
