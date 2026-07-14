@@ -17,6 +17,7 @@ from functools import cached_property
 from pathlib import Path
 
 import platformdirs
+from rapidfuzz import fuzz
 from textual.app import App, ComposeResult
 from textual.containers import Container, Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
@@ -54,11 +55,12 @@ PANE_ADJACENCY = {
     "hermes": {"left": "email", "up": "tasks"},
 }
 
-TAB_ORDER = ["tab-mail", "tab-calendar", "tab-drive", "tab-browser", "tab-news", "tab-navigation", "tab-settings"]
+TAB_ORDER = ["tab-mail", "tab-calendar", "tab-drive", "tab-browser", "tab-news", "tab-navigation", "tab-settings",
+             "tab-contacts"]
 SETTINGS_TAB_ORDER = ["settings-tab-general", "settings-tab-ai", "settings-tab-feeds", "settings-tab-search",
                        "settings-tab-navigation"]
 
-_SUPERSCRIPT = {1: "¹", 2: "²", 3: "³", 4: "⁴", 5: "⁵", 6: "⁶", 7: "⁷"}
+_SUPERSCRIPT = {1: "¹", 2: "²", 3: "³", 4: "⁴", 5: "⁵", 6: "⁶", 7: "⁷", 8: "⁸"}
 
 NAV_EXPORT_DIR = Path(platformdirs.user_documents_dir()) / "google-tui"
 
@@ -82,7 +84,7 @@ _KEY_METHOD_LABELS = {
 
 HELP_TEXT = """\
 GLOBAL
-  Ctrl+1..7        Switch tab (Mail / Calendar / Drive / Browser / News / Navigation / Settings)
+  Ctrl+1..8        Switch tab (Mail / Calendar / Drive / Browser / News / Navigation / Settings / Contacts)
   Ctrl+Left/Right  Cycle tabs (use this if Ctrl+1..7 doesn't reach the app —
                    some terminals/browsers don't transmit Ctrl+digit)
   Alt+1..4         Jump to Mail pane (Email / Events / Tasks / Hermes)
@@ -149,6 +151,20 @@ SETTINGS TAB
   Input+Button  Set/save the Routes API key used by the Navigation tab
                 (Navigation)
 
+CONTACTS TAB
+  Type to search    Live fuzzy filter (name or email) over your fetched
+                    Google Contacts — no re-query as you type
+  Enter/Space       Open the highlighted contact's detail (name/email/phone),
+                    with a "Compose Email" button to start a new message to them
+  Compose New       Open a blank Compose (To/Subject/Body all empty)
+  Refresh           Re-fetch contacts from Google now
+  Contacts are fetched lazily (once, the first time you open this tab, not
+  on every startup/Ctrl+R) since they change far less often than mail/
+  calendar/drive. Needs the contacts.readonly scope on your Google token —
+  if that's missing, this notifies an error instead of crashing (SETUP.md §7).
+  ComposeModal's To field also fuzzy-suggests from these same contacts as
+  you type a name.
+
 Reply/Forward/Toggle-complete are disabled while offline (shown in the
 title bar as "Offline (cached HH:MM)"); browsing cached data still works.
 """
@@ -210,6 +226,31 @@ def _feed_list_item(url: str) -> ListItem:
     item = ListItem(Label(url, markup=False), id=_mk_id("sf", url))
     item.feed_url = url
     return item
+
+
+def _fuzzy_filter_contacts(contacts: list[dict], query: str, limit: int | None = None,
+                           threshold: int = 60) -> list[dict]:
+    """Shared client-side fuzzy filter used by both the Contacts tab's live
+    search (AGENTS.md P1 M5) and ComposeModal's To-field autocomplete.
+    Filters the already-fetched `contacts` list (never re-queries Google —
+    see the Contacts tab entry in AGENTS.md), scoring each contact's
+    "name email" text against `query` via rapidfuzz.fuzz.partial_ratio.
+    Empty query returns the input list unchanged (optionally truncated).
+    """
+    query = query.strip()
+    if not query:
+        return contacts[:limit] if limit else list(contacts)
+    scored = []
+    for c in contacts:
+        target = f"{c.get('name','')} {c.get('email','')}".strip()
+        if not target:
+            continue
+        score = fuzz.partial_ratio(query.lower(), target.lower())
+        if score >= threshold:
+            scored.append((score, c))
+    scored.sort(key=lambda pair: -pair[0])
+    result = [c for _, c in scored]
+    return result[:limit] if limit else result
 
 
 def _tab_label(text: str, num: int) -> str:
@@ -394,6 +435,8 @@ class GoogleTUI(App):
     #nav-origin, #nav-destination { width: 1fr; margin-right: 1; }
     #nav-summary { color: $accent; text-style: bold; height: 1; margin: 1 0; }
     #nav-log { height: 1fr; border: round $panel-darken-1; }
+    #thread-messages { height: 1fr; }
+    .thread-msg-header { color: $text-muted; text-style: bold; margin-top: 1; border-bottom: solid $panel-darken-2; }
     #help-bar { height: auto; background: $panel; padding: 0 1; }
     #help-context { color: $text; }
     #help-global { color: $text-muted; }
@@ -408,6 +451,9 @@ class GoogleTUI(App):
     #settings-google-cse-key, #settings-google-cse-id, #settings-searxng-url { width: 40; margin-right: 2; }
     #settings-google-group, #settings-searxng-group { height: auto; }
     #settings-routes-key { width: 40; margin-right: 2; }
+    #contacts-search { width: 1fr; margin-right: 1; }
+    #contacts-list { height: 1fr; }
+    #c-to-suggestions { height: auto; max-height: 6; border: round $panel-darken-1; }
     #unlock-box { height: auto; }
     #onboarding-box { width: 90%; height: 80%; }
     #onboarding-scroll { height: 1fr; }
@@ -428,6 +474,7 @@ class GoogleTUI(App):
         ("ctrl+5", "goto_tab_news", "News"),
         ("ctrl+6", "goto_tab_navigation", "Navigation"),
         ("ctrl+7", "goto_tab_settings", "Settings"),
+        ("ctrl+8", "goto_tab_contacts", "Contacts"),
         ("ctrl+left", "cycle_tab_back", "Prev Tab"),
         ("ctrl+right", "cycle_tab", "Next Tab"),
         ("alt+1", "goto_pane_email", "Email"),
@@ -478,6 +525,15 @@ class GoogleTUI(App):
         self._expanded_thread_ids: set[str] = set()
         self._threads_cache: dict[str, dict] = {}
         self._nav_last_result: "fetchers.RouteResult | None" = None
+        # Contacts tab (P1 M5) — lazy-fetched: contacts change rarely, so
+        # (unlike mail/calendar/drive/news) they're NOT pulled on every
+        # startup/Ctrl+R, only once, the first time the Contacts tab is
+        # activated (see on_tabbed_content_tab_activated). ComposeModal's
+        # To-field autocomplete reads self._contacts_cache directly.
+        self._contacts_cache: list[dict] = []
+        self._contacts_by_cid: dict[str, dict] = {}
+        self._contacts_apply_gen = 0
+        self._contacts_fetch_started = False
 
     # ---- data layer ----
     @cached_property
@@ -552,6 +608,8 @@ class GoogleTUI(App):
             return "Enter/Go Compute Route   Export Save Itinerary To File"
         if tab == "tab-settings":
             return "Alt+←/→ Switch Section   Toggle encryption   Choose key method   Clear local cache   Manage feeds   Search provider   Routes API key"
+        if tab == "tab-contacts":
+            return "Type to search   Enter/Space Detail   Compose New   Refresh"
         return ""
 
     def _update_help_bar(self) -> None:
@@ -733,6 +791,14 @@ class GoogleTUI(App):
                                 yield Static("Requires Cloud Billing linked to your Google Cloud project "
                                               "(SETUP.md §6) -- free up to 10,000 calls/month.",
                                               id="settings-routes-note", classes="muted")
+            with TabPane(_tab_label("Contacts", 8), id="tab-contacts"):
+                with Container(id="contacts-section", classes="section"):
+                    yield Label("CONTACTS", classes="pane-title-text")
+                    with Horizontal(id="contacts-bar", classes="btnrow"):
+                        yield Input(placeholder="Search contacts (name or email)…", id="contacts-search")
+                        yield Button("Compose New", id="contacts-compose-new")
+                        yield Button("Refresh", id="contacts-refresh")
+                    yield ListView(id="contacts-list")
         with Vertical(id="help-bar"):
             yield Static("", id="help-context")
             yield Static(HELP_GLOBAL, id="help-global")
@@ -820,6 +886,15 @@ class GoogleTUI(App):
         feed_entries = list(self._cache.get_all("feed_entry").values())
         if feed_entries:
             self._apply_news_data(feed_entries)
+
+        # Contacts: read whatever's cached from a prior session so the tab
+        # isn't empty offline, but do NOT set self._contacts_fetch_started —
+        # that flag gates the lazy live fetch triggered by first activating
+        # the Contacts tab (see on_tabbed_content_tab_activated), which is
+        # independent of what cache happened to have on disk.
+        contacts = list(self._cache.get_all("contact").values())
+        if contacts:
+            self._apply_contacts_data(contacts)
 
         return had_mail or bool(drive_files)
 
@@ -1042,6 +1117,7 @@ class GoogleTUI(App):
     def action_goto_tab_news(self):     self._goto_tab("tab-news")
     def action_goto_tab_navigation(self): self._goto_tab("tab-navigation")
     def action_goto_tab_settings(self): self._goto_tab("tab-settings")
+    def action_goto_tab_contacts(self): self._goto_tab("tab-contacts")
 
     def _cycle_tab(self, step: int) -> None:
         current = self._main_tabs().active
@@ -1076,6 +1152,11 @@ class GoogleTUI(App):
         elif tab_id == "tab-settings":
             self._update_settings_cache_info()
             self.query_one("#settings-encrypt-switch").focus()
+        elif tab_id == "tab-contacts":
+            self.query_one("#contacts-search").focus()
+            if not self._contacts_fetch_started:
+                self._contacts_fetch_started = True
+                self.run_worker(self._contacts_fetch_thread, thread=True, exclusive=True, group="contacts-fetch")
         self._update_help_bar()
 
     # ---- pane switching (Mail tab) ----
@@ -1248,6 +1329,12 @@ class GoogleTUI(App):
             if entry:
                 self.push_screen(NewsEntryModal(entry))
             return
+        if tab == "tab-contacts":
+            lst = self.query_one("#contacts-list")
+            item = lst.highlighted_child
+            if item is not None and item.id:
+                self._open_contact_detail(item.id)
+            return
         if tab != "tab-mail":
             return
         pane = PANE_IDS[self.active]
@@ -1279,6 +1366,8 @@ class GoogleTUI(App):
             entry = self._news_by_cid.get(cid)
             if entry:
                 self.push_screen(NewsEntryModal(entry))
+        elif cid.startswith("ct-"):
+            self._open_contact_detail(cid)
 
     def on_list_view_highlighted(self, event: ListView.Highlighted) -> None:
         if event.list_view.id != "drive-list":
@@ -1315,6 +1404,10 @@ class GoogleTUI(App):
             self._add_feed_url()
         elif event.input.id in ("nav-origin", "nav-destination"):
             self._nav_go()
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        if event.input.id == "contacts-search":
+            self._refresh_contacts_list()
 
     def _hermes_submit(self, event: Input.Submitted) -> None:
         q = event.value.strip()
@@ -1932,6 +2025,91 @@ class GoogleTUI(App):
             remaining = [e for e in self._cache.get_all("feed_entry").values() if e.get("feed_url") != url]
             self._apply_news_data(remaining)
 
+    # ---- contacts tab (P1 M5) ----
+    def _fetch_contacts_data(self) -> list[dict]:
+        """Pure data, thread-safe (AGENTS.md fetch/apply split) — called from
+        `_contacts_fetch_thread` on a worker thread."""
+        return gauth.list_contacts(self.svc)
+
+    def _write_contacts_cache(self, contacts: list[dict]) -> None:
+        if self._cache and contacts:
+            self._cache.put_many("contact", {c["resource_name"]: c for c in contacts})
+
+    def _contacts_fetch_thread(self) -> None:
+        """Lazy contacts fetch — kicked off once, the first time the
+        Contacts tab is activated (see on_tabbed_content_tab_activated), not
+        on every startup/Ctrl+R alongside mail/calendar/drive/news, since
+        contacts change far less often than those. Runs on a real OS thread
+        (googleapiclient calls are blocking), same as every other live-data
+        fetch in this app.
+
+        This is the call that WILL fail against a token minted before
+        `contacts.readonly` was added to the requested scopes (see
+        SETUP.md §7) — caught here and surfaced as an actionable notify
+        instead of crashing the tab or the app.
+        """
+        try:
+            contacts = self._fetch_contacts_data()
+        except Exception as e:
+            self.call_from_thread(
+                self.notify,
+                f"Contacts unavailable: {e} — re-run the OAuth flow with the "
+                f"contacts.readonly scope (see SETUP.md §7), then restart.",
+                severity="error",
+            )
+            return
+        self._write_contacts_cache(contacts)
+        self.call_from_thread(self._apply_contacts_data, contacts)
+
+    def _apply_contacts_data(self, contacts: list[dict]) -> None:
+        """Main-thread widget mutation half of the fetch/apply split.
+        Stashes the full list (backs ComposeModal's To-field autocomplete,
+        which reads self.app._contacts_cache directly) and re-renders the
+        list through the current search filter."""
+        self._contacts_cache = contacts
+        self._refresh_contacts_list()
+
+    def _refresh_contacts_list(self) -> None:
+        try:
+            query = self.query_one("#contacts-search", Input).value
+        except Exception:
+            query = ""
+        self._contacts_apply_gen += 1
+        gen = self._contacts_apply_gen
+        self.run_worker(self._apply_contacts_list_async(gen, query), exclusive=True, group="contacts-apply")
+
+    async def _apply_contacts_list_async(self, gen: int, query: str) -> None:
+        # Same ListView.clear()-is-async trap as _apply_mail_data_async /
+        # _apply_news_data_async (AGENTS.md's ListView.clear() NOTE) — this
+        # can run more than once in quick succession (cache load, live
+        # fetch, every keystroke in the search box), so it's a properly
+        # awaited worker with a generation counter, not bare clear() +
+        # call_after_refresh.
+        await self.query_one("#contacts-list").clear()
+        if gen != self._contacts_apply_gen:
+            return  # superseded by a newer call
+        lst = self.query_one("#contacts-list")
+        self._contacts_by_cid = {}
+        for c in _fuzzy_filter_contacts(self._contacts_cache, query):
+            cid = _mk_id("ct", c.get("resource_name", ""))
+            self._contacts_by_cid[cid] = c
+            name = (c.get("name") or "(no name)")[:30]
+            email = (c.get("email") or "")[:40]
+            lst.append(ListItem(Label(f"{name:<30} {email}", markup=False), id=cid))
+
+    def _open_contact_detail(self, cid: str) -> None:
+        c = self._contacts_by_cid.get(cid)
+        if c:
+            self.push_screen(ContactModal(c), self._on_contact_modal_result)
+
+    def _on_contact_modal_result(self, result) -> None:
+        if isinstance(result, tuple) and result and result[0] == "compose":
+            _, email = result
+            self.call_after_refresh(self._open_compose_new, email)
+
+    def _open_compose_new(self, to_email: str = "") -> None:
+        self.push_screen(ComposeModal(self.svc, None, mode="new", to=to_email), self._on_compose_result)
+
     # ---- navigation tab (P1 M6) ----
     def _nav_go(self) -> None:
         origin = self.query_one("#nav-origin", Input).value.strip()
@@ -2127,6 +2305,11 @@ class GoogleTUI(App):
             self.settings.routes_api_key = key or None
             save_settings(self.settings)
             self.notify("Routes API key saved.")
+        elif event.button.id == "contacts-refresh":
+            self._contacts_fetch_started = True
+            self.run_worker(self._contacts_fetch_thread, thread=True, exclusive=True, group="contacts-fetch")
+        elif event.button.id == "contacts-compose-new":
+            self._open_compose_new()
 
 
 # ============================================================================
@@ -2271,6 +2454,24 @@ class UnlockModal(ModalScreen):
 
 
 class ThreadModal(ModalScreen):
+    """Thread detail. Each message is rendered through M1's shared renderer
+    (P1 M4) instead of the old plain-text-stripped RichLog: an HTML message
+    (`html_body` non-empty) is parsed via `render.parse_feed_entry` — which
+    itself routes HTML through `render.parse_html` — into a `Document` shown
+    in its own `render.DocumentView`; a plain-text-only message hits the same
+    call but takes `parse_feed_entry`'s non-HTML fallback (each line becomes
+    a paragraph block), so there's only one rendering path for both cases.
+    One (From/Date header `Static` + `DocumentView`) pair per message,
+    stacked in `#thread-messages` (a `VerticalScroll`), oldest-first —
+    message order is unchanged from before (see AGENTS.md). Deliberately NOT
+    a single merged `Document`: that would require renumbering each
+    message's `[N]` link markers to stay unique across the whole thread,
+    which `on_document_view_link_activated` doesn't even act on today while
+    a non-Browser tab (e.g. this modal, opened over Mail) is active — same
+    no-op as `NewsEntryModal`'s links — so that complexity isn't earning
+    its keep yet. A v1 simplification, not an oversight.
+    """
+
     def __init__(self, svc, thread_id: str):
         super().__init__()
         self.svc = svc
@@ -2279,7 +2480,8 @@ class ThreadModal(ModalScreen):
     def compose(self) -> ComposeResult:
         with Container(id="thread-box", classes="pane"):
             yield Label("THREAD", classes="pane-title-text")
-            yield RichLog(id="thread-body", markup=False, wrap=True)
+            with VerticalScroll(id="thread-messages"):
+                yield Static("Loading…", markup=False)
         with Horizontal(classes="btnrow"):
             yield Button("Reply", id="r")
             yield Button("Reply All", id="ra")
@@ -2287,12 +2489,6 @@ class ThreadModal(ModalScreen):
             yield Button("Close", id="close")
 
     def on_mount(self) -> None:
-        # scroll_end=False on every write() below: RichLog defaults to
-        # auto_scroll=True (scrolls to the end on every write), which landed
-        # an opened thread at the BOTTOM of the message instead of the top —
-        # a live-testing bug report. Message ORDER (oldest-first, from
-        # gauth.get_thread) is unchanged/undecided — see AGENTS.md.
-        self.query_one("#thread-body", RichLog).write("Loading…", scroll_end=False)
         # gauth.get_thread is a blocking synchronous network call (same as
         # every other gauth-touching method in this app) — must run on a
         # worker THREAD, not directly in on_mount, both so it doesn't freeze
@@ -2313,18 +2509,44 @@ class ThreadModal(ModalScreen):
         except Exception:
             pass  # best-effort — not worth surfacing a separate error for this
 
-    def _apply_thread(self, msgs: list[dict]) -> None:
-        txt = []
+    async def _apply_thread(self, msgs: list[dict]) -> None:
+        # async (unlike the rest of this app's call_from_thread targets):
+        # each DocumentView needs its own children (#doc-nav/#doc-title/
+        # #doc-body, from DocumentView.compose()) actually mounted before
+        # `.document =` triggers watch_document's query_one calls on them —
+        # `await container.mount(...)` is what guarantees that, a bare
+        # fire-and-forget `.mount()` races it. call_from_thread awaits a
+        # coroutine callback via `invoke()`, so returning one here is safe.
+        container = self.query_one("#thread-messages", VerticalScroll)
+        await container.remove_children()
+        if not msgs:
+            await container.mount(Static("(no messages)", markup=False))
+            return
+        pending: list[tuple[DocumentView, "render.Document"]] = []
+        new_widgets = []
         for m in msgs:
-            txt.append(f"From: {m['from']}\nDate: {m['date']}\nSubject: {m['subject']}\n\n{m['body'][:4000]}\n{'='*60}")
-        body = self.query_one("#thread-body", RichLog)
-        body.clear()
-        body.write("\n".join(txt), scroll_end=False)
+            header = f"From: {m.get('from', '')}    Date: {m.get('date', '')}"
+            new_widgets.append(Static(header, classes="thread-msg-header", markup=False))
+            html_body = (m.get("html_body") or "").strip()
+            text_body = m.get("body") or ""
+            source = html_body if html_body else text_body
+            doc = render.parse_feed_entry(m.get("subject", ""), source, base_url="")
+            dv = DocumentView(classes="thread-msg-doc")
+            new_widgets.append(dv)
+            pending.append((dv, doc))
+        await container.mount(*new_widgets)
+        for dv, doc in pending:
+            # DocumentView's own DEFAULT_CSS sets height:1fr (correct for
+            # its usual full-pane use in the Browser/News tabs); stacking
+            # several inside one VerticalScroll needs auto height instead
+            # so each message takes only the space its content needs.
+            dv.styles.height = "auto"
+            dv.document = doc
 
     def _apply_error(self, error: Exception) -> None:
-        body = self.query_one("#thread-body", RichLog)
-        body.clear()
-        body.write(f"Couldn't load this thread:\n{error}", scroll_end=False)
+        container = self.query_one("#thread-messages", VerticalScroll)
+        container.remove_children()
+        container.mount(Static(f"Couldn't load this thread:\n{error}", markup=False))
         self.app.notify(f"Thread load error: {error}", severity="error")
 
     def on_button_pressed(self, e: Button.Pressed) -> None:
@@ -2340,13 +2562,19 @@ class ThreadModal(ModalScreen):
 
 
 class ComposeModal(ModalScreen):
+    """Reply / Reply All / Forward (mode in {"reply","reply_all","forward"},
+    thread_id required) OR a blank compose-from-scratch (mode == "new",
+    thread_id is None, `to` optionally pre-fills the To field — used by the
+    Contacts tab's "Compose New"/per-contact compose entry points, P1 M5).
+    """
     SEND_COUNTDOWN_SECONDS = 5
 
-    def __init__(self, svc, thread_id: str, mode: str):
+    def __init__(self, svc, thread_id: str | None, mode: str, to: str = ""):
         super().__init__()
         self.svc = svc
         self.thread_id = thread_id
         self.mode = mode
+        self._prefill_to = to
         self._countdown_remaining = 0
         self._countdown_timer = None  # Textual Timer handle while a send is pending
 
@@ -2354,6 +2582,7 @@ class ComposeModal(ModalScreen):
         with Container(id="compose-box", classes="pane"):
             yield Label("COMPOSE", classes="pane-title-text")
             yield Input(placeholder="To", id="c-to")
+            yield ListView(id="c-to-suggestions", classes="hidden")
             yield Input(placeholder="Subject", id="c-subject")
             yield TextArea(id="c-body", language="markdown")
         with Horizontal(classes="btnrow"):
@@ -2362,23 +2591,82 @@ class ComposeModal(ModalScreen):
         yield Static("", id="send-countdown")
 
     def on_mount(self) -> None:
-        g = self.svc["gmail"]
-        th = g.users().threads().get(userId="me", id=self.thread_id, format="metadata",
-                                     metadataHeaders=["From", "To", "Cc", "Subject"]).execute()
-        last = th["messages"][-1]
-        hdrs = {h["name"].lower(): h["value"] for h in last.get("payload", {}).get("headers", [])}
-        subj = hdrs.get("subject", "")
-        if self.mode == "reply":
-            to = hdrs.get("from", "")
-            subject = subj if subj.lower().startswith("re:") else "Re: " + subj
-        elif self.mode == "reply_all":
-            to = ", ".join(filter(None, [hdrs.get("from", ""), hdrs.get("to", ""), hdrs.get("cc", "")]))
-            subject = subj if subj.lower().startswith("re:") else "Re: " + subj
-        else:  # forward
-            to = ""
-            subject = subj if subj.lower().startswith("fwd:") else "Fwd: " + subj
+        if self.mode == "new":
+            to, subject = self._prefill_to, ""
+        else:
+            g = self.svc["gmail"]
+            th = g.users().threads().get(userId="me", id=self.thread_id, format="metadata",
+                                         metadataHeaders=["From", "To", "Cc", "Subject"]).execute()
+            last = th["messages"][-1]
+            hdrs = {h["name"].lower(): h["value"] for h in last.get("payload", {}).get("headers", [])}
+            subj = hdrs.get("subject", "")
+            if self.mode == "reply":
+                to = hdrs.get("from", "")
+                subject = subj if subj.lower().startswith("re:") else "Re: " + subj
+            elif self.mode == "reply_all":
+                to = ", ".join(filter(None, [hdrs.get("from", ""), hdrs.get("to", ""), hdrs.get("cc", "")]))
+                subject = subj if subj.lower().startswith("re:") else "Re: " + subj
+            else:  # forward
+                to = ""
+                subject = subj if subj.lower().startswith("fwd:") else "Fwd: " + subj
         self.query_one("#c-to").value = to
         self.query_one("#c-subject").value = subject
+        if self.mode == "new" and not to:
+            self.query_one("#c-to", Input).focus()
+
+    # ---- Compose's To-field fuzzy autocomplete (P1 M5) ----
+    # Filters self.app._contacts_cache client-side (rapidfuzz) — never
+    # re-queries Google. No-ops silently if contacts were never fetched
+    # (empty cache, e.g. the People API scope is missing — see gauth.
+    # list_contacts / the Contacts tab's error handling), per the ROADMAP
+    # item's instruction not to error here.
+    def on_input_changed(self, event: Input.Changed) -> None:
+        if event.input.id == "c-to":
+            self._update_to_suggestions(event.value)
+
+    def _update_to_suggestions(self, value: str) -> None:
+        suggestions = self.query_one("#c-to-suggestions", ListView)
+        contacts = getattr(self.app, "_contacts_cache", None) or []
+        # Only fuzzy-match the fragment after the last comma, so
+        # "alice@x.com, bo" still matches "bo" against contacts rather than
+        # the whole accumulated To string.
+        fragment = value.rsplit(",", 1)[-1].strip()
+        matches = _fuzzy_filter_contacts(contacts, fragment, limit=6) if fragment else []
+        suggestions.clear()
+        if not matches:
+            suggestions.add_class("hidden")
+            return
+        # Per-render unique ids (not the contact's resource_name) sidestep
+        # the DuplicateIds trap from AGENTS.md's ListView.clear() NOTE
+        # entirely: clear() above isn't awaited (this list is small/
+        # ephemeral, unlike the mail/news/contacts lists), so a fresh
+        # keystroke's ids must never collide with a still-being-removed
+        # prior render's ids.
+        self._suggest_render_gen = getattr(self, "_suggest_render_gen", 0) + 1
+        gen = self._suggest_render_gen
+        for i, c in enumerate(matches):
+            label = f"{c.get('name') or '(no name)'}  <{c.get('email','')}>"
+            item = ListItem(Label(label, markup=False), id=f"sug-{gen}-{i}")
+            item.contact_email = c.get("email", "")
+            suggestions.append(item)
+        suggestions.remove_class("hidden")
+
+    def on_list_view_selected(self, event: ListView.Selected) -> None:
+        if event.list_view.id != "c-to-suggestions":
+            return
+        email = getattr(event.item, "contact_email", "")
+        if not email:
+            return
+        to_input = self.query_one("#c-to", Input)
+        current = to_input.value
+        if "," in current:
+            prefix = current.rsplit(",", 1)[0].strip()
+            to_input.value = f"{prefix}, {email}"
+        else:
+            to_input.value = email
+        self.query_one("#c-to-suggestions", ListView).add_class("hidden")
+        to_input.focus()
+        to_input.cursor_position = len(to_input.value)
 
     def on_button_pressed(self, e: Button.Pressed) -> None:
         if e.button.id == "cancel":
@@ -2428,16 +2716,22 @@ class ComposeModal(ModalScreen):
 
     def _send_now(self) -> None:
         to = self.query_one("#c-to").value.strip()
+        subject = self.query_one("#c-subject").value.strip()
         body = self.query_one("#c-body").text
         if self.mode == "forward":
             gauth.forward(self.svc, self.thread_id, to, body_prefix=body + "\n")
+        elif self.mode == "new":
+            gauth.send_message(self.svc, to=to, subject=subject, body=body)
         else:
             gauth.reply_to(self.svc, self.thread_id, body, reply_all=(self.mode == "reply_all"))
         self.dismiss("sent")
 
     def on_key(self, e) -> None:
         if e.key == "escape":
-            if self._countdown_timer is not None:
+            suggestions = self.query_one("#c-to-suggestions", ListView)
+            if "hidden" not in suggestions.classes:
+                suggestions.add_class("hidden")
+            elif self._countdown_timer is not None:
                 self._cancel_countdown()
             else:
                 self.dismiss(None)
@@ -2491,6 +2785,45 @@ class TaskModal(ModalScreen):
     def on_button_pressed(self, e):
         self.dismiss(None)
     def on_key(self, e):
+        if e.key == "escape":
+            self.dismiss(None)
+
+
+class ContactModal(ModalScreen):
+    """Contact detail (P1 M5) — modeled on EventModal/TaskModal's minimal
+    `.pane` Container + Static detail + button row shape. Unlike those,
+    it has a second button ("Compose Email") that dismisses with
+    `("compose", email)` instead of `None`, which GoogleTUI._on_contact_
+    modal_result relays into `_open_compose_new` (deferred one step via
+    call_after_refresh — see the push_screen(callback) timing NOTE in
+    AGENTS.md, since the callback fires before this screen is popped)."""
+
+    def __init__(self, contact: dict):
+        super().__init__()
+        self.contact = contact
+
+    def compose(self) -> ComposeResult:
+        with Container(id="contact-box", classes="pane"):
+            yield Label("CONTACT DETAIL", classes="pane-title-text")
+            yield Static(id="contact-detail")
+            with Horizontal(classes="btnrow"):
+                yield Button("Compose Email", id="contact-compose")
+                yield Button("Close", id="close")
+
+    def on_mount(self) -> None:
+        c = self.contact
+        det = (f"Name:  {c.get('name','')}\n"
+               f"Email: {c.get('email','')}\n"
+               f"Phone: {c.get('phone','')}")
+        self.query_one("#contact-detail").update(det)
+
+    def on_button_pressed(self, e: Button.Pressed) -> None:
+        if e.button.id == "contact-compose":
+            self.dismiss(("compose", self.contact.get("email", "")))
+        else:
+            self.dismiss(None)
+
+    def on_key(self, e) -> None:
         if e.key == "escape":
             self.dismiss(None)
 

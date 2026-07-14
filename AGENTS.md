@@ -11,15 +11,15 @@ WITHOUT prior chat context. Read it top-to-bottom before touching code.
 
 ## 1. What the app does
 
-Seven full-width **tabs** live in the blue bar (this IS the styled `Tabs`
+Eight full-width **tabs** live in the blue bar (this IS the styled `Tabs`
 bar of the outer `TabbedContent#main-tabs`, not a separate status widget):
 **Mail**, **Calendar**, **Drive**, **Browser**, **News**, **Navigation**,
-**Settings**. The Mail tab holds four **panes**: Email, Events, Tasks,
-Hermes. Tabs and panes are deliberately different concepts with different
-key prefixes (`Ctrl+#` for tabs, `Alt+#` for panes) — see §2.
+**Settings**, **Contacts**. The Mail tab holds four **panes**: Email,
+Events, Tasks, Hermes. Tabs and panes are deliberately different concepts
+with different key prefixes (`Ctrl+#` for tabs, `Alt+#` for panes) — see §2.
 
 ```
-┌[Mail¹]  Calendar²  Drive³  Browser⁴  News⁵  Navigation⁶  Settings⁷──┐  ← blue bar,
+┌[Mail¹]  Calendar²  Drive³  Browser⁴  News⁵  Navigation⁶  Settings⁷  Contacts⁸┐  ← blue bar,
 ├─ EMAIL (widened) ────────────┐ ┌─ EVENTS ─────────────────────┤    active tab
 │ ▸ Frank Krizan                │ │ ▸ 07/13 Tick/Flea Appt       │    has an
 │   Fwd: [DigiPi] …             │ │ ▸ 07/15 OHD Water Testing    │    accent-
@@ -232,8 +232,8 @@ Other tabs:
   and shown via notify()") — and, unlike `run_search`'s silent DuckDuckGo
   fallback, there's no fallback provider for driving directions, so every
   failure surfaces as a `notify(severity="error")` instead of degrading
-  quietly. `RichLog#nav-log` (`markup=False`, matches `ThreadModal`'s
-  `#thread-body` pattern — read-only sequential text, no per-row action)
+  quietly. `RichLog#nav-log` (`markup=False`, read-only sequential text, no
+  per-row action)
   shows the numbered step list; `Static#nav-summary` shows the route
   total. `Button#nav-export` writes the current itinerary to a plain-text
   file via module-level `_export_itinerary` (runs synchronously on the
@@ -292,13 +292,48 @@ Other tabs:
     `Static` note points at SETUP.md §6 (Cloud Billing must be linked for
     the Routes API — it's part of paid Google Maps Platform, unlike the
     Workspace APIs the rest of this app uses).
+- **Contacts tab** (`Ctrl+8`, P1 M5): `Input#contacts-search` + `Button
+  #contacts-compose-new` + `Button#contacts-refresh` in a `Horizontal
+  #contacts-bar`, above `ListView#contacts-list` (lightbar, same pattern as
+  Email/News/Tasks). Backed by a new `gauth.list_contacts(svc)` (People API
+  `people.connections().list(resourceName="people/me", personFields=
+  "names,emailAddresses,phoneNumbers", pageSize=1000)`, paginated via
+  `pageToken`, returns `{resource_name, name, email, phone}` dicts) through
+  a new `"people"` service added to `gauth.services()`. Deliberately does
+  NOT call `otherContacts.list` (Gmail-derived auto-contacts) — needs a
+  separate `contacts.other.readonly` scope not requested by this project.
+  Requires the `contacts.readonly` scope (added to `SETUP.md` §7's scope
+  list); a token minted before that scope existed gets a 403 from
+  `list_contacts`, caught in `_contacts_fetch_thread` and surfaced as an
+  actionable `notify(severity="error")` ("re-run the OAuth flow... see
+  SETUP.md §7") instead of crashing the tab — this WILL fire against a
+  pre-existing token until it's re-minted. Fetched LAZILY: only on the
+  Contacts tab's first activation (`self._contacts_fetch_started` guard in
+  `on_tabbed_content_tab_activated`), not on every startup/`Ctrl+R` like
+  mail/calendar/drive/news — contacts change far less often, and a full
+  fetch is one `connections.list` call (not Gmail's N-sequential-calls
+  pattern), so eager fetching wasn't worth the extra startup latency. Also
+  triggerable manually via `Button#contacts-refresh`. Cached offline in a
+  new `Cache` category `"contact"` (keyed by `resource_name`) per §1a/§8's
+  pattern. `Input#contacts-search`'s `Input.Changed` re-filters
+  `self._contacts_cache` client-side via `rapidfuzz.fuzz.partial_ratio`
+  against `"name email"` (module-level `_fuzzy_filter_contacts` helper) —
+  never re-queries Google per keystroke. `Enter`/`Space` on a highlighted
+  contact opens `ContactModal` (name/email/phone + "Compose Email", which
+  dismisses `("compose", email)` and is relayed via
+  `_on_contact_modal_result` → `_open_compose_new(email)`, same
+  `push_screen(..., callback)` + `call_after_refresh` deferral pattern as
+  every other modal-result relay in this app — see the push_screen timing
+  NOTE below). `Button#contacts-compose-new` opens a blank compose with no
+  prefill. New `rapidfuzz` dependency (`pyproject.toml`) — same helper also
+  powers Compose's To-field autocomplete, see the ComposeModal note below.
 
 ## 2. Key bindings
 
 | Key | Action |
 |-----|--------|
-| `Ctrl+1..7` | switch **tab** (Mail / Calendar / Drive / Browser / News / Navigation / Settings) |
-| `Ctrl+Left/Right` | cycle tabs — the reliable fallback for `Ctrl+1..7` (see caveat below) |
+| `Ctrl+1..8` | switch **tab** (Mail / Calendar / Drive / Browser / News / Navigation / Settings / Contacts) |
+| `Ctrl+Left/Right` | cycle tabs — the reliable fallback for `Ctrl+1..8` (see caveat below) |
 | `Alt+1..4` | jump to a Mail **pane** (Email / Events / Tasks / Hermes); switches to the Mail tab first if needed |
 | `Alt+Left/Right/Up/Down` | move to the adjacent Mail pane (see `PANE_ADJACENCY` below) on the Mail tab; back/forward through session history on the Browser tab; cycle Settings sub-tabs (General/AI Provider/News Feeds/Search/Navigation) on the Settings tab (`Alt+Up/Down` still only does Mail-pane adjacency — no vertical cycling defined for Settings) |
 | `Tab` / `Shift+Tab` | cycle Mail panes (no-op outside the Mail tab) |
@@ -322,14 +357,14 @@ modifier tracking, so "numbers appear only while Ctrl/Alt is held" cannot be
 implemented in this Textual version. Don't attempt to "fix" this later
 without re-checking whether Textual has since added key-release support.
 
-**`Ctrl+1..7` terminal caveat:** most terminals (and browser-based terminals
+**`Ctrl+1..8` terminal caveat:** most terminals (and browser-based terminals
 especially — Chrome/Firefox/Edge reserve `Ctrl+1..8` for switching *browser*
 tabs, intercepting the keystroke before it ever reaches the terminal) don't
 reliably transmit `Ctrl+<digit>` at all; only terminals with `modifyOtherKeys`
 or the Kitty keyboard protocol enabled do (confirmed via
 `ANSI_SEQUENCES_KEYS` in this Textual version — the sequences exist and are
 mapped, but most terminals never send them). `Ctrl+Left/Right` (`Ctrl+Arrow`)
-is universally well-supported and is the reliable path — `Ctrl+1..7` is kept
+is universally well-supported and is the reliable path — `Ctrl+1..8` is kept
 for terminals that do support it, but don't assume it works everywhere, and
 don't "fix" it by touching the bindings — there's nothing to fix in this
 app's code; it's what the terminal transmits.
@@ -513,7 +548,15 @@ user_cache_dir("google-tui")/cache.db`; `KEY_FILE_PATH` and `SETTINGS_PATH`
   discovery-generated method needs `fileId=` (camelCase). This is a real API
   parameter name, not a Python convention; grep for `file_id=` vs `fileId=`
   if a Drive call ever throws "unexpected keyword argument".
-- `reply_to(...)`, `forward(...)`, `set_task_status(...)` — MUTATING helpers.
+- `list_contacts(svc)` (P1 M5) — People API `people.connections().list`
+  against `resourceName="people/me"`, paginated via `pageToken`, returns
+  `{resource_name, name, email, phone}` dicts (first value of each
+  possibly-multi-valued field, `""` if absent). Requires the
+  `contacts.readonly` scope — raises on a token that doesn't have it; the
+  caller (`main.py`'s `_contacts_fetch_thread`) catches and surfaces this.
+- `reply_to(...)`, `forward(...)`, `send_message(...)` (plain new-message
+  send, backs `ComposeModal`'s `mode == "new"`, P1 M5), `set_task_status(...)`
+  — MUTATING helpers.
 
 `ask.py`:
 - `ask_llm(question, ctx)` — POSTs to Nous inference endpoint
@@ -564,10 +607,34 @@ user_cache_dir("google-tui")/cache.db`; `KEY_FILE_PATH` and `SETTINGS_PATH`
 - Modals (all subclass `ModalScreen`): `LoadingModal`, `UnlockModal`,
   `ThreadModal`, `ComposeModal`, `EventModal`, `TaskModal`, `DayEventsModal`
   (Calendar day/hour-slot overflow), `NewsEntryModal` (News tab, P1 M3),
-  `HelpModal` (`Ctrl+H`). `CalendarModal`/`DriveModal`/`DriveFileModal`/
-  `SearchModal` from the pre-tab-redesign version are GONE — their content
-  is inline in the Calendar/Drive/Search `TabPane`s now; do not recreate
-  them as modals.
+  `ContactModal` (Contacts tab detail, P1 M5), `HelpModal` (`Ctrl+H`).
+  `CalendarModal`/`DriveModal`/`DriveFileModal`/`SearchModal` from the
+  pre-tab-redesign version are GONE — their content is inline in the
+  Calendar/Drive/Search `TabPane`s now; do not recreate them as modals.
+- `ThreadModal` (P1 M4 rewrite): no longer a single `RichLog#thread-body`.
+  Each message is rendered through `render.parse_feed_entry` (HTML-sniffing
+  — routes through `render.parse_html` when `gauth.get_thread`'s new
+  `"html_body"` key is non-empty, else the plain-paragraph fallback) into a
+  `Document`, mounted as its own `DocumentView` (`classes="thread-msg-doc"`,
+  height forced to `"auto"` since `DocumentView`'s own `DEFAULT_CSS` sets
+  `height: 1fr`, wrong when several are stacked in one `VerticalScroll`),
+  preceded by a small From/Date `Static` header — all stacked in
+  `#thread-messages`, oldest-first (unchanged order). NOT one merged
+  `Document` per thread — see the P1 M4 CHANGELOG entry for why. `_apply_thread`
+  is `async` (unlike this app's other `call_from_thread` targets) because it
+  must `await container.mount(...)` before setting `.document =` on each
+  `DocumentView` — a bare fire-and-forget `.mount()` races `watch_document`'s
+  `query_one` calls on children that aren't mounted yet.
+- `ComposeModal` (P1 M5 extension): gained `mode == "new"` (blank compose,
+  `thread_id=None`, optional `to=` prefill param) alongside the existing
+  `reply`/`reply_all`/`forward` modes — sent via a new `gauth.send_message`
+  rather than `gauth.reply_to`/`forward`. `#c-to` has a live fuzzy-match
+  suggestion `ListView#c-to-suggestions` (hidden when empty) sourced from
+  `self.app._contacts_cache`, matching only the fragment after the last
+  comma (so a partially-typed multi-recipient list still autocompletes);
+  selecting a suggestion appends/replaces that fragment and re-focuses the
+  input. No-ops silently (empty suggestion list) if contacts were never
+  fetched — never errors.
 - `_mk_id(prefix, raw)` — MODULE-LEVEL helper (NOT a method) that sanitizes a
   Google id (or, for News, a feed entry id — often a URL) into a valid
   Textual widget CSS id (`t-…`, `e-…`, `k-…`, `d-…`, `n-…`, `sf-…`).
@@ -647,7 +714,10 @@ Gotchas that cost time before:
 - Mock `ask.ask_llm`, `ask.ask_hermes_agent`,
   `fetchers.search_google_cse`/`search_duckduckgo`/`search_searxng` (or
   `fetchers.run_search` directly), and `gauth.reply_to`/`forward`/
-  `set_task_status` in tests to avoid network + real email sends.
+  `send_message`/`set_task_status` in tests to avoid network + real email
+  sends. Also mock `gauth.list_contacts` if the test's token doesn't have
+  the `contacts.readonly` scope yet — otherwise the Contacts tab's fetch
+  raises and the test only exercises the error-notify path.
 - Do NOT assert on `ListView.highlighted`/`highlighted_child` after setting the
   attribute directly (read-only setters differ between versions). Drive selection
   through key presses instead.
@@ -656,7 +726,7 @@ Gotchas that cost time before:
   query (see §2).
 - `app.query_one`/`app.query` resolve against `self.screen` (see the NOTE in
   §2) — a pushed `ModalScreen` (e.g. `ThreadModal`) means widgets like
-  `#thread-body` must be reached via `app.screen.query_one(...)`, not
+  `#thread-messages` must be reached via `app.screen.query_one(...)`, not
   `app.query_one(...)`, while that modal is on top of the stack.
 - `pilot.click(SomeWidget)` with no `offset` clicks the widget's top-left
   corner, not its visual center — cost real debugging time once already on
@@ -682,6 +752,13 @@ Gotchas that cost time before:
 
 ## 7. Known caveats / open items
 
+- **Contacts tab needs a token re-mint.** `gauth.list_contacts` (P1 M5)
+  requires the `contacts.readonly` scope, added to `SETUP.md` §7's scope
+  list when this shipped. Brad's live `~/.hermes/google_token.json` was
+  minted before that — the Contacts tab will show the graceful
+  "re-run the OAuth flow" error notify until it's regenerated with the new
+  scope (a manual step, see SETUP.md §7 — a session can't do this itself,
+  it needs a real browser consent flow).
 - NO send confirmation: `ComposeModal` send fires `gauth.reply_to`/`forward`
   immediately. Not tested against the live API (would actually send mail).
   Recommended next step: add a confirmation step before send (see ROADMAP).

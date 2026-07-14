@@ -116,7 +116,7 @@ https://www.googleapis.com/auth/gmail.modify
 https://www.googleapis.com/auth/calendar
 https://www.googleapis.com/auth/drive
 https://www.googleapis.com/auth/tasks
-https://www.googleapis.com/auth/contacts.readonly   # once Contacts/People lands
+https://www.googleapis.com/auth/contacts.readonly
 ```
 
 Save the resulting credentials as `~/.hermes/google_token.json`. Once

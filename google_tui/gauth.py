@@ -44,6 +44,7 @@ def services() -> dict:
         "calendar": build("calendar", "v3", credentials=creds, cache_discovery=False),
         "drive": build("drive", "v3", credentials=creds, cache_discovery=False),
         "tasks": build("tasks", "v1", credentials=creds, cache_discovery=False),
+        "people": build("people", "v1", credentials=creds, cache_discovery=False),
     }
 
 
@@ -98,6 +99,7 @@ def get_thread(svc, thread_id: str) -> list[dict]:
     for m in th.get("messages", []):
         hdrs = {h["name"].lower(): h["value"] for h in m.get("payload", {}).get("headers", [])}
         body = _extract_body(m.get("payload", {}))
+        html_body = _extract_html_body(m.get("payload", {}))
         msgs.append({
             "id": m["id"],
             "from": hdrs.get("from", ""),
@@ -105,6 +107,11 @@ def get_thread(svc, thread_id: str) -> list[dict]:
             "subject": hdrs.get("subject", ""),
             "date": hdrs.get("date", ""),
             "body": body,
+            # HTML body (P1 M4), empty string when the message has no HTML
+            # part at all (plain-text-only mail). "body" above is untouched
+            # — ask.py's build_ctx() and other callers rely on it staying a
+            # plain-text string; html_body is purely additive.
+            "html_body": html_body,
         })
     return msgs
 
@@ -121,6 +128,28 @@ def _extract_body(payload: dict) -> str:
     body = payload.get("body", {})
     if "data" in body:
         return _decode(body["data"])
+    return ""
+
+
+def _extract_html_body(payload: dict) -> str:
+    """Sibling to `_extract_body`, preferring `text/html` parts instead of
+    `text/plain`. Returns "" when the message has no HTML part (plain-text-
+    only mail) — callers (ThreadModal) fall back to the plain-text `body` in
+    that case rather than treating "" as an error.
+    """
+    if "parts" in payload:
+        for p in payload["parts"]:
+            if p.get("mimeType") == "text/html" and "data" in p.get("body", {}):
+                return _decode(p["body"]["data"])
+        for p in payload["parts"]:
+            r = _extract_html_body(p)
+            if r:
+                return r
+        return ""
+    if payload.get("mimeType") == "text/html":
+        body = payload.get("body", {})
+        if "data" in body:
+            return _decode(body["data"])
     return ""
 
 
@@ -301,3 +330,53 @@ def read_drive_text(svc, file_id: str):
         data = d.files().get_media(fileId=file_id).execute()
     text = data.decode("utf-8", "replace") if isinstance(data, (bytes, bytearray)) else str(data)
     return meta["name"], mime, text
+
+
+# ----------------------------------------------------------------------------
+# People / Contacts (P1 M5)
+# ----------------------------------------------------------------------------
+
+def list_contacts(svc) -> list[dict]:
+    """Every "My Contacts" connection (people.connections.list against
+    resourceName="people/me"). Deliberately does NOT call otherContacts.list
+    (Gmail-derived auto-contacts) — that needs a separate
+    contacts.other.readonly scope not requested by this project; out of
+    scope for v1 (see AGENTS.md / ROADMAP).
+
+    Requires the `contacts.readonly` scope on the token (see SETUP.md §7).
+    Against a token minted before that scope was added, this raises an
+    HttpError (403) — the caller is responsible for catching it and
+    surfacing a clear "re-run the OAuth flow" message, same as every other
+    gauth call (see main.py's fetch/apply split).
+
+    Paginates via pageToken (pageSize is capped at 1000 by the API; a
+    personal account's whole contact list very likely fits in one page, but
+    this loops rather than silently dropping anything past page 1).
+    """
+    p = svc["people"]
+    out: list[dict] = []
+    page_token: str | None = None
+    while True:
+        params = {
+            "resourceName": "people/me",
+            "personFields": "names,emailAddresses,phoneNumbers",
+            "pageSize": 1000,
+            "sortOrder": "FIRST_NAME_ASCENDING",
+        }
+        if page_token:
+            params["pageToken"] = page_token
+        resp = p.people().connections().list(**params).execute()
+        for person in resp.get("connections", []):
+            names = person.get("names", [])
+            emails = person.get("emailAddresses", [])
+            phones = person.get("phoneNumbers", [])
+            out.append({
+                "resource_name": person.get("resourceName", ""),
+                "name": names[0].get("displayName", "") if names else "",
+                "email": emails[0].get("value", "") if emails else "",
+                "phone": phones[0].get("value", "") if phones else "",
+            })
+        page_token = resp.get("nextPageToken")
+        if not page_token:
+            break
+    return out

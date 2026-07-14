@@ -6,6 +6,50 @@ touched and any breaking notes.
 ## [2026-07-14]
 
 ### Added
+- **Rich HTML email rendering in `ThreadModal` (P1 M4).** Each message in a
+  thread is now rendered through M1's shared `render.py`/`DocumentView`
+  instead of the old plain-text-stripped `RichLog`: `gauth.get_thread` gains
+  an additive `"html_body"` key per message (via a new `_extract_html_body`,
+  a `text/html`-preferring sibling of `_extract_body`; the existing `"body"`
+  plain-text key is untouched, so `ask.py`'s context-building is unaffected).
+  `ThreadModal` mounts one (From/Date `Static` header + `DocumentView`) pair
+  per message, stacked oldest-first in a `VerticalScroll`
+  (`#thread-messages`); each message's body — HTML or plain — goes through
+  `render.parse_feed_entry` (the same HTML-sniffing entry point News uses),
+  so there's a single rendering path for both cases instead of two. Not
+  merged into one Document per thread — that would require renumbering each
+  message's `[N]` link markers to stay unique, and `ThreadModal`'s links
+  aren't interactive today anyway (same as `NewsEntryModal`), so that
+  complexity wasn't earning its keep for v1. (`gauth.py`, `main.py`)
+- **Contacts tab + fuzzy Compose autocomplete (P1 M5).** New 8th tab
+  (`Ctrl+8`, `tab-contacts`) backed by a new `gauth.list_contacts` (People
+  API `people.connections.list` against `resourceName="people/me"`,
+  paginated, returns `{resource_name, name, email, phone}` dicts) via a new
+  `"people"` service in `gauth.services()`. Deliberately does NOT call
+  `otherContacts.list` (Gmail-derived auto-contacts) — that needs a separate
+  `contacts.other.readonly` scope not requested by this project. Requires
+  the `contacts.readonly` scope, added to `SETUP.md` §7's scope list ahead
+  of this change; against a token minted before that scope existed, the
+  fetch raises and is caught with an actionable `notify(severity="error")`
+  pointing at re-running the OAuth flow, rather than crashing the tab.
+  Contacts are fetched lazily (first tab activation, not on every
+  startup/`Ctrl+R` — they change far less often than mail/calendar/drive),
+  cached offline in a new `Cache` category (`"contact"`, keyed by
+  `resource_name`), and filterable live via `Input#contacts-search` +
+  `rapidfuzz.fuzz.partial_ratio` against name/email (client-side, no
+  re-fetch per keystroke). `Enter`/`Space` on a contact opens `ContactModal`
+  (name/email/phone + a "Compose Email" button). `ComposeModal` gained a
+  `mode == "new"` blank-compose path (`thread_id=None`, optional `to=`
+  prefill) — sent via a new `gauth.send_message` call — reachable from a
+  contact's "Compose Email" button or the Contacts tab's own "Compose New"
+  button; this also delivers the standing "compose from scratch" wishlist
+  item. `ComposeModal`'s `#c-to` field shows a live fuzzy-matched
+  suggestion dropdown (`#c-to-suggestions`, up to 6 matches, matches only
+  the fragment after the last comma so a partially-typed multi-recipient
+  list still autocompletes correctly) sourced from `self.app._contacts_cache`
+  client-side; no-ops silently if contacts were never fetched (e.g. missing
+  scope) rather than erroring. New `rapidfuzz` dependency (`pyproject.toml`).
+  (`gauth.py`, `main.py`, `cache.py`, `pyproject.toml`, `SETUP.md`)
 - **Browser tab "new tab page" bookmarks row.** A row of four starter-
   destination buttons (`#browser-bookmarks`, a `Horizontal` right below
   `#browser-bar`, before `#browser-doc`) demonstrating the tab's multi-

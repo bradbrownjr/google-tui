@@ -19,37 +19,23 @@ just checking it off here, so ROADMAP.md only ever shows what's still open.
 
 Epics remaining from the 2026-07-13 planning pass (Labels-as-folders,
 multi-provider AI/onboarding, the Google Console setup guide, M1's shared
-rendering module, M2's Browser tab, M3's News tab, and M6's Navigation tab
-all shipped — see CHANGELOG), ordered so each one's output is available to
-the epics that build on it (shared render module before its consumers). The
-repo screenshot (M7) is deliberately LAST — take it once, after the major UI
-changes still open (M5) have landed, so it's a current snapshot instead of
-one that goes stale after the next epic. Each
-step is tagged with the Claude Code agent recommended for a future
-session tackling it — **Explore** for read-only research, **Plan** for
-architecture/design before non-trivial code, **general-purpose** for the
-actual multi-step implementation, **claude-code-guide** where the step is
-specifically about the Claude Code CLI/SDK itself. Small one-shot steps
-with no real research/design component are left untagged (just do them).
-
-### M4 — Rich HTML email rendering
-- [ ] Route HTML-heavy Gmail bodies through M1's renderer inside
-  `ThreadModal` instead of today's plain-text stripping.
-  *(general-purpose)*
-
-### M5 — Contacts tab + fuzzy lookup in Compose
-- [ ] Research the People API (`people.connections.list`, `otherContacts`,
-  scopes, quota). *(Explore)*
-- [ ] Implement `gauth` contacts helpers, a fuzzy-match (e.g. `rapidfuzz`)
-  autocomplete wired into Compose's To/CC/BCC fields, and a standalone
-  Contacts tab (list/search/detail). This also delivers the long-standing
-  "email compose from scratch" item below. *(general-purpose)*
+rendering module, M2's Browser tab, M3's News tab, M4's rich HTML email
+rendering, M5's Contacts tab, and M6's Navigation tab all shipped — see
+CHANGELOG). Only M7 (repo screenshot) remains, deliberately LAST — take it
+now that the major UI work (M5 Contacts) has landed, so it's a current
+snapshot instead of one that goes stale after the next epic. Tagged with
+the Claude Code agent recommended for a future session tackling it —
+**Explore** for read-only research, **Plan** for architecture/design before
+non-trivial code, **general-purpose** for the actual multi-step
+implementation, **claude-code-guide** where the step is specifically about
+the Claude Code CLI/SDK itself. Small one-shot steps with no real
+research/design component are left untagged (just do them).
 
 ### M7 — Repo screenshot
 Last, on purpose — a single current snapshot taken once the major UI
 work above (M5 Contacts) has landed, rather than one that goes stale after
-the next epic. (M2 Browser, M3 News, and M6 Navigation already landed, see
-CHANGELOG.)
+the next epic. (M2 Browser, M3 News, M4 rich HTML, M5 Contacts, and M6
+Navigation already landed, see CHANGELOG.)
 - [ ] Build a fake dataset (dummy threads/events/tasks/Drive files, zero
   real PII) and drive the app against it with the existing `run_test`
   pilot + `save_screenshot` → cairosvg pipeline (AGENTS.md §6) to produce
