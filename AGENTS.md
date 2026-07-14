@@ -11,15 +11,15 @@ WITHOUT prior chat context. Read it top-to-bottom before touching code.
 
 ## 1. What the app does
 
-Six full-width **tabs** live in the blue bar (this IS the styled `Tabs`
+Seven full-width **tabs** live in the blue bar (this IS the styled `Tabs`
 bar of the outer `TabbedContent#main-tabs`, not a separate status widget):
-**Mail**, **Calendar**, **Drive**, **Browser**, **News**, **Settings**. The
-Mail tab holds four **panes**: Email, Events, Tasks, Hermes. Tabs and panes
-are deliberately different concepts with different key prefixes (`Ctrl+#`
-for tabs, `Alt+#` for panes) — see §2.
+**Mail**, **Calendar**, **Drive**, **Browser**, **News**, **Navigation**,
+**Settings**. The Mail tab holds four **panes**: Email, Events, Tasks,
+Hermes. Tabs and panes are deliberately different concepts with different
+key prefixes (`Ctrl+#` for tabs, `Alt+#` for panes) — see §2.
 
 ```
-┌[Mail¹]  Calendar²  Drive³  Browser⁴  News⁵  Settings⁶───────────┐  ← blue bar,
+┌[Mail¹]  Calendar²  Drive³  Browser⁴  News⁵  Navigation⁶  Settings⁷──┐  ← blue bar,
 ├─ EMAIL (widened) ────────────┐ ┌─ EVENTS ─────────────────────┤    active tab
 │ ▸ Frank Krizan                │ │ ▸ 07/13 Tick/Flea Appt       │    has an
 │   Fwd: [DigiPi] …             │ │ ▸ 07/15 OHD Water Testing    │    accent-
@@ -213,12 +213,50 @@ Other tabs:
   (confirmed empirically — its tag-detection regex doesn't even touch a
   bracketed phrase containing a space, and `Content.from_markup()` still ate
   it), so `markup=False` is the correct fix, not escaping.
-- **Settings tab** (`Ctrl+6`): nested `TabbedContent#settings-tabs` (mirrors
-  the Calendar tab's `#cal-tabs` Month/Week pattern), four sub-tabs,
+- **Navigation tab** (`Ctrl+6`, P1 M6): driving directions via the Google
+  Routes API (`POST https://routes.googleapis.com/directions/v2:
+  computeRoutes`). Two `Input`s (`#nav-origin`/`#nav-destination`, free-text
+  addresses — the Routes API geocodes these itself, no Places API/exact-
+  coordinates needed) + a `Button#nav-go`; `Enter` in either input or the
+  button both call `_nav_go`. Fetching is `fetchers.compute_route(origin,
+  destination, api_key)`, unlike this app's other fetchers (query-param
+  `requests.get`) because the Routes API needs a JSON POST body plus
+  mandatory `X-Goog-Api-Key`/`X-Goog-FieldMask` headers; returns a plain
+  `fetchers.RouteResult` dataclass (`distance_text`/`duration_text`/
+  `steps: list[RouteStep]`), NOT a `render.Document` — there's nothing to
+  hyperlink-navigate in a turn-by-turn step list. Units/language/travel
+  mode are hardcoded (`IMPERIAL`/`en-US`/`DRIVE`) rather than Settings
+  fields — a v1 simplification. Every failure (missing key, HTTP error,
+  no route found) raises `fetchers.BrowserFetchError` — reused from the
+  Browser tab despite the name, per its own docstring ("caught by main.py
+  and shown via notify()") — and, unlike `run_search`'s silent DuckDuckGo
+  fallback, there's no fallback provider for driving directions, so every
+  failure surfaces as a `notify(severity="error")` instead of degrading
+  quietly. `RichLog#nav-log` (`markup=False`, matches `ThreadModal`'s
+  `#thread-body` pattern — read-only sequential text, no per-row action)
+  shows the numbered step list; `Static#nav-summary` shows the route
+  total. `Button#nav-export` writes the current itinerary to a plain-text
+  file via module-level `_export_itinerary` (runs synchronously on the
+  main thread — a small local write, no worker needed) at
+  `platformdirs.user_documents_dir()/google-tui/route_<origin>_to_
+  <destination>_<timestamp>.txt`; `self._nav_last_result: fetchers.
+  RouteResult | None` (new `__init__` attribute) backs Export, and is
+  `None` until a route has actually been computed this session (Export
+  before then just notifies a warning). Fetch/apply split
+  (`_nav_fetch_thread`/`_nav_apply_result`/`_nav_apply_error`) follows the
+  Browser tab's `_browser_fetch_thread`/`_browser_apply_document` pattern
+  exactly: `run_worker(fn, thread=True, exclusive=True, group="nav-fetch")`
+  + `call_from_thread` back to the main thread for all widget mutation.
+  Configured in a new Settings sub-tab (`settings-tab-navigation`,
+  `Input#settings-routes-key` + `Button#settings-save-routes`, backing
+  `Settings.routes_api_key`) — see the Settings tab entry below.
+- **Settings tab** (`Ctrl+7`): nested `TabbedContent#settings-tabs` (mirrors
+  the Calendar tab's `#cal-tabs` Month/Week pattern), five sub-tabs,
   `Alt+Left/Right` cycles between them while the Settings tab is active
   (`_cycle_settings_tab`, modeled on `_cycle_tab`, targets
   `SETTINGS_TAB_ORDER = ["settings-tab-general", "settings-tab-ai",
-  "settings-tab-feeds", "settings-tab-search"]` instead of `TAB_ORDER`).
+  "settings-tab-feeds", "settings-tab-search", "settings-tab-navigation"]`
+  instead of `TAB_ORDER`).
   Each sub-tab's content is wrapped in its own `VerticalScroll` (independent
   scrolling per section, not one giant outer scroll around the whole
   `TabbedContent`):
@@ -248,15 +286,21 @@ Other tabs:
     selection (both can be hidden at once, when DuckDuckGo is selected) +
     `Button#settings-save-search`. See the Browser tab entry above and
     CHANGELOG `[2026-07-14]` for the search backends this configures.
+  - `TabPane#settings-tab-navigation` (Navigation tab's Routes API key,
+    P1 M6): `Input#settings-routes-key` (password-masked) +
+    `Button#settings-save-routes`, backing `Settings.routes_api_key`. A
+    `Static` note points at SETUP.md §6 (Cloud Billing must be linked for
+    the Routes API — it's part of paid Google Maps Platform, unlike the
+    Workspace APIs the rest of this app uses).
 
 ## 2. Key bindings
 
 | Key | Action |
 |-----|--------|
-| `Ctrl+1..6` | switch **tab** (Mail / Calendar / Drive / Browser / News / Settings) |
-| `Ctrl+Left/Right` | cycle tabs — the reliable fallback for `Ctrl+1..6` (see caveat below) |
+| `Ctrl+1..7` | switch **tab** (Mail / Calendar / Drive / Browser / News / Navigation / Settings) |
+| `Ctrl+Left/Right` | cycle tabs — the reliable fallback for `Ctrl+1..7` (see caveat below) |
 | `Alt+1..4` | jump to a Mail **pane** (Email / Events / Tasks / Hermes); switches to the Mail tab first if needed |
-| `Alt+Left/Right/Up/Down` | move to the adjacent Mail pane (see `PANE_ADJACENCY` below) on the Mail tab; back/forward through session history on the Browser tab; cycle Settings sub-tabs (General/AI Provider/News Feeds/Search) on the Settings tab (`Alt+Up/Down` still only does Mail-pane adjacency — no vertical cycling defined for Settings) |
+| `Alt+Left/Right/Up/Down` | move to the adjacent Mail pane (see `PANE_ADJACENCY` below) on the Mail tab; back/forward through session history on the Browser tab; cycle Settings sub-tabs (General/AI Provider/News Feeds/Search/Navigation) on the Settings tab (`Alt+Up/Down` still only does Mail-pane adjacency — no vertical cycling defined for Settings) |
 | `Tab` / `Shift+Tab` | cycle Mail panes (no-op outside the Mail tab) |
 | `l` | focus + open `Select#email-label-select`'s dropdown (Email pane only — no-op elsewhere) |
 | `r` `a` `f` | reply / reply-all / forward (Email pane) — blocked with a warning notify while offline |
@@ -278,14 +322,14 @@ modifier tracking, so "numbers appear only while Ctrl/Alt is held" cannot be
 implemented in this Textual version. Don't attempt to "fix" this later
 without re-checking whether Textual has since added key-release support.
 
-**`Ctrl+1..4` terminal caveat:** most terminals (and browser-based terminals
+**`Ctrl+1..7` terminal caveat:** most terminals (and browser-based terminals
 especially — Chrome/Firefox/Edge reserve `Ctrl+1..8` for switching *browser*
 tabs, intercepting the keystroke before it ever reaches the terminal) don't
 reliably transmit `Ctrl+<digit>` at all; only terminals with `modifyOtherKeys`
 or the Kitty keyboard protocol enabled do (confirmed via
 `ANSI_SEQUENCES_KEYS` in this Textual version — the sequences exist and are
 mapped, but most terminals never send them). `Ctrl+Left/Right` (`Ctrl+Arrow`)
-is universally well-supported and is the reliable path — `Ctrl+1..4` is kept
+is universally well-supported and is the reliable path — `Ctrl+1..7` is kept
 for terminals that do support it, but don't assume it works everywhere, and
 don't "fix" it by touching the bindings — there's nothing to fix in this
 app's code; it's what the terminal transmits.
@@ -428,7 +472,7 @@ almost certainly why — the fix would be routing that result through
 │   ├── gauth.py               # Google auth + Gmail/Cal/Tasks/Drive helpers
 │   ├── ask.py                 # Hermes Ask (LLM) providers (Browser search moved to fetchers.py)
 │   ├── render.py              # protocol-agnostic Document/Block/Link model + DocumentView (P1 M1)
-│   ├── fetchers.py            # HTTP/Gopher/Gemini fetch + web search (Browser, P1 M2) + feed fetch (News, P1 M3)
+│   ├── fetchers.py            # HTTP/Gopher/Gemini fetch + web search (Browser, P1 M2) + feed fetch (News, P1 M3) + Routes API (Navigation, P1 M6)
 │   ├── setup_instructions.py  # shared Google-account/AI-provider onboarding text
 │   ├── cache.py               # SQLite local cache, optional per-row Fernet encryption
 │   ├── settings.py            # plaintext Settings dataclass (settings.json)

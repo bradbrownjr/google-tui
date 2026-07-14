@@ -5,10 +5,10 @@ A multi-pane terminal UI (TUI) for your Google Workspace, built with
 
 ## Features
 
-Six full-width **tabs** live in the blue bar: **Mail**, **Calendar**,
-**Drive**, **Browser**, **News**, **Settings** (`Ctrl+1..6`). The Mail tab
-holds four **panes**: Email, Events, Tasks, Hermes (`Alt+1..4`, or
-`Alt+arrows` to move relatively).
+Seven full-width **tabs** live in the blue bar: **Mail**, **Calendar**,
+**Drive**, **Browser**, **News**, **Navigation**, **Settings** (`Ctrl+1..7`).
+The Mail tab holds four **panes**: Email, Events, Tasks, Hermes (`Alt+1..4`,
+or `Alt+arrows` to move relatively).
 
 **Works offline, to a degree.** The app is cache-first: whatever it fetched
 last time shows up instantly on launch, while it reconnects to Google in the
@@ -60,14 +60,24 @@ toggling a task) are disabled with a warning instead of failing silently.
   to (managed in Settings), combined into one lightbar list, newest first.
   `Enter`/`Space` opens an entry, rendered through the same shared
   Document view as the Browser tab.
-- **Settings tab:** four sub-tabs (`Alt+Left/Right` cycles between them
+- **Navigation tab:** driving directions via the Google Routes API — type
+  free-text origin/destination addresses (no need for exact coordinates,
+  the API geocodes them itself), hit `Enter` or the Go button, and get a
+  total distance/duration plus a turn-by-turn step list. Export the current
+  itinerary to a text file with the Export button (saved under
+  `Documents/google-tui/`). Needs a Routes API key, set in the Settings
+  tab's Navigation sub-tab — see [SETUP.md](SETUP.md) §6 for enabling the
+  API and linking Cloud Billing (it's part of paid Google Maps Platform,
+  unlike the other APIs this app uses).
+- **Settings tab:** five sub-tabs (`Alt+Left/Right` cycles between them
   while the Settings tab is active) — **General** (encrypt-at-rest for the
   local cache, off by default; choose how the encryption key is handled;
   clear the local cache), **AI Provider** (pick your AI provider, set a
   Nous API key), **News Feeds** (manage your News-tab feed subscriptions —
-  add/remove URLs), and **Search** (pick the Browser tab's search provider
+  add/remove URLs), **Search** (pick the Browser tab's search provider
   — Google/DuckDuckGo/SearXNG — and set the API key/Search Engine ID or
-  instance URL it needs) — all without hand-editing config files.
+  instance URL it needs), and **Navigation** (set the Routes API key used
+  by the Navigation tab) — all without hand-editing config files.
 
 **First run with nothing configured?** google-tui still launches — an
 onboarding wizard walks you through whatever's missing (Google account,
@@ -77,7 +87,7 @@ full Google Cloud Console walkthrough.
 ## Layout & keys
 
 ```
-┌[Mail¹] Calendar² Drive³ Browser⁴ News⁵ Settings⁶ ── Synced 14:32 ┐  ← blue bar
+┌[Mail¹] Calendar² Drive³ Browser⁴ News⁵ Navigation⁶ Settings⁷ ── Synced 14:32 ┐  ← blue bar
 ├─ EMAIL ──────────────────────┐ ┌─ EVENTS ─────────────────────┤
 │ ▸ Frank Krizan                │ │ ▸ 07/13 Tick/Flea Appt       │
 │   Fwd: [DigiPi] …             │ │ ▸ 07/15 OHD Water Testing    │
@@ -91,10 +101,10 @@ full Google Cloud Console walkthrough.
 
 | Key | Action |
 |-----|--------|
-| `Ctrl+1..6` | switch tab (Mail / Calendar / Drive / Browser / News / Settings) |
-| `Ctrl+Left/Right` | cycle tabs — use this if `Ctrl+1..6` doesn't reach the app (common in browser-based terminals, which reserve `Ctrl+1..8` for switching *their own* tabs) |
+| `Ctrl+1..7` | switch tab (Mail / Calendar / Drive / Browser / News / Navigation / Settings) |
+| `Ctrl+Left/Right` | cycle tabs — use this if `Ctrl+1..7` doesn't reach the app (common in browser-based terminals, which reserve `Ctrl+1..8` for switching *their own* tabs) |
 | `Alt+1..4` | jump to Mail pane (Email / Events / Tasks / Hermes) |
-| `Alt+Left/Right/Up/Down` | move to the adjacent Mail pane; on the Browser tab, back/forward through history; on the Settings tab, cycle General/AI Provider/News Feeds/Search |
+| `Alt+Left/Right/Up/Down` | move to the adjacent Mail pane; on the Browser tab, back/forward through history; on the Settings tab, cycle General/AI Provider/News Feeds/Search/Navigation |
 | `Tab` / `Shift+Tab` | cycle Mail panes |
 | `l` | open the folder/label picker (Email pane) |
 | `r` `a` `f` | reply / reply-all / forward (Email pane, disabled while offline) |
@@ -147,7 +157,7 @@ google-tui/
 │   ├── gauth.py          # Google auth + Gmail/Cal/Tasks/Drive/label helpers
 │   ├── ask.py            # AIProvider abstraction (Hermes/Claude Code/opencode/Gemini CLI) + search
 │   ├── render.py         # protocol-agnostic Document/Block/Link model + DocumentView
-│   ├── fetchers.py       # HTTP/Gopher/Gemini fetch (Browser) + RSS/Atom feed fetch (News)
+│   ├── fetchers.py       # HTTP/Gopher/Gemini fetch (Browser) + RSS/Atom feed fetch (News) + Routes API (Navigation)
 │   ├── cache.py          # local SQLite cache, optional per-row encryption
 │   ├── settings.py       # user preferences (settings.json)
 │   ├── setup_instructions.py  # shared onboarding-wizard / SETUP.md text
@@ -169,6 +179,10 @@ google-tui/
   the Settings tab. Entries are cached locally too, so previously-fetched
   headlines are still there next launch even before the background refresh
   finishes.
+- Navigation tab driving directions use the Google Routes API (needs a
+  billed Google Maps Platform key — see SETUP.md §6). Exported itineraries
+  are plain-text files under `~/Documents/google-tui/` (via `platformdirs.
+  user_documents_dir()`).
 - Local cache lives at `~/.cache/google-tui/cache.db`; preferences at
   `~/.config/google-tui/settings.json` (both via `platformdirs`, so the
   actual path follows XDG conventions on Linux). Encryption is off by

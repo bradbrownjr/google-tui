@@ -1,9 +1,10 @@
-"""google-tui — multi-pane TUI for Gmail / Calendar / Tasks / Drive / Browser / News / Hermes.
+"""google-tui — multi-pane TUI for Gmail / Calendar / Tasks / Drive / Browser / News / Navigation / Hermes.
 
-Top-level layout is six full-width TABS in the blue bar: Mail, Calendar,
-Drive, Browser, News, Settings (Ctrl+1..6). The Mail tab holds four PANES: Email,
-Events, Tasks, Hermes (Alt+1..4, or Alt+arrows to move relatively). See
-AGENTS.md for the full keybinding reference and the PANE_ADJACENCY rationale.
+Top-level layout is seven full-width TABS in the blue bar: Mail, Calendar,
+Drive, Browser, News, Navigation, Settings (Ctrl+1..7). The Mail tab holds
+four PANES: Email, Events, Tasks, Hermes (Alt+1..4, or Alt+arrows to move
+relatively). See AGENTS.md for the full keybinding reference and the
+PANE_ADJACENCY rationale.
 """
 from __future__ import annotations
 
@@ -13,7 +14,9 @@ import re
 import urllib.parse
 from dataclasses import dataclass
 from functools import cached_property
+from pathlib import Path
 
+import platformdirs
 from textual.app import App, ComposeResult
 from textual.containers import Container, Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
@@ -51,10 +54,13 @@ PANE_ADJACENCY = {
     "hermes": {"left": "email", "up": "tasks"},
 }
 
-TAB_ORDER = ["tab-mail", "tab-calendar", "tab-drive", "tab-browser", "tab-news", "tab-settings"]
-SETTINGS_TAB_ORDER = ["settings-tab-general", "settings-tab-ai", "settings-tab-feeds", "settings-tab-search"]
+TAB_ORDER = ["tab-mail", "tab-calendar", "tab-drive", "tab-browser", "tab-news", "tab-navigation", "tab-settings"]
+SETTINGS_TAB_ORDER = ["settings-tab-general", "settings-tab-ai", "settings-tab-feeds", "settings-tab-search",
+                       "settings-tab-navigation"]
 
-_SUPERSCRIPT = {1: "¹", 2: "²", 3: "³", 4: "⁴", 5: "⁵", 6: "⁶"}
+_SUPERSCRIPT = {1: "¹", 2: "²", 3: "³", 4: "⁴", 5: "⁵", 6: "⁶", 7: "⁷"}
+
+NAV_EXPORT_DIR = Path(platformdirs.user_documents_dir()) / "google-tui"
 
 _PREVIEWABLE_PREFIXES = (
     "text/",
@@ -76,8 +82,8 @@ _KEY_METHOD_LABELS = {
 
 HELP_TEXT = """\
 GLOBAL
-  Ctrl+1..6        Switch tab (Mail / Calendar / Drive / Browser / News / Settings)
-  Ctrl+Left/Right  Cycle tabs (use this if Ctrl+1..6 doesn't reach the app —
+  Ctrl+1..7        Switch tab (Mail / Calendar / Drive / Browser / News / Navigation / Settings)
+  Ctrl+Left/Right  Cycle tabs (use this if Ctrl+1..7 doesn't reach the app —
                    some terminals/browsers don't transmit Ctrl+digit)
   Alt+1..4         Jump to Mail pane (Email / Events / Tasks / Hermes)
   Alt+arrows       Move to the adjacent Mail pane
@@ -118,9 +124,17 @@ NEWS TAB
   Entries from every subscribed feed are combined, newest first. Manage
   subscriptions (add/remove feed URLs) from the Settings tab.
 
+NAVIGATION TAB
+  Origin/Destination inputs, then Enter or the Go button, compute a driving
+  route via the Google Routes API (free-text addresses — no need for exact
+  coordinates). Shows total distance/duration plus a turn-by-turn step list.
+  Export     Save the current itinerary to a text file (Documents/google-tui)
+  Needs a Routes API key, set in Settings -> Navigation.
+
 SETTINGS TAB
-  Sub-tabs      General / AI Provider / News Feeds / Search — Alt+Left/Right
-                cycles between them while the Settings tab is active
+  Sub-tabs      General / AI Provider / News Feeds / Search / Navigation —
+                Alt+Left/Right cycles between them while the Settings tab
+                is active
   Switch        Toggle encrypt-at-rest for the local cache (General)
   RadioSet      Choose passphrase-at-launch vs. local key file (General)
   Button        Clear the local cache immediately (General)
@@ -132,6 +146,8 @@ SETTINGS TAB
                 DuckDuckGo / SearXNG (Search)
   Input+Button  Set Google Custom Search API key + Search Engine ID, or a
                 SearXNG instance URL, then save (Search)
+  Input+Button  Set/save the Routes API key used by the Navigation tab
+                (Navigation)
 
 Reply/Forward/Toggle-complete are disabled while offline (shown in the
 title bar as "Offline (cached HH:MM)"); browsing cached data still works.
@@ -198,6 +214,35 @@ def _feed_list_item(url: str) -> ListItem:
 
 def _tab_label(text: str, num: int) -> str:
     return f"{text} [dim]{_SUPERSCRIPT[num]}[/dim]"
+
+
+def _slugify(s: str) -> str:
+    slug = re.sub(r"[^A-Za-z0-9]+", "-", s.strip()).strip("-").lower()
+    return slug[:40] or "route"
+
+
+def _nav_export_filename(result: "fetchers.RouteResult") -> str:
+    return (f"route_{_slugify(result.origin)}_to_{_slugify(result.destination)}_"
+            f"{dt.datetime.now():%Y%m%d-%H%M%S}.txt")
+
+
+def _export_itinerary(result: "fetchers.RouteResult") -> Path:
+    """Write a plain-text turn-by-turn itinerary to
+    ``platformdirs.user_documents_dir()/google-tui/``. Runs synchronously on
+    the main thread — it's a small local write, no worker needed."""
+    NAV_EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+    path = NAV_EXPORT_DIR / _nav_export_filename(result)
+    lines = [
+        f"Route: {result.origin} -> {result.destination}",
+        f"Generated: {dt.datetime.now():%Y-%m-%d %H:%M}",
+        f"Total distance: {result.distance_text}",
+        f"Total duration: {result.duration_text}",
+        "",
+    ]
+    lines += [f"{i}. {s.instruction}  ({s.distance_text}, {s.duration_text})"
+              for i, s in enumerate(result.steps, start=1)]
+    path.write_text("\n".join(lines) + "\n")
+    return path
 
 
 def _email_collapsed_line(th: dict) -> str:
@@ -346,6 +391,9 @@ class GoogleTUI(App):
     #browser-bookmarks Button { min-width: 3; width: auto; height: 3; margin-right: 1; }
     #browser-doc { height: 1fr; border: round $panel-darken-1; padding: 0 1; }
     #news-list { height: 1fr; }
+    #nav-origin, #nav-destination { width: 1fr; margin-right: 1; }
+    #nav-summary { color: $accent; text-style: bold; height: 1; margin: 1 0; }
+    #nav-log { height: 1fr; border: round $panel-darken-1; }
     #help-bar { height: auto; background: $panel; padding: 0 1; }
     #help-context { color: $text; }
     #help-global { color: $text-muted; }
@@ -359,6 +407,7 @@ class GoogleTUI(App):
     #settings-feed-url { width: 1fr; margin-right: 2; }
     #settings-google-cse-key, #settings-google-cse-id, #settings-searxng-url { width: 40; margin-right: 2; }
     #settings-google-group, #settings-searxng-group { height: auto; }
+    #settings-routes-key { width: 40; margin-right: 2; }
     #unlock-box { height: auto; }
     #onboarding-box { width: 90%; height: 80%; }
     #onboarding-scroll { height: 1fr; }
@@ -377,7 +426,8 @@ class GoogleTUI(App):
         ("ctrl+3", "goto_tab_drive", "Drive"),
         ("ctrl+4", "goto_tab_browser", "Browser"),
         ("ctrl+5", "goto_tab_news", "News"),
-        ("ctrl+6", "goto_tab_settings", "Settings"),
+        ("ctrl+6", "goto_tab_navigation", "Navigation"),
+        ("ctrl+7", "goto_tab_settings", "Settings"),
         ("ctrl+left", "cycle_tab_back", "Prev Tab"),
         ("ctrl+right", "cycle_tab", "Next Tab"),
         ("alt+1", "goto_pane_email", "Email"),
@@ -427,6 +477,7 @@ class GoogleTUI(App):
         # every list repopulate (refresh/label change); no persistence needed.
         self._expanded_thread_ids: set[str] = set()
         self._threads_cache: dict[str, dict] = {}
+        self._nav_last_result: "fetchers.RouteResult | None" = None
 
     # ---- data layer ----
     @cached_property
@@ -497,8 +548,10 @@ class GoogleTUI(App):
             return "Enter Load/Search   Alt+←/→ Back/Forward   Tab Toggle Focus   0-9+Enter Link"
         if tab == "tab-news":
             return "Enter/Space Open Entry"
+        if tab == "tab-navigation":
+            return "Enter/Go Compute Route   Export Save Itinerary To File"
         if tab == "tab-settings":
-            return "Alt+←/→ Switch Section   Toggle encryption   Choose key method   Clear local cache   Manage feeds   Search provider"
+            return "Alt+←/→ Switch Section   Toggle encryption   Choose key method   Clear local cache   Manage feeds   Search provider   Routes API key"
         return ""
 
     def _update_help_bar(self) -> None:
@@ -566,7 +619,19 @@ class GoogleTUI(App):
                 with Container(id="news-section", classes="section"):
                     yield Label("NEWS  (all subscribed feeds, newest first)", classes="pane-title-text")
                     yield ListView(id="news-list")
-            with TabPane(_tab_label("Settings", 6), id="tab-settings"):
+            with TabPane(_tab_label("Navigation", 6), id="tab-navigation"):
+                with Container(id="navigation-section", classes="section"):
+                    yield Label("NAVIGATION  (origin -> destination, turn-by-turn)", classes="pane-title-text")
+                    with Horizontal(id="nav-bar", classes="btnrow"):
+                        yield Input(placeholder="Origin address", id="nav-origin")
+                        yield Input(placeholder="Destination address", id="nav-destination")
+                        yield Button("Go", id="nav-go")
+                    yield Static("", id="nav-status", classes="muted")
+                    yield Static("", id="nav-summary")
+                    yield RichLog(id="nav-log", markup=False, wrap=True)
+                    with Horizontal(id="nav-actions", classes="btnrow"):
+                        yield Button("Export itinerary to file", id="nav-export")
+            with TabPane(_tab_label("Settings", 7), id="tab-settings"):
                 with Container(id="settings-section", classes="section"):
                     yield Label("SETTINGS", classes="pane-title-text")
                     with TabbedContent(id="settings-tabs"):
@@ -657,6 +722,17 @@ class GoogleTUI(App):
                                             id="settings-searxng-url",
                                         )
                                 yield Button("Save search settings", id="settings-save-search")
+                        with TabPane("Navigation", id="settings-tab-navigation"):
+                            with VerticalScroll(id="settings-navigation-scroll"):
+                                yield Label("Routes API (Navigation tab)", classes="pane-title-text")
+                                with Horizontal(classes="settings-row"):
+                                    yield Label("Routes API key")
+                                    yield Input(value=self.settings.routes_api_key or "", password=True,
+                                                id="settings-routes-key")
+                                yield Button("Save", id="settings-save-routes")
+                                yield Static("Requires Cloud Billing linked to your Google Cloud project "
+                                              "(SETUP.md §6) -- free up to 10,000 calls/month.",
+                                              id="settings-routes-note", classes="muted")
         with Vertical(id="help-bar"):
             yield Static("", id="help-context")
             yield Static(HELP_GLOBAL, id="help-global")
@@ -964,6 +1040,7 @@ class GoogleTUI(App):
     def action_goto_tab_drive(self):    self._goto_tab("tab-drive")
     def action_goto_tab_browser(self):  self._goto_tab("tab-browser")
     def action_goto_tab_news(self):     self._goto_tab("tab-news")
+    def action_goto_tab_navigation(self): self._goto_tab("tab-navigation")
     def action_goto_tab_settings(self): self._goto_tab("tab-settings")
 
     def _cycle_tab(self, step: int) -> None:
@@ -994,6 +1071,8 @@ class GoogleTUI(App):
             self.query_one("#browser-url").focus()
         elif tab_id == "tab-news":
             self.query_one("#news-list").focus()
+        elif tab_id == "tab-navigation":
+            self.query_one("#nav-origin").focus()
         elif tab_id == "tab-settings":
             self._update_settings_cache_info()
             self.query_one("#settings-encrypt-switch").focus()
@@ -1234,6 +1313,8 @@ class GoogleTUI(App):
             self._browser_submit(event)
         elif event.input.id == "settings-feed-url":
             self._add_feed_url()
+        elif event.input.id in ("nav-origin", "nav-destination"):
+            self._nav_go()
 
     def _hermes_submit(self, event: Input.Submitted) -> None:
         q = event.value.strip()
@@ -1851,6 +1932,56 @@ class GoogleTUI(App):
             remaining = [e for e in self._cache.get_all("feed_entry").values() if e.get("feed_url") != url]
             self._apply_news_data(remaining)
 
+    # ---- navigation tab (P1 M6) ----
+    def _nav_go(self) -> None:
+        origin = self.query_one("#nav-origin", Input).value.strip()
+        destination = self.query_one("#nav-destination", Input).value.strip()
+        if not origin or not destination:
+            self.notify("Enter both an origin and a destination.", severity="warning")
+            return
+        if not self.settings.routes_api_key:
+            self.notify("Set a Routes API key in Settings -> Navigation first.", severity="warning")
+            return
+        self.query_one("#nav-status", Static).update("Computing route...")
+        self.run_worker(lambda: self._nav_fetch_thread(origin, destination),
+                         thread=True, exclusive=True, group="nav-fetch")
+
+    def _nav_fetch_thread(self, origin: str, destination: str) -> None:
+        try:
+            result = fetchers.compute_route(origin, destination, self.settings.routes_api_key)
+        except fetchers.BrowserFetchError as e:
+            self.call_from_thread(self._nav_apply_error, str(e))
+            return
+        except Exception as e:
+            self.call_from_thread(self._nav_apply_error, f"Unexpected error: {e}")
+            return
+        self.call_from_thread(self._nav_apply_result, result)
+
+    def _nav_apply_error(self, message: str) -> None:
+        self.query_one("#nav-status", Static).update("")
+        self.notify(message, severity="error")
+
+    def _nav_apply_result(self, result: "fetchers.RouteResult") -> None:
+        self._nav_last_result = result
+        self.query_one("#nav-status", Static).update("")
+        self.query_one("#nav-summary", Static).update(
+            f"{result.origin} -> {result.destination}   Total: {result.distance_text} - {result.duration_text}"
+        )
+        log = self.query_one("#nav-log", RichLog)
+        log.clear()
+        for i, step in enumerate(result.steps, start=1):
+            log.write(f"{i}. {step.instruction}  ({step.distance_text}, {step.duration_text})", scroll_end=False)
+
+    def _nav_export(self) -> None:
+        if self._nav_last_result is None:
+            self.notify("Compute a route first.", severity="warning")
+            return
+        try:
+            path = _export_itinerary(self._nav_last_result)
+            self.notify(f"Exported to {path}")
+        except Exception as e:
+            self.notify(f"Export failed: {e}", severity="error")
+
     # ---- settings tab ----
     def _update_settings_cache_info(self) -> None:
         try:
@@ -1987,6 +2118,15 @@ class GoogleTUI(App):
             _label, url = _BROWSER_BOOKMARKS[idx]
             self.query_one("#browser-url", Input).value = url
             self._browser_navigate(url, push_history=True)
+        elif event.button.id == "nav-go":
+            self._nav_go()
+        elif event.button.id == "nav-export":
+            self._nav_export()
+        elif event.button.id == "settings-save-routes":
+            key = self.query_one("#settings-routes-key", Input).value.strip()
+            self.settings.routes_api_key = key or None
+            save_settings(self.settings)
+            self.notify("Routes API key saved.")
 
 
 # ============================================================================

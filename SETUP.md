@@ -28,7 +28,7 @@ Enable APIs and Services**, then search for and enable each of these:
 | **Google Drive API** | Drive tab |
 | **Tasks API** | Tasks pane |
 | **People API** | Contacts tab (planned — see ROADMAP) |
-| **Routes API** | Navigation tab (planned — see ROADMAP; this one needs billing, see §6) |
+| **Routes API** | Navigation tab (driving directions; this one needs billing, see §6) |
 
 All of these are free within Google's normal per-user quotas except
 Routes API — see §6 before enabling it.
@@ -80,16 +80,24 @@ tool only you use.
 
 ## 6. (Optional) Routes API and billing
 
-Routes API — used by the planned Navigation tab — is part of **Google
-Maps Platform**, which is billed, unlike the Workspace APIs above. If you
-want driving directions:
+Routes API — used by the Navigation tab — is part of **Google Maps
+Platform**, which is billed, unlike the Workspace APIs above. If you want
+driving directions:
 
 1. **Billing** (left sidebar) → link a billing account to this project.
    Google Maps Platform has a recurring free monthly credit that covers
    light personal use, but a billing account must be attached regardless.
 2. Enable **Routes API** as in §2.
-3. Optionally enable **Places API** too, if you want to type addresses by
-   name instead of exact coordinates.
+3. Places API is **not required** for this app's Navigation tab — the
+   Routes API's `Waypoint.address` field accepts free-text addresses
+   directly and geocodes them internally, so typed addresses like "1600
+   Amphitheatre Pkwy, Mountain View, CA" work as-is. Places API would only
+   be useful if you wanted live autocomplete-while-typing, which this app
+   doesn't implement.
+4. Once you have a Routes API key (**APIs & Services** → **Credentials**
+   → **Create Credentials** → **API key**, same flow as any other Google
+   Cloud API key), paste it into google-tui's Settings tab → Navigation
+   sub-tab.
 
 Skip this section entirely if you don't need the Navigation tab — every
 other API in this project is free.

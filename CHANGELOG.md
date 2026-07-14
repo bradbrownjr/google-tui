@@ -26,6 +26,66 @@ touched and any breaking notes.
   `_BROWSER_BOOKMARKS`) sets `#browser-url`'s value and calls
   `_browser_navigate(url, push_history=True)` — the same path typed input
   already used through the `browser-go` button.
+- **Navigation tab (`Ctrl+6`, P1 M6) — driving directions via the Google
+  Routes API.** A 7th full-width tab (`TAB_ORDER` gains `"tab-navigation"`
+  between `"tab-news"` and `"tab-settings"`; Settings shifts from `Ctrl+6`
+  to `Ctrl+7`) with two free-text `Input`s (`#nav-origin`/`#nav-destination`)
+  and a `Button#nav-go` — `Enter` in either input works too. Fetching is a
+  new `fetchers.compute_route(origin, destination, api_key, units="IMPERIAL")`,
+  which `POST`s to `https://routes.googleapis.com/directions/v2:
+  computeRoutes` — unlike every other fetcher in this module (query-param
+  API keys via `requests.get`), the Routes API needs a JSON POST body
+  (`origin`/`destination` as free-text `{"address": ...}` objects — no
+  Places API/geocoding needed on this app's end, the Routes API does that
+  itself — `travelMode: "DRIVE"`, `routingPreference: "TRAFFIC_AWARE"`)
+  plus mandatory `X-Goog-Api-Key`/`X-Goog-FieldMask` headers. Field mask
+  (`ROUTES_FIELD_MASK`) requests route + per-step distance/duration plus
+  `localizedValues` for both, so the response already carries ready-made
+  human-readable strings like `"5.2 mi"`/`"12 mins"` instead of requiring
+  client-side unit formatting. Returns a new `fetchers.RouteResult`
+  dataclass (`distance_text`, `duration_text`, `duration_seconds` parsed
+  from the `"772s"`-shaped `routes[0].duration` string, `steps:
+  list[RouteStep]`) — deliberately a plain dataclass, not a
+  `render.Document`, since there's nothing to hyperlink-navigate in a
+  turn-by-turn step list. Steps are flattened across every leg
+  (`for leg in route["legs"]: for step in leg["steps"]`) even though a
+  single-waypoint route always yields exactly one leg today — defensive
+  against future multi-stop support. `navigationInstruction.instructions`
+  text is run through `render.decode_html_entities` defensively. Unlike
+  `run_search`'s silent DuckDuckGo fallback, there's no fallback provider
+  for driving directions, so every failure mode (missing key, HTTP 4xx/5xx,
+  malformed JSON, zero routes returned) raises `fetchers.BrowserFetchError`
+  with a user-facing message — reused from the Browser tab despite the
+  name (its own docstring says "caught by main.py and shown via notify()",
+  which is provider-agnostic) rather than inventing a parallel exception
+  type. A 401/403 gets an extra hint pointing at the Routes API key setting
+  and SETUP.md §6 (Cloud Billing must be linked — Routes API is paid Google
+  Maps Platform, unlike the Workspace APIs the rest of this app uses).
+  Fetch/apply split (`_nav_go` → `run_worker(thread=True, exclusive=True,
+  group="nav-fetch")` → `_nav_fetch_thread` → `call_from_thread` to
+  `_nav_apply_result`/`_nav_apply_error`) exactly mirrors the Browser tab's
+  `_browser_navigate`/`_browser_fetch_thread`/`_browser_apply_document`.
+  Results render into `Static#nav-summary` (route totals) and
+  `RichLog#nav-log` (`markup=False`, numbered step list — same read-only
+  sequential-text pattern as `ThreadModal`'s `#thread-body`, no per-row
+  action needed). `Button#nav-export` writes the last-computed route
+  (`self._nav_last_result: fetchers.RouteResult | None`, new `__init__`
+  attribute) to a plain-text itinerary file via new module-level
+  `_export_itinerary`/`_nav_export_filename`/`_slugify` helpers, at
+  `platformdirs.user_documents_dir()/google-tui/route_<origin>_to_
+  <destination>_<YYYYMMDD-HHMMSS>.txt` — runs synchronously on the main
+  thread (no worker) since it's a small local write. New Settings sub-tab
+  `TabPane#settings-tab-navigation` (5th sibling in `#settings-tabs`,
+  appended to `SETTINGS_TAB_ORDER`): `Input#settings-routes-key`
+  (password-masked) + `Button#settings-save-routes`, backing a new
+  `Settings.routes_api_key: str | None` field (`settings.py`). No new
+  Settings fields for units/language/travel-mode — those are hardcoded
+  (`IMPERIAL`/`en-US`/`DRIVE`) as a deliberate v1 simplification; can
+  become Settings fields later if needed. `HELP_TEXT` gains a NAVIGATION
+  TAB section (between NEWS TAB and SETTINGS TAB) and its `Ctrl+1..6`
+  line becomes `Ctrl+1..7`; `_context_help_text` gains a `tab-navigation`
+  branch; `on_tabbed_content_tab_activated` focuses `#nav-origin` when the
+  tab activates.
 
 ### Fixed
 - **Browser tab Search mode was broken — `hermes web search` doesn't exist
@@ -128,6 +188,34 @@ cleanly. Confirmed the real `~/.config/google-tui`/`~/.cache/google-tui`
 were untouched throughout (tests ran under isolated `XDG_CONFIG_HOME`/
 `XDG_CACHE_HOME`). Scratch test scripts deleted when done (no committed
 `tests/` dir, per AGENTS.md §6).
+
+**Navigation tab verification:** `python -c "import google_tui.main"`
+compiles cleanly. Headless `run_test` + `pilot` (mocked `gauth.services`/
+`list_threads`/`list_events`/`list_tasklists`/`list_tasks`/`list_drive` so
+the live-refresh worker fails fast instead of touching the network) —
+`action_goto_tab_navigation` lands on `tab-navigation` and all its widgets
+(`#nav-origin`, `#nav-destination`, `#nav-go`, `#nav-log`, `#nav-export`)
+resolve; calling `_nav_go()` with no `routes_api_key` set notifies a
+warning instead of crashing (no live API key was available in this
+environment, so an actual `compute_route` call against the real Routes API
+was NOT exercised — that's the one part of this feature that couldn't be
+verified end-to-end here); the full 7-tab `Ctrl+Right` cycle
+(`action_cycle_tab`) visits `tab-mail` → ... → `tab-navigation` →
+`tab-settings` → back to `tab-mail`, matching `TAB_ORDER`; the 5-way
+Settings sub-tab cycle (`_cycle_settings_tab`) visits `settings-tab-
+navigation` last, matching `SETTINGS_TAB_ORDER`; typing into
+`#settings-routes-key` and pressing `#settings-save-routes` round-trips
+`Settings.routes_api_key` through `settings.json`. `main._export_itinerary`
+was called directly against a hand-built `fetchers.RouteResult` and its
+output file's content (route header, distance/duration, numbered steps)
+matched the expected format. All of the above ran under isolated
+`XDG_CONFIG_HOME`/`XDG_CACHE_HOME`/`XDG_DATA_HOME` so the real
+`~/.config/google-tui`/`~/.cache/google-tui` were untouched — except one
+`_export_itinerary` smoke-test run that (correctly, per its design) used
+the *real* `platformdirs.user_documents_dir()` since that path isn't
+XDG-env-overridable; the resulting test file was deleted immediately
+after inspection. Scratch test scripts deleted when done, no committed
+`tests/` dir.
 
 ## [2026-07-13]
 

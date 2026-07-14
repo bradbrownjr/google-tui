@@ -1,7 +1,10 @@
-"""google_tui.fetchers — blocking I/O fetchers for the Browser tab (M2).
+"""google_tui.fetchers — blocking I/O fetchers for the Browser tab (M2),
+the News tab's feed fetch (M3), and the Navigation tab's Routes API call (M6).
 
-HTTP(S), Gopher, and Gemini fetch, each returning a ``render.Document``.
-``render.py`` itself does zero I/O (see its module docstring); this is
+HTTP(S), Gopher, and Gemini fetch each return a ``render.Document``;
+``compute_route`` (Navigation) returns a plain ``RouteResult`` dataclass
+instead, since there's nothing to hyperlink-navigate in a turn-by-turn step
+list. ``render.py`` itself does zero I/O (see its module docstring); this is
 where the actual network calls live, mirroring the existing per-concern
 module boundary (``gauth.py`` = Google API, ``ask.py`` = AI/search,
 ``cache.py`` = persistence, ``render.py`` = parsing).
@@ -21,6 +24,7 @@ import hashlib
 import re
 import socket
 import ssl
+from dataclasses import dataclass
 from urllib.parse import parse_qs, unquote, urljoin, urlparse
 
 import feedparser
@@ -539,3 +543,111 @@ def run_search(query: str, settings, timeout: int = 15) -> render.Document:
         return search_duckduckgo(query, timeout=timeout)
 
     return search_duckduckgo(query, timeout=timeout)
+
+
+# ---------------------------------------------------------------------------
+# Routes API (Navigation tab, P1 M6) — driving directions.
+#
+# Unlike this module's other fetchers (query-param API keys via
+# `requests.get`), the Routes API needs a JSON POST body plus
+# `X-Goog-Api-Key`/`X-Goog-FieldMask` headers. There's no fallback provider
+# for driving directions, so unlike `run_search`'s silent DuckDuckGo
+# fallback, every failure mode here raises `BrowserFetchError` with a
+# user-facing message instead of degrading quietly.
+# ---------------------------------------------------------------------------
+
+ROUTES_API_URL = "https://routes.googleapis.com/directions/v2:computeRoutes"
+ROUTES_FIELD_MASK = (
+    "routes.distanceMeters,routes.duration,routes.localizedValues,"
+    "routes.legs.steps.navigationInstruction,routes.legs.steps.distanceMeters,"
+    "routes.legs.steps.staticDuration,routes.legs.steps.localizedValues"
+)
+
+
+@dataclass
+class RouteStep:
+    instruction: str        # navigationInstruction.instructions
+    distance_text: str      # step localizedValues.distance.text, e.g. "0.3 mi"
+    duration_text: str      # step localizedValues.staticDuration.text, e.g. "1 min"
+
+
+@dataclass
+class RouteResult:
+    origin: str
+    destination: str
+    distance_meters: int
+    duration_seconds: int   # parsed from routes[0].duration ("772s" -> 772)
+    distance_text: str      # route-level localizedValues.distance.text
+    duration_text: str      # route-level localizedValues.duration.text (traffic-aware)
+    steps: list[RouteStep]
+
+
+def compute_route(origin: str, destination: str, api_key: str,
+                   units: str = "IMPERIAL", timeout: int = 15) -> RouteResult:
+    """POST to the Routes API's computeRoutes endpoint and return a flat,
+    already-parsed ``RouteResult``. Returns a plain dataclass, not a
+    ``render.Document`` — there's nothing to hyperlink-navigate in a step
+    list, unlike Browser/Search's ``Document``.
+    """
+    if not api_key:
+        raise BrowserFetchError("No Routes API key set — add one in Settings -> Navigation.")
+    body = {
+        "origin": {"address": origin},
+        "destination": {"address": destination},
+        "travelMode": "DRIVE",
+        "routingPreference": "TRAFFIC_AWARE",
+        "computeAlternativeRoutes": False,
+        "routeModifiers": {"avoidTolls": False, "avoidHighways": False, "avoidFerries": False},
+        "languageCode": "en-US",
+        "units": units,
+    }
+    headers = {
+        "Content-Type": "application/json",
+        "X-Goog-Api-Key": api_key,
+        "X-Goog-FieldMask": ROUTES_FIELD_MASK,
+    }
+    try:
+        resp = requests.post(ROUTES_API_URL, json=body, headers=headers, timeout=timeout)
+    except requests.RequestException as e:
+        raise BrowserFetchError(f"Route request failed: {e}") from e
+    if resp.status_code >= 400:
+        try:
+            msg = resp.json().get("error", {}).get("message", resp.text)
+        except Exception:
+            msg = resp.text
+        hint = ""
+        if resp.status_code in (401, 403):
+            hint = (" (check your Routes API key in Settings -> Navigation, and that "
+                     "Cloud Billing is linked — see SETUP.md §6)")
+        raise BrowserFetchError(f"Routes API error: {msg}{hint}")
+    try:
+        data = resp.json()
+    except ValueError as e:
+        raise BrowserFetchError(f"Routes API returned invalid JSON: {e}") from e
+    routes = data.get("routes") or []
+    if not routes:
+        raise BrowserFetchError(f"No route found from {origin!r} to {destination!r} — check the addresses.")
+    route = routes[0]
+    duration_str = route.get("duration", "0s")
+    stripped = duration_str.rstrip("s")
+    duration_seconds = int(stripped) if stripped.isdigit() else 0
+    steps: list[RouteStep] = []
+    for leg in route.get("legs", []):
+        for step in leg.get("steps", []):
+            instr = step.get("navigationInstruction", {}).get("instructions", "")
+            instr = render.decode_html_entities(instr)
+            lv = step.get("localizedValues", {})
+            steps.append(RouteStep(
+                instruction=instr,
+                distance_text=lv.get("distance", {}).get("text", ""),
+                duration_text=lv.get("staticDuration", {}).get("text", ""),
+            ))
+    route_lv = route.get("localizedValues", {})
+    return RouteResult(
+        origin=origin, destination=destination,
+        distance_meters=route.get("distanceMeters", 0),
+        duration_seconds=duration_seconds,
+        distance_text=route_lv.get("distance", {}).get("text", ""),
+        duration_text=route_lv.get("duration", {}).get("text", ""),
+        steps=steps,
+    )

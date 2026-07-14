@@ -26,6 +26,7 @@ class Settings:
     google_cse_api_key: str | None = None  # Google Custom Search JSON API key
     google_cse_id: str | None = None  # Programmable Search Engine ID ("cx")
     searxng_url: str | None = None  # base URL of a SearXNG instance, e.g. https://searx.example.org
+    routes_api_key: str | None = None  # Google Routes API key (Navigation tab, M6)
 
 
 def load_settings() -> Settings:

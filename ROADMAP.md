@@ -17,14 +17,14 @@ just checking it off here, so ROADMAP.md only ever shows what's still open.
 
 ## P1 — Major Feature Epics (ordered build sequence)
 
-Four epics remaining from the 2026-07-13 planning pass (Labels-as-folders,
+Epics remaining from the 2026-07-13 planning pass (Labels-as-folders,
 multi-provider AI/onboarding, the Google Console setup guide, M1's shared
-rendering module, M2's Browser tab, and M3's News tab all shipped — see
-CHANGELOG), ordered so each one's output is available to the epics
-that build on it (shared render module before its consumers). The repo
-screenshot (M7) is deliberately LAST — take it once, after the major UI
-changes (M5, M6 add or reshape tabs) have landed, so it's a
-current snapshot instead of one that goes stale after the next epic. Each
+rendering module, M2's Browser tab, M3's News tab, and M6's Navigation tab
+all shipped — see CHANGELOG), ordered so each one's output is available to
+the epics that build on it (shared render module before its consumers). The
+repo screenshot (M7) is deliberately LAST — take it once, after the major UI
+changes still open (M5) have landed, so it's a current snapshot instead of
+one that goes stale after the next epic. Each
 step is tagged with the Claude Code agent recommended for a future
 session tackling it — **Explore** for read-only research, **Plan** for
 architecture/design before non-trivial code, **general-purpose** for the
@@ -45,22 +45,11 @@ with no real research/design component are left untagged (just do them).
   Contacts tab (list/search/detail). This also delivers the long-standing
   "email compose from scratch" item below. *(general-purpose)*
 
-### M6 — Navigation tab
-- [ ] Confirm the Routes API request/response shape, quota, and billing
-  setup (SETUP.md §6 already flagged that this needs Cloud Billing
-  enabled). *(Explore)*
-- [ ] Design a printable, MapQuest-style itinerary view (step list +
-  summary) — "print" in a TUI means export to text/file, not literal
-  printing. *(Plan)*
-- [ ] Implement origin/destination input (reusing M5's fuzzy lookup where
-  it helps), the Routes API call, and itinerary render + text export.
-  *(general-purpose)*
-
 ### M7 — Repo screenshot
 Last, on purpose — a single current snapshot taken once the major UI
-work above (M5 Contacts, M6 Navigation — M2 Browser and M3 News already
-landed, see CHANGELOG) has landed, rather than one that goes stale after
-the next epic.
+work above (M5 Contacts) has landed, rather than one that goes stale after
+the next epic. (M2 Browser, M3 News, and M6 Navigation already landed, see
+CHANGELOG.)
 - [ ] Build a fake dataset (dummy threads/events/tasks/Drive files, zero
   real PII) and drive the app against it with the existing `run_test`
   pilot + `save_screenshot` → cairosvg pipeline (AGENTS.md §6) to produce
