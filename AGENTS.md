@@ -565,6 +565,24 @@ preserved and a failed sub-request is skipped rather than sinking the list.
 Keep any new per-item Google fetch batched the same way. (Pagination is still
 tracked as a P2 ROADMAP item; that's a separate concern from call count.)
 
+**Revalidate, don't refetch.** The cache is not just an offline fallback — it is
+the thing that keeps refreshes cheap, and every cached category now carries a
+change token so we can prove a cached row is current without downloading it:
+
+| data | token | source |
+|---|---|---|
+| thread summary (`thread_summary:*`) | `historyId` | already in the `threads().list` response |
+| thread body (`thread_body`) | the thread's `historyId` | the cached summary row |
+| drive meta/text (`drive_file_*`) | `modifiedTime` | already in the `files().list` listing |
+
+Both tokens are bumped by Google on *any* change to the underlying object, and
+both arrive **free** in a list call we were making anyway. So: pass the cached
+rows in (`list_threads(..., known=...)`), compare the token, and reuse the
+cached row when it matches. A refresh where nothing changed costs one API call.
+If you add a new cached category, find its change token and do the same — and
+treat a cached row with a *missing* token as stale (rows written by older
+versions have none; reuse only what you can prove is current).
+
 NOTE on `push_screen(screen, callback)` timing: the callback fires **before**
 the screen is actually popped (confirmed by reading `Screen.dismiss` in this
 Textual version: it calls the result callback, THEN `self.app.pop_screen()`)
@@ -800,6 +818,32 @@ google-tui                     # works from ANY shell (see §7)
 `google-tui` launcher: `/home/bradb/.local/bin/google-tui` (on PATH),
 shell script that `exec`s `/home/bradb/google-tui/.venv/bin/python -m google_tui`.
 If the project folder moves, update the `VENV=` path in that launcher.
+
+### Startup update check (`updater.py`)
+
+`main()` runs `updater.check_for_update()` on the console **before** the Textual
+app starts, then `updater.restart()` (an `os.execv`) if it pulled anything. It
+is deliberately outside the TUI: the messages are plain stdout lines, and an
+update only actually takes effect after a re-exec — this interpreter has already
+imported the old modules, so pulling new code without restarting would report an
+update that isn't the one running.
+
+Because this is code that rewrites its own checkout, the rules are strict and
+you should not relax them without a very good reason:
+
+* **Never touch uncommitted work.** A modified *tracked* file skips the check
+  entirely. (Untracked files don't block it — `merge --ff-only` refuses safely
+  rather than overwriting them, and counting them as dirty would mean a stray
+  `__pycache__` wedges the updater forever.)
+* **Fast-forward only.** Never merge, rebase, or reset. A diverged branch is a
+  human's problem; say so and move on.
+* **Never block startup.** Every git call is timeout-bounded and refuses
+  interactive prompts (`GIT_TERMINAL_PROMPT=0`); any failure whatsoever prints a
+  line and launches the app anyway. A broken update check must never be the
+  reason someone can't read their mail.
+
+Disable with `--no-update`, `GOOGLE_TUI_NO_UPDATE=1`, or Settings → General.
+It no-ops (reporting "no update") when the package isn't a git checkout.
 
 **Keeping venv deps in sync across machines**: `pip install -e .` (README
 Setup) only installs what `pyproject.toml` lists AT THAT MOMENT — a later

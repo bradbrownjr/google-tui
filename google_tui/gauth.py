@@ -176,7 +176,7 @@ def list_labels(svc) -> list[dict]:
     return g.users().labels().list(userId="me").execute().get("labels", [])
 
 
-def _thread_summary(thread_id: str, th: dict) -> dict | None:
+def _thread_summary(thread_id: str, th: dict, history_id: str = "") -> dict | None:
     """Shape one threads().get(format="metadata") response into the row dict
     the Email pane renders. Returns None for a thread with no messages."""
     msgs = th.get("messages", [])
@@ -195,6 +195,11 @@ def _thread_summary(thread_id: str, th: dict) -> dict | None:
         # of `format` — no extra API call needed. Backs the Email pane's
         # Space-to-expand inline preview (main.py's _toggle_thread_expand).
         "snippet": last.get("snippet", ""),
+        # Gmail bumps a thread's historyId on ANY change to it — new message,
+        # read/unread, label edit. Stored on the row so the next refresh can
+        # tell "this thread is byte-for-byte what I already have" from "this
+        # one actually changed" without fetching it. See list_threads().
+        "historyId": str(history_id or th.get("historyId") or ""),
     }
 
 
@@ -204,17 +209,28 @@ _BATCH_SIZE = 50
 
 
 def list_threads(svc, max_results: int = 50, q: str | None = None,
-                 label_ids: list[str] | None = None) -> list[dict]:
+                 label_ids: list[str] | None = None,
+                 known: dict[str, dict] | None = None) -> list[dict]:
     """List threads with their metadata.
 
-    The per-thread `threads().get()` calls are issued via Gmail's HTTP batch
-    endpoint (ONE request per _BATCH_SIZE threads) rather than sequentially.
-    The old one-round-trip-per-thread loop meant `max_results=80` cost ~160
-    sequential HTTPS calls and was measured at ~20 SECONDS; batching makes the
-    same fetch a couple of round-trips. Order is preserved (results are keyed
-    by thread id and reassembled in the order Gmail listed them), and a
-    sub-request that fails is skipped rather than taking the whole list down —
-    the same per-item defensiveness the callers already assume.
+    Two things keep this cheap:
+
+    1. **Revalidate against the cache instead of refetching it.** The
+       `threads().list` response already carries each thread's current
+       `historyId`, and Gmail bumps that on any change to the thread (new
+       message, read/unread, label edit). `known` is the caller's cached
+       {thread_id: summary_row} map; any listed thread whose historyId still
+       matches its cached row is *already in hand* and is reused verbatim —
+       we never ask Gmail for it. On a refresh where nothing has changed (the
+       common case) this whole function costs ONE API call.
+
+    2. Whatever genuinely did change is fetched through Gmail's HTTP **batch**
+       endpoint (one request per _BATCH_SIZE threads), not one sequential
+       round-trip each. The old loop cost ~160 sequential calls at
+       max_results=80 and was measured at ~20 SECONDS.
+
+    Order is preserved (rows are reassembled in the order Gmail listed them),
+    and a failed sub-request is skipped rather than taking the whole list down.
     """
     g = svc["gmail"]
     params = {"userId": "me", "maxResults": max_results}
@@ -223,9 +239,26 @@ def list_threads(svc, max_results: int = 50, q: str | None = None,
     if label_ids:
         params["labelIds"] = label_ids
     resp = g.users().threads().list(**params).execute()
-    ids = [t["id"] for t in resp.get("threads", [])]
-    if not ids:
+    listed = resp.get("threads", [])
+    if not listed:
         return []
+
+    known = known or {}
+    reused: dict[str, dict] = {}
+    stale: list[str] = []
+    ids: list[str] = []
+    for t in listed:
+        tid = t["id"]
+        ids.append(tid)
+        hid = str(t.get("historyId") or "")
+        cached = known.get(tid)
+        # A cached row with no historyId predates this field (or came from an
+        # older cache) — treat it as stale so it gets refetched once and picks
+        # one up. Never reuse a row we can't prove is current.
+        if cached and hid and str(cached.get("historyId") or "") == hid:
+            reused[tid] = cached
+        else:
+            stale.append(tid)
 
     fetched: dict[str, dict] = {}
 
@@ -234,8 +267,8 @@ def list_threads(svc, max_results: int = 50, q: str | None = None,
             return  # skip this row; a single bad thread shouldn't kill the list
         fetched[request_id] = response
 
-    for i in range(0, len(ids), _BATCH_SIZE):
-        chunk = ids[i:i + _BATCH_SIZE]
+    for i in range(0, len(stale), _BATCH_SIZE):
+        chunk = stale[i:i + _BATCH_SIZE]
         batch = g.new_batch_http_request()
         for tid in chunk:
             batch.add(
@@ -250,6 +283,9 @@ def list_threads(svc, max_results: int = 50, q: str | None = None,
 
     out = []
     for tid in ids:
+        if tid in reused:
+            out.append(reused[tid])
+            continue
         th = fetched.get(tid)
         if th is None:
             continue

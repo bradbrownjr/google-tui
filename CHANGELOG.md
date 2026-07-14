@@ -3,6 +3,59 @@
 Format: keep newest at top. One entry per meaningful change. Reference files
 touched and any breaking notes.
 
+## [2026-07-14] — Cache revalidation + startup update check
+
+### Changed — stop re-downloading data we already have
+Startup was already cache-first (`_load_from_cache` paints from SQLite before
+any network call), but three paths then re-pulled data that hadn't changed.
+All three now **revalidate** against a change token instead of refetching:
+
+- **Thread summaries** (`gauth.list_threads`). The `threads().list` response
+  already carries each thread's `historyId`, and Gmail bumps it on any change
+  to the thread. Cached rows now store it, and callers pass their cached rows
+  in as `known=` — any listed thread whose historyId still matches is reused
+  verbatim and never fetched. A refresh where nothing changed now costs **one
+  API call** (the list itself) instead of re-pulling all 80 summaries. Verified:
+  cold cache 80 fetches → unchanged refresh 0 fetches → 3 changed threads
+  fetches exactly 3. Cache rows predating the field are treated as stale and
+  refetched once, never blindly trusted.
+- **Thread bodies** (`ThreadModal._fetch_thread`). `cache.py`'s docstring has
+  always claimed to cache "thread bodies" — nothing ever did, so every reopen of
+  the same email re-downloaded the entire thread. Bodies are now cached in a
+  `thread_body` category, stamped with the thread's historyId and reused while
+  it matches. Side benefit: an already-read thread is now readable offline.
+  `mark_read` is only called when the thread is actually unread.
+- **Drive previews** (`_drive_preview_fetch`). The `drive_file_meta` /
+  `drive_file_text` caches were consulted **only when offline**, so the normal
+  online path re-downloaded every file on every look. The folder listing already
+  returns each file's `modifiedTime` (free, no extra call), which Drive bumps on
+  every edit — so an unchanged file is now served from cache with no network at
+  all, and the expensive part (the file body download) is skipped entirely.
+
+### Added — startup update check (`google_tui/updater.py`)
+The app is an editable checkout of its own git repo, so an update is a
+fast-forward + re-exec, not a wheel download. Runs on the console before the TUI
+starts, printing one line:
+
+- `Downloading update... updated to v1.2.3`
+- `No update found, loading application`
+- `Can't reach update server, skipping update check.`
+- (plus `Local changes present, skipping update check.` and `Local branch has
+  diverged from origin, skipping update check.`)
+
+Safety rules, all verified against throwaway repos: **never touches uncommitted
+work** (a dirty tracked file skips the check outright — untracked cruft like
+`__pycache__` does not, since a fast-forward can't clobber it); **fast-forward
+only**, never a merge/rebase/reset, so a diverged branch is left for a human;
+and **never blocks startup** — every git call is timeout-bounded (an unreachable
+origin gives up in ~3s) and any failure degrades to a printed line and a normal
+launch. On success it re-execs, because the running interpreter has already
+imported the old modules and would otherwise report an update it isn't running.
+
+Toggle in Settings → General, or `--no-update` / `GOOGLE_TUI_NO_UPDATE=1`.
+`__version__` added to `google_tui/__init__.py`; `updater.describe()` prefers a
+release tag and falls back to version + short sha.
+
 ## [2026-07-14] — UI responsiveness + getting the OAuth URL out of the app
 
 ### Fixed — the app was slow because blocking network calls ran on the event loop

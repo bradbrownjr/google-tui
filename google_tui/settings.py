@@ -28,6 +28,7 @@ class Settings:
     google_cse_id: str | None = None  # Programmable Search Engine ID ("cx")
     searxng_url: str | None = None  # base URL of a SearXNG instance, e.g. https://searx.example.org
     routes_api_key: str | None = None  # Google Routes API key (Navigation tab, M6)
+    check_for_updates: bool = True  # fast-forward the git checkout on launch (see updater.py)
 
 
 def load_settings() -> Settings:

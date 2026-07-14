@@ -11,7 +11,9 @@ from __future__ import annotations
 import base64
 import datetime as dt
 import email.utils
+import os
 import re
+import sys
 import urllib.parse
 from dataclasses import dataclass
 from functools import cached_property
@@ -34,6 +36,7 @@ from .ask import needs_agent
 from . import setup_instructions
 from . import fetchers
 from . import render
+from . import updater
 from .render import DocumentView
 from .cache import Cache, derive_key_from_passphrase, make_canary, new_salt, read_or_create_keyfile, verify_canary
 from . import cache as cache_mod
@@ -801,6 +804,16 @@ class GoogleTUI(App):
                                     yield Switch(value=self.settings.show_sender_address,
                                                  id="settings-show-sender-address-switch")
                                 with Horizontal(classes="settings-row"):
+                                    yield Label("Check for updates on launch")
+                                    yield Switch(value=self.settings.check_for_updates,
+                                                 id="settings-update-check-switch")
+                                yield Static(
+                                    f"Currently running {updater.describe()}. On launch, fast-forwards "
+                                    "this checkout to origin and restarts. Skipped automatically if you "
+                                    "have uncommitted changes. Also skippable with --no-update.",
+                                    id="settings-update-note", classes="muted",
+                                )
+                                with Horizontal(classes="settings-row"):
                                     yield Label("Encrypt local cache at rest")
                                     yield Switch(value=self.settings.encrypt_at_rest, id="settings-encrypt-switch")
                                 key_method_classes = "" if self.settings.encrypt_at_rest else "hidden"
@@ -1005,6 +1018,17 @@ class GoogleTUI(App):
 
         return had_mail or bool(drive_files)
 
+    def _cached_thread_summaries(self, label_id) -> dict[str, dict]:
+        """{thread_id: cached summary row} for a label — the revalidation input
+        to gauth.list_threads (see its `known` arg). Safe to call from a worker
+        thread; Cache is lock-guarded."""
+        if not self._cache:
+            return {}
+        try:
+            return self._cache.get_all(f"thread_summary:{label_id}")
+        except Exception:
+            return {}
+
     def _write_mail_cache(self, label_id, threads, events, tasks, tasklists) -> None:
         if not self._cache:
             return
@@ -1091,7 +1115,13 @@ class GoogleTUI(App):
     def _fetch_mail_data(self):
         label_id = self._current_label_id
         label_ids = None if label_id in (None, "ALL") else [label_id]
-        threads = gauth.list_threads(self.svc, max_results=80, label_ids=label_ids)
+        # Hand list_threads what we already have. It revalidates each listed
+        # thread's historyId against the cached row and only refetches the ones
+        # that actually changed — a refresh where nothing moved costs a single
+        # API call instead of re-pulling all 80 thread summaries.
+        known = self._cached_thread_summaries(label_id)
+        threads = gauth.list_threads(self.svc, max_results=80, label_ids=label_ids,
+                                     known=known)
         events = gauth.list_events(self.svc, days=21)
         tasklists = gauth.list_tasklists(self.svc)
         tasks = []
@@ -1132,7 +1162,11 @@ class GoogleTUI(App):
         label_id = self._current_label_id
         try:
             label_ids = None if label_id in (None, "ALL") else [label_id]
-            threads = gauth.list_threads(self.svc, max_results=80, label_ids=label_ids)
+            # Same historyId revalidation as _fetch_mail_data: switching back to
+            # a label you've already opened re-reads it from cache rather than
+            # re-pulling 80 thread summaries from Gmail.
+            threads = gauth.list_threads(self.svc, max_results=80, label_ids=label_ids,
+                                         known=self._cached_thread_summaries(label_id))
             if self._cache:
                 self._cache.put_many(f"thread_summary:{label_id}", {t["threadId"]: t for t in threads})
         except Exception as e:
@@ -2134,8 +2168,22 @@ class GoogleTUI(App):
         """Blocking; returns the (meta_text, body_text) pair to render."""
         is_folder = f["mimeType"] == "application/vnd.google-apps.folder"
         fid = f["id"]
+        # The folder listing already told us this file's modifiedTime, for free.
+        # Drive stamps a new one on every edit, so it revalidates the cache the
+        # same way a thread's historyId does: if what we cached was stamped with
+        # the same modifiedTime, it IS the current file and there is nothing to
+        # download. Previously the cache was consulted ONLY when offline, so the
+        # normal (online) path re-downloaded every file on every look.
+        listed_mtime = str(f.get("modifiedTime") or "")
+        cached_meta = self._cache.get("drive_file_meta", fid) if self._cache else None
+        fresh = bool(
+            cached_meta and listed_mtime
+            and str(cached_meta.get("modifiedTime") or "") == listed_mtime
+        )
 
-        if self._online:
+        if fresh:
+            meta = cached_meta
+        elif self._online:
             try:
                 meta = gauth.get_file_metadata(self.svc, fid)
             except Exception as ex:
@@ -2143,7 +2191,7 @@ class GoogleTUI(App):
             if self._cache:
                 self._cache.put("drive_file_meta", fid, meta)
         else:
-            meta = self._cache.get("drive_file_meta", fid) if self._cache else None
+            meta = cached_meta
             if meta is None:
                 return (f"Name: {f.get('name','')}\n(offline — never viewed online, "
                         "no cached details)", "(not available offline)")
@@ -2166,6 +2214,13 @@ class GoogleTUI(App):
         if not _is_previewable(meta.get("mimeType", "")):
             return info, "(binary/image file — no text preview)"
 
+        # The body is the expensive part (a full file download). Reuse the
+        # cached text whenever the modifiedTime says the file hasn't changed —
+        # `fresh` was decided against the listing's modifiedTime above.
+        cached_text = self._cache.get("drive_file_text", fid) if self._cache else None
+        if fresh and cached_text:
+            return info, cached_text["text"][:8000]
+
         if self._online:
             try:
                 _, _, text = gauth.read_drive_text(self.svc, fid)
@@ -2175,9 +2230,8 @@ class GoogleTUI(App):
                 self._cache.put("drive_file_text", fid, {"text": text})
             return info, text[:8000]
 
-        cached = self._cache.get("drive_file_text", fid) if self._cache else None
-        if cached:
-            return info, cached["text"][:8000]
+        if cached_text:
+            return info, cached_text["text"][:8000]
         return info, "(not available offline — open this file once while online to cache it)"
 
     def _apply_drive_preview(self, gen: int, info: str, body: str) -> None:
@@ -2514,6 +2568,10 @@ class GoogleTUI(App):
             self.settings.show_sender_address = event.value
             save_settings(self.settings)
             self._apply_email_list(list(self._threads_cache.values()))
+            return
+        if event.switch.id == "settings-update-check-switch":
+            self.settings.check_for_updates = event.value
+            save_settings(self.settings)
             return
         if event.switch.id != "settings-encrypt-switch":
             return
@@ -3026,16 +3084,41 @@ class ThreadModal(ModalScreen):
         self.run_worker(self._fetch_thread, thread=True, exclusive=True)
 
     def _fetch_thread(self) -> None:
-        try:
-            msgs = gauth.get_thread(self.svc, self.thread_id)
-        except Exception as e:
-            self.app.call_from_thread(self._apply_error, e)
-            return
-        self.app.call_from_thread(self._apply_thread, msgs)
-        try:
-            gauth.mark_read(self.svc, self.thread_id)
-        except Exception:
-            pass  # best-effort — not worth surfacing a separate error for this
+        app = self.app
+        # Serve the body from cache when we can prove it's current. The thread
+        # summary carries the historyId Gmail last reported for this thread, and
+        # Gmail bumps it on ANY change — so a cached body stamped with the same
+        # historyId is exactly what a refetch would return. Without this, every
+        # reopen of the same email re-downloaded the whole thread (cache.py's
+        # docstring always claimed to cache "thread bodies"; nothing ever did).
+        # Bonus: an already-read thread is now readable offline.
+        summary = getattr(app, "_threads_cache", {}).get(self.thread_id) or {}
+        hid = str(summary.get("historyId") or "")
+        cache = getattr(app, "_cache", None)
+        msgs = None
+        if cache and hid:
+            hit = cache.get("thread_body", self.thread_id)
+            if hit and str(hit.get("historyId") or "") == hid:
+                msgs = hit.get("msgs")
+
+        if msgs is None:
+            try:
+                msgs = gauth.get_thread(self.svc, self.thread_id)
+            except Exception as e:
+                app.call_from_thread(self._apply_error, e)
+                return
+            if cache and hid:
+                cache.put("thread_body", self.thread_id, {"historyId": hid, "msgs": msgs})
+
+        app.call_from_thread(self._apply_thread, msgs)
+        # Only worth a network write if it's actually unread. (Marking it read
+        # bumps the historyId, which self-invalidates the row we just cached —
+        # correct: the next open refetches once and re-caches as read.)
+        if summary.get("unread", True):
+            try:
+                gauth.mark_read(self.svc, self.thread_id)
+            except Exception:
+                pass  # best-effort — not worth surfacing a separate error for this
 
     async def _apply_thread(self, msgs: list[dict]) -> None:
         # async (unlike the rest of this app's call_from_thread targets):
@@ -3517,7 +3600,30 @@ class ConfirmModal(ModalScreen):
 
 
 def main():
+    # Update check runs on the console, BEFORE the TUI takes over the screen —
+    # it prints plain status lines, and a successful update has to re-exec (this
+    # interpreter has already imported the old modules, so pulling new code
+    # without restarting would claim an update that isn't the one running).
+    # Skippable with --no-update, GOOGLE_TUI_NO_UPDATE=1, or the
+    # check_for_updates setting; see updater.py for the safety rules.
+    if _update_check_enabled():
+        try:
+            if updater.check_for_update():
+                updater.restart()  # does not return
+        except Exception as e:
+            # A broken update check must never be the reason you can't read your
+            # mail. Report it and carry on into the app regardless.
+            print(f"Can't reach update server, skipping update check. ({e})", flush=True)
     GoogleTUI().run()
+
+
+def _update_check_enabled() -> bool:
+    if "--no-update" in sys.argv or os.environ.get("GOOGLE_TUI_NO_UPDATE") == "1":
+        return False
+    try:
+        return load_settings().check_for_updates
+    except Exception:
+        return True
 
 
 if __name__ == "__main__":
