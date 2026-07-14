@@ -524,9 +524,8 @@ NOTE on the startup/refresh worker (`_start_after_unlock` → `_load_from_cache`
 are blocking synchronous httplib2 calls, not asyncio-native — an `async def`
 worker with no real `await` inside doesn't yield control back to the loop,
 so it can't paint anything (like `LoadingModal`) before it finishes. That's
-why the live refresh specifically runs via `run_worker(fn, thread=True)` (a
-real OS thread) rather than the plain `async def` pattern `refresh_all`
-still uses for the post-task-toggle refresh. Textual widgets are NOT
+why **every** gauth-touching worker runs via `run_worker(fn, thread=True)` (a
+real OS thread) and never as a plain `async def`. Textual widgets are NOT
 thread-safe (`App.call_from_thread`'s own docstring says so) — every
 gauth-touching method is split into a `_fetch_*` half (pure data, safe to
 call from the worker thread — also safe to call `Cache` methods from there,
@@ -536,13 +535,35 @@ source, follow this same fetch/apply split; don't call `gauth.*` and mutate
 a widget in the same method if that method might ever run off the main
 thread.
 
-Also: `gauth.list_threads(svc, max_results=80)` does up to 160 sequential
-Gmail API calls (metadata then full, per thread) and has been measured
-taking **~20 seconds** in this environment — this is normal, not a hang.
-Cache-first startup (§1a) means this only blocks the UI on a genuine first
-run; every run after that shows cached data immediately while this happens
-in the background. Don't "optimize" the call count itself without being
-asked; it's tracked in ROADMAP's P2 pagination item.
+**`async def` + blocking I/O is the bug that made this app feel broken.** An
+`async def` worker does NOT get its own thread: it runs ON the event loop, so
+a blocking `gauth.*` / `requests` call inside one freezes the entire UI —
+keystrokes, repaints, everything — until the network answers. Four workers
+were written that way and all four have been converted to `thread=True`
+(2026-07-14): `refresh_all` → `_refresh_all_thread` (post-send/post-task-toggle
+refresh), `_hermes_worker` → `_hermes_thread` (LLM round-trip), `_drive_preview`
+→ `_drive_preview_thread`, and the inline `gauth.set_task_status()` call in
+`action_toggle_task`. If you add a worker that touches the network, it takes
+`thread=True`. There is no exception to this.
+
+Two hot handlers are also **debounced**, because they fire on every keypress
+and each one did real work per key: `_drive_on_highlight` (a Drive preview is a
+metadata round-trip *plus* a file download — arrowing through a folder fired one
+per row) and the Contacts search box (fuzzy-matches the whole address book and
+rebuilds every row). Both restart a timer instead of stacking work; Drive
+previews are additionally memoised per session in `_drive_preview_cache`.
+
+Populate `ListView`s with `extend(items)`, never `append()` in a loop —
+`append` mounts one widget per call (mount + layout + repaint each), so an
+80-row inbox paid 80 separate mount cycles. `extend` batches them into one.
+
+`gauth.list_threads()` used to issue one sequential `threads().get()` per
+thread — ~160 round-trips at `max_results=80`, measured at **~20 seconds**. It
+now issues them through Gmail's HTTP **batch** endpoint (`new_batch_http_request`,
+50 sub-requests per call), so the same fetch is 2 round-trips. Order is
+preserved and a failed sub-request is skipped rather than sinking the list.
+Keep any new per-item Google fetch batched the same way. (Pagination is still
+tracked as a P2 ROADMAP item; that's a separate concern from call count.)
 
 NOTE on `push_screen(screen, callback)` timing: the callback fires **before**
 the screen is actually popped (confirmed by reading `Screen.dismiss` in this

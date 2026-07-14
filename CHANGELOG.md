@@ -3,6 +3,68 @@
 Format: keep newest at top. One entry per meaningful change. Reference files
 touched and any breaking notes.
 
+## [2026-07-14] — UI responsiveness + getting the OAuth URL out of the app
+
+### Fixed — the app was slow because blocking network calls ran on the event loop
+An `async def` Textual worker does **not** get its own thread: it runs on the
+event loop. Four code paths did blocking Google/LLM HTTP inside one, which
+froze the whole UI — keystrokes, repaints, the lot — until the network replied.
+All four now run with `thread=True`, fetching off-thread and applying widget
+changes back on the main thread via `call_from_thread` (`google_tui/main.py`):
+
+- `refresh_all` → **`_refresh_all_thread`**. Runs after sending mail and after
+  toggling a task, and does a full Gmail + Calendar + Tasks fetch. This is the
+  one that froze the UI for ~20 seconds at a stretch.
+- `action_toggle_task` also called `gauth.set_task_status()` **inline** — a
+  network write on the event loop, during a single keypress. Now threaded.
+- `_hermes_worker` → **`_hermes_thread`**. Was blocking the UI on a Gmail +
+  Calendar context fetch *and* the LLM round-trip; the app was unusable for the
+  entire time the model was thinking.
+- `_drive_preview` → **`_drive_preview_thread`**. The worst one: it fired on
+  every Drive list *highlight change* — i.e. every arrow keypress — and each
+  fire was a metadata round-trip **plus a full file download**, on the event
+  loop. Holding Down through a folder downloaded one file per row.
+
+### Changed — Gmail thread listing is ~10x fewer round-trips
+`gauth.list_threads()` fetched each thread's metadata in its own sequential
+HTTPS call: ~160 round-trips at `max_results=80`, previously measured at **~20
+seconds** and documented in AGENTS.md as "normal, not a hang". It now issues
+those `threads().get()` calls through Gmail's HTTP **batch** endpoint
+(`new_batch_http_request()`, 50 sub-requests per call) — the same fetch is now
+2 round-trips. Row order is preserved and a failing sub-request is skipped
+rather than taking the whole inbox down (`google_tui/gauth.py`).
+
+### Changed — debounced the two per-keystroke handlers
+- **Drive preview** waits `_DRIVE_PREVIEW_DEBOUNCE` (0.25s) for the cursor to
+  settle before fetching, so arrowing through 20 rows costs **one** preview
+  instead of 20, and previews already fetched this session are served from
+  `_drive_preview_cache` with no network call at all.
+- **Contacts search** waits `_CONTACTS_SEARCH_DEBOUNCE` (0.15s) — each keystroke
+  used to fuzzy-match the entire address book and rebuild every row.
+
+### Changed — `ListView.extend()` instead of `append()` in a loop
+`append()` mounts one widget per call (mount + layout + repaint each), so an
+80-thread inbox paid for 80 separate mount cycles; the contacts list paid for a
+full set on *every keystroke*. All list population (email, events, tasks, drive,
+news, contacts) now batches into a single `extend()` mount.
+
+### Added — three ways to get the OAuth URL out of the terminal
+The authorization URL in the re-auth modal was effectively un-copyable: while a
+TUI holds the mouse, the terminal can't draw its own selection, so you can't
+just drag over the URL. `GoogleReauthModal` now offers:
+
+- **Copy URL** button — copies via **OSC 52**, which is interpreted by the
+  *terminal emulator*, so the URL lands on the clipboard of the machine you're
+  sitting at even when the app runs on a headless box over SSH. Not universal
+  (macOS Terminal ignores it; tmux needs `set -g set-clipboard on`), hence:
+- **Save to file** button — writes the URL to `AUTH_URL_FILE`
+  (`~/.cache/google-tui/auth_url.txt`) to `cat`/`scp`/open from another shell.
+  Works no matter what the terminal supports.
+- **F2 (global)** — `action_toggle_mouse` releases the mouse back to the
+  terminal, restoring native click-drag selection **anywhere in the app**; F2
+  again recaptures it. This is the general fix for "I can't select text in this
+  app", not just for the OAuth URL. Documented in `HELP_TEXT` and the help bar.
+
 ## [2026-07-14]
 
 ### Added

@@ -65,6 +65,18 @@ _SUPERSCRIPT = {1: "¹", 2: "²", 3: "³", 4: "⁴", 5: "⁵", 6: "⁶", 7: "⁷
 
 NAV_EXPORT_DIR = Path(platformdirs.user_documents_dir()) / "google-tui"
 
+# Where "Save to file" in the re-auth modal drops the Google authorization URL,
+# for terminals that swallow OSC 52 clipboard writes (see GoogleReauthModal).
+AUTH_URL_FILE = Path(platformdirs.user_cache_dir("google-tui")) / "auth_url.txt"
+
+# Seconds the Drive cursor must sit still before we fetch a preview, and the
+# Contacts search box must sit idle before we re-filter. Both handlers fire on
+# every keypress and both used to do their (expensive) work synchronously on
+# each one; long enough to swallow a held-down arrow key or a fast typist,
+# short enough to still feel immediate once you stop.
+_DRIVE_PREVIEW_DEBOUNCE = 0.25
+_CONTACTS_SEARCH_DEBOUNCE = 0.15
+
 _PREVIEWABLE_PREFIXES = (
     "text/",
     "application/vnd.google-apps.document",
@@ -75,7 +87,7 @@ _PREVIEWABLE_EXTRA = {"application/json", "application/xml"}
 
 HELP_GLOBAL = (
     "Ctrl+# / Ctrl+←→ Tab   Alt+# Pane   Alt+←→↑↓ Move Pane   "
-    "Ctrl+P Commands   Ctrl+H Help   Ctrl+Q Quit"
+    "Ctrl+P Commands   F2 Mouse   Ctrl+H Help   Ctrl+Q Quit"
 )
 
 _KEY_METHOD_LABELS = {
@@ -94,6 +106,12 @@ GLOBAL
   Ctrl+R           Reconnect / refresh live data
   Ctrl+P           Command palette
   Ctrl+H           This help
+  F2               Release/recapture the mouse. While the app holds the mouse
+                   your terminal can't draw its own selection, so you can't
+                   drag-copy text (a URL, say) the way you normally would.
+                   F2 hands the mouse back; F2 again takes it. You can also
+                   drag-select inside the app and press Ctrl+C, which copies
+                   over SSH via OSC 52 where the terminal allows it.
   Ctrl+Q           Quit
 
 MAIL TAB
@@ -320,9 +338,16 @@ def _thread_expanded_text(th: dict, msgs: list[dict], show_sender_address: bool 
 
 
 def _append_email_items(email_list, threads, show_sender_address: bool = False) -> None:
-    for th in threads:
-        email_list.append(ListItem(Label(_email_collapsed_line(th, show_sender_address)),
-                                    id=_mk_id("t", th["threadId"])))
+    # extend(), not append()-in-a-loop: ListView.append mounts ONE widget per
+    # call (a mount + layout + repaint each), so an 80-thread inbox paid for 80
+    # separate mount cycles. extend() batches the whole list into a single one.
+    # Same reason every other list in this file builds its items first and
+    # extends once.
+    email_list.extend(
+        ListItem(Label(_email_collapsed_line(th, show_sender_address)),
+                 id=_mk_id("t", th["threadId"]))
+        for th in threads
+    )
 
 
 def _event_day(e: dict) -> int | None:
@@ -484,6 +509,13 @@ class GoogleTUI(App):
     #c-to-suggestions { height: auto; max-height: 6; border: round $panel-darken-1; }
     #unlock-box { height: auto; }
     #onboarding-box { width: 90%; height: 80%; }
+    /* The re-auth box grew a Copy URL / Save to file row; give it room to
+       scroll rather than pushing the paste Input off the bottom of the screen
+       on a short terminal. The URL itself is ~400 chars and must wrap, not be
+       clipped — a clipped URL is an unusable URL. */
+    #reauth-box { width: 90%; height: auto; max-height: 90%; overflow-y: auto; }
+    #reauth-url { width: 1fr; height: auto; color: $accent; margin: 1 0; }
+    #reauth-copy-help { height: auto; margin-bottom: 1; }
     #onboarding-scroll { height: 1fr; }
     #unlock-error { height: 1; }
     """
@@ -518,6 +550,7 @@ class GoogleTUI(App):
         ("]", "cal_next", "Next"),
         ("ctrl+r", "refresh", "Refresh"),
         ("ctrl+h", "help", "Help"),
+        ("f2", "toggle_mouse", "Mouse"),
         ("ctrl+q", "quit", "Quit"),
     ]
 
@@ -534,6 +567,13 @@ class GoogleTUI(App):
         self._drive_folder_id = "root"
         self._drive_path = "/"
         self._drive_files: list[dict] = []
+        # Drive preview is debounced (see _drive_on_highlight) and memoised for
+        # the session: highlighting a row costs a metadata round-trip + a file
+        # download, so we neither fire one per arrow keypress nor re-fetch a
+        # row the cursor has already visited.
+        self._drive_preview_timer = None
+        self._drive_preview_gen = 0
+        self._drive_preview_cache: dict[str, tuple[str, str]] = {}
         self.settings: Settings = load_settings()
         self._current_label_id = self.settings.default_label_id
         self._cache: Cache | None = None
@@ -568,6 +608,10 @@ class GoogleTUI(App):
         self._contacts_by_cid: dict[str, dict] = {}
         self._contacts_apply_gen = 0
         self._contacts_fetch_started = False
+        self._contacts_search_timer = None
+        # F2 hands the mouse back to the terminal so its native click-drag
+        # selection works (see action_toggle_mouse).
+        self._mouse_released = False
         # True when the current Google token is missing/invalid (checked via
         # _google_creds_ok()) — gates the Contacts pane between rendering
         # (possibly stale) contacts and a single "not connected" notice
@@ -1135,38 +1179,53 @@ class GoogleTUI(App):
         _append_email_items(self.query_one("#email-list"), threads, self.settings.show_sender_address)
         self._threads_cache = {t["threadId"]: t for t in threads}
 
-        event_list = self.query_one("#event-list")
-        for e in events:
-            start = _fmt_date(e.get("start", {}).get("dateTime") or e.get("start", {}).get("date", ""))
-            event_list.append(
-                ListItem(Label(f"{start}  {e.get('summary','')[:40]}"), id=_mk_id("e", e["id"])))
+        self.query_one("#event-list").extend(
+            ListItem(
+                Label(f"{_fmt_date(e.get('start', {}).get('dateTime') or e.get('start', {}).get('date', ''))}"
+                      f"  {e.get('summary','')[:40]}"),
+                id=_mk_id("e", e["id"]))
+            for e in events
+        )
 
-        task_list = self.query_one("#task-list")
-        for t in tasks:
-            box = "[x]" if t.get("status") == "completed" else "[ ]"
-            task_list.append(
-                ListItem(Label(f"{box} {t.get('title','')[:50]}"), id=_mk_id("k", f"{t['_list']}-{t['id']}")))
+        self.query_one("#task-list").extend(
+            ListItem(
+                Label(f"{'[x]' if t.get('status') == 'completed' else '[ ]'} {t.get('title','')[:50]}"),
+                id=_mk_id("k", f"{t['_list']}-{t['id']}"))
+            for t in tasks
+        )
 
         self._tasks_cache = tasks
         self._events_cache = events
 
-    async def refresh_all(self) -> None:
+    def _refresh_all_thread(self) -> None:
+        """Post-write refresh (task toggled, mail sent) — MUST run with
+        thread=True.
+
+        This was previously an `async def` worker, which meant every blocking
+        `gauth.*` call below ran ON the event loop: `_fetch_mail_data()` alone
+        is a Gmail thread list + a Calendar list + a Tasks list per tasklist,
+        and the whole UI (keystrokes, repaints, the spinner) was frozen solid
+        for the duration. Same fetch-off-thread / apply-on-main split as
+        `_live_refresh_thread` — see AGENTS.md's fetch/apply-split NOTE.
+        """
         try:
             mail = self._fetch_mail_data()
         except Exception as e:
-            self.notify(f"Refresh error: {e}", severity="error")
+            self.call_from_thread(self.notify, f"Refresh error: {e}", severity="error")
             return
         _, threads, events, tasks, tasklists = mail
         self._write_mail_cache(*mail)
-        self._apply_mail_data(threads, events, tasks, tasklists)
+        self.call_from_thread(self._apply_mail_data, threads, events, tasks, tasklists)
         try:
             labels = gauth.list_labels(self.svc)
             if self._cache:
                 self._cache.put_many("label", {l["id"]: l for l in labels})
-            self._apply_labels(labels)
+            self.call_from_thread(self._apply_labels, labels)
         except Exception:
             pass
-        self.notify(f"Refreshed: {len(threads)} threads, {len(events)} events, {len(tasks)} tasks")
+        self.call_from_thread(
+            self.notify,
+            f"Refreshed: {len(threads)} threads, {len(events)} events, {len(tasks)} tasks")
 
     # ---- tab switching ----
     def _goto_tab(self, tab_id: str) -> None:
@@ -1274,6 +1333,47 @@ class GoogleTUI(App):
         self.run_worker(self._live_refresh_thread, thread=True, exclusive=True)
 
     def action_help(self): self.push_screen(HelpModal())
+
+    def action_toggle_mouse(self) -> None:
+        """Release/recapture the mouse (F2).
+
+        While a TUI has mouse reporting enabled the terminal hands drag events
+        to the app instead of drawing its own selection, which is why you can't
+        just swipe over a URL and copy it the way you would in any other
+        program. Turning reporting off hands the mouse back to the terminal:
+        native click-drag selection and the terminal's own copy work exactly as
+        they normally do, anywhere in the app. Clicking widgets stops working
+        until you press F2 again — keyboard navigation is unaffected either way.
+
+        (Textual's own Ctrl+C-on-a-selection copies via OSC 52, which is the
+        nicer path when it works, but plenty of setups — macOS Terminal, tmux
+        without `set-clipboard on`, locked-down SSH clients — silently drop it.
+        This toggle needs no terminal cooperation at all.)
+        """
+        driver = self._driver
+        # Private, driver-specific API: the real terminal drivers (Linux/Windows)
+        # implement these, the headless/web ones don't — so feature-detect rather
+        # than assume, and leave the flag alone if the toggle isn't available.
+        disable = getattr(driver, "_disable_mouse_support", None)
+        enable = getattr(driver, "_enable_mouse_support", None)
+        if driver is None or disable is None or enable is None:
+            self.notify("This terminal driver doesn't support releasing the mouse.",
+                        severity="warning")
+            return
+        release = not self._mouse_released
+        try:
+            (disable if release else enable)()
+        except Exception as e:
+            self.notify(f"Couldn't toggle mouse support: {e}", severity="error")
+            return
+        self._mouse_released = release
+        if release:
+            self.notify(
+                "Mouse released — select and copy text with your terminal as "
+                "usual. Press F2 to give it back to the app.",
+                timeout=6)
+        else:
+            self.notify("Mouse captured by the app again.")
 
     # ---- email reply/forward from lightbar ----
     def _selected_thread(self) -> str | None:
@@ -1405,8 +1505,21 @@ class GoogleTUI(App):
         if not t:
             return
         done = t.get("status") != "completed"
-        gauth.set_task_status(self.svc, t["_list"], t["id"], done)
-        self.run_worker(self.refresh_all, exclusive=True)
+        # Both the write AND the refresh that follows it are network calls, so
+        # the whole sequence goes on a worker thread — `set_task_status` used
+        # to run inline here, freezing the UI on an HTTPS round-trip for the
+        # duration of a single keypress.
+        self.run_worker(
+            lambda: self._toggle_task_thread(t["_list"], t["id"], done),
+            thread=True, exclusive=True, group="task-toggle")
+
+    def _toggle_task_thread(self, list_id: str, task_id: str, done: bool) -> None:
+        try:
+            gauth.set_task_status(self.svc, list_id, task_id, done)
+        except Exception as e:
+            self.call_from_thread(self.notify, f"Task update failed: {e}", severity="error")
+            return
+        self._refresh_all_thread()
 
     # ---- events ----
     def _highlighted_event_id(self) -> str | None:
@@ -1495,7 +1608,7 @@ class GoogleTUI(App):
 
     def _on_compose_result(self, result) -> None:
         if result == "sent":
-            self.run_worker(self.refresh_all, exclusive=True)
+            self.run_worker(self._refresh_all_thread, thread=True, exclusive=True)
 
     # ---- hermes ask / browser address bar (shared Input.Submitted) ----
     def on_input_submitted(self, event: Input.Submitted) -> None:
@@ -1510,7 +1623,14 @@ class GoogleTUI(App):
 
     def on_input_changed(self, event: Input.Changed) -> None:
         if event.input.id == "contacts-search":
-            self._refresh_contacts_list()
+            # Debounced: each keystroke fuzzy-matches the ENTIRE contact book
+            # and rebuilds every row of the list. Restarting the timer (rather
+            # than stacking one rebuild per character) means typing "brad"
+            # costs one rebuild instead of four.
+            if self._contacts_search_timer is not None:
+                self._contacts_search_timer.stop()
+            self._contacts_search_timer = self.set_timer(
+                _CONTACTS_SEARCH_DEBOUNCE, self._refresh_contacts_list)
 
     def _hermes_submit(self, event: Input.Submitted) -> None:
         q = event.value.strip()
@@ -1519,13 +1639,20 @@ class GoogleTUI(App):
         event.input.value = ""
         log = self.query_one("#hermes-log")
         log.write(f"You: {q}")
-        self.run_worker(self._hermes_worker(q, log), exclusive=False)
+        self.run_worker(lambda: self._hermes_thread(q, log), thread=True,
+                        exclusive=False, group="hermes")
 
-    async def _hermes_worker(self, q: str, log: RichLog) -> None:
+    def _hermes_thread(self, q: str, log: RichLog) -> None:
+        """MUST run with thread=True. Every call in here is blocking network
+        I/O — `_build_context` hits Gmail + Calendar, and `provider.ask` /
+        `run_action` is an LLM round-trip that can take many seconds. As an
+        `async def` worker (what this used to be) all of that ran on the event
+        loop and locked the entire UI until the model answered.
+        """
         provider = ask.get_provider(self.settings.ai_provider, nous_api_key=self.settings.nous_api_key)
         try:
             if needs_agent(q):
-                log.write(f"[running {provider.display_name} agent…]")
+                self.call_from_thread(log.write, f"[running {provider.display_name} agent…]")
                 ans = provider.run_action(q)
             else:
                 ctx = self._build_context()
@@ -1535,9 +1662,9 @@ class GoogleTUI(App):
                     "sentences). If you need to take an action, say so plainly.\n\n"
                     "CONTEXT:\n" + ctx)
                 ans = provider.ask(sys_prompt, q)
-            log.write(f"{provider.display_name}: {ans}")
+            self.call_from_thread(log.write, f"{provider.display_name}: {ans}")
         except Exception as e:
-            log.write(f"(error: {e})")
+            self.call_from_thread(log.write, f"(error: {e})")
 
     def _build_context(self) -> str:
         parts = []
@@ -1912,11 +2039,13 @@ class GoogleTUI(App):
         if gen != self._drive_apply_gen:
             return  # superseded by a newer _apply_drive_files call
         lst = self.query_one("#drive-list")
+        items = []
         if path != "/":
-            lst.append(ListItem(Label("📂 .. (up)"), id="d-up"))
+            items.append(ListItem(Label("📂 .. (up)"), id="d-up"))
         for f in files:
             icon = "📁" if f["mimeType"] == "application/vnd.google-apps.folder" else "📄"
-            lst.append(ListItem(Label(f"{icon} {f['name'][:50]}"), id=_mk_id("d", f["id"])))
+            items.append(ListItem(Label(f"{icon} {f['name'][:50]}"), id=_mk_id("d", f["id"])))
+        lst.extend(items)
 
     def _drive_load(self, folder_id: str = "root", path: str = "/") -> None:
         try:
@@ -1946,6 +2075,7 @@ class GoogleTUI(App):
             return
         cid = item.id or ""
         if cid == "d-up":
+            self._drive_cancel_pending_preview()
             self.query_one("#drive-preview-meta").update("(parent folder)")
             self.query_one("#drive-preview-text").clear()
             return
@@ -1955,12 +2085,53 @@ class GoogleTUI(App):
         f = next((x for x in self._drive_files if x["id"] == fid), None)
         if not f:
             return
-        self.run_worker(self._drive_preview(f), exclusive=True, group="drive-preview")
+        # DEBOUNCE. This fires on every highlight change — i.e. on every arrow
+        # keypress — and a preview is a metadata round-trip PLUS a full file
+        # download. Firing one per row while the user holds Down means a
+        # download per row, all of them but the last one wasted. Wait for the
+        # cursor to settle first; the timer is restarted (not stacked) on each
+        # keypress, so arrowing through 20 rows costs ONE preview, not 20.
+        self._drive_cancel_pending_preview()
+        self._drive_preview_timer = self.set_timer(
+            _DRIVE_PREVIEW_DEBOUNCE, lambda: self._drive_start_preview(f))
 
-    async def _drive_preview(self, f: dict) -> None:
-        meta_widget = self.query_one("#drive-preview-meta")
-        text_widget = self.query_one("#drive-preview-text")
-        text_widget.clear()
+    def _drive_cancel_pending_preview(self) -> None:
+        if self._drive_preview_timer is not None:
+            self._drive_preview_timer.stop()
+            self._drive_preview_timer = None
+
+    def _drive_start_preview(self, f: dict) -> None:
+        self._drive_preview_timer = None
+        self._drive_preview_gen += 1
+        gen = self._drive_preview_gen
+        fid = f["id"]
+        # Session cache: re-highlighting a row already previewed this session
+        # (very common — cursor moves down then back up) repaints from memory
+        # with no network call at all.
+        hit = self._drive_preview_cache.get(fid)
+        if hit is not None:
+            self._apply_drive_preview(gen, hit[0], hit[1])
+            return
+        self.query_one("#drive-preview-text").clear()
+        self.query_one("#drive-preview-meta").update(f"Name: {f.get('name','')}\nLoading…")
+        self.run_worker(lambda: self._drive_preview_thread(gen, f),
+                        thread=True, exclusive=True, group="drive-preview")
+
+    def _drive_preview_thread(self, gen: int, f: dict) -> None:
+        """MUST run with thread=True — `get_file_metadata` is an HTTPS
+        round-trip and `read_drive_text` downloads the file body. This used to
+        be an `async def` worker, so BOTH ran on the event loop and every
+        cursor move in the Drive list froze the whole app until Google
+        answered. Pure fetch; all widget writes go through _apply_drive_preview
+        on the main thread (AGENTS.md's fetch/apply-split NOTE).
+        """
+        info, body = self._drive_preview_fetch(f)
+        if gen == self._drive_preview_gen:
+            self._drive_preview_cache[f["id"]] = (info, body)
+        self.call_from_thread(self._apply_drive_preview, gen, info, body)
+
+    def _drive_preview_fetch(self, f: dict) -> tuple[str, str]:
+        """Blocking; returns the (meta_text, body_text) pair to render."""
         is_folder = f["mimeType"] == "application/vnd.google-apps.folder"
         fid = f["id"]
 
@@ -1968,16 +2139,14 @@ class GoogleTUI(App):
             try:
                 meta = gauth.get_file_metadata(self.svc, fid)
             except Exception as ex:
-                meta_widget.update(f"(metadata error: {ex})")
-                return
+                return f"(metadata error: {ex})", ""
             if self._cache:
                 self._cache.put("drive_file_meta", fid, meta)
         else:
             meta = self._cache.get("drive_file_meta", fid) if self._cache else None
             if meta is None:
-                meta_widget.update(f"Name: {f.get('name','')}\n(offline — never viewed online, no cached details)")
-                text_widget.write("(not available offline)")
-                return
+                return (f"Name: {f.get('name','')}\n(offline — never viewed online, "
+                        "no cached details)", "(not available offline)")
 
         owners = ", ".join(
             o.get("displayName", o.get("emailAddress", "?")) for o in meta.get("owners", []))
@@ -1992,29 +2161,33 @@ class GoogleTUI(App):
                 f"Modified: {modified}")
         if not self._online:
             info += "\n(offline — showing cached details)"
-        meta_widget.update(info)
         if is_folder:
-            text_widget.write("(folder — press Enter to open)")
-            return
+            return info, "(folder — press Enter to open)"
         if not _is_previewable(meta.get("mimeType", "")):
-            text_widget.write("(binary/image file — no text preview)")
-            return
+            return info, "(binary/image file — no text preview)"
 
         if self._online:
             try:
                 _, _, text = gauth.read_drive_text(self.svc, fid)
             except Exception as ex:
-                text_widget.write(f"(preview error: {ex})")
-                return
+                return info, f"(preview error: {ex})"
             if self._cache:
                 self._cache.put("drive_file_text", fid, {"text": text})
-            text_widget.write(text[:8000])
-        else:
-            cached = self._cache.get("drive_file_text", fid) if self._cache else None
-            if cached:
-                text_widget.write(cached["text"][:8000])
-            else:
-                text_widget.write("(not available offline — open this file once while online to cache it)")
+            return info, text[:8000]
+
+        cached = self._cache.get("drive_file_text", fid) if self._cache else None
+        if cached:
+            return info, cached["text"][:8000]
+        return info, "(not available offline — open this file once while online to cache it)"
+
+    def _apply_drive_preview(self, gen: int, info: str, body: str) -> None:
+        if gen != self._drive_preview_gen:
+            return  # cursor moved on; a newer preview owns the pane now
+        self.query_one("#drive-preview-meta").update(info)
+        text_widget = self.query_one("#drive-preview-text")
+        text_widget.clear()
+        if body:
+            text_widget.write(body)
 
     # ---- news tab (P1 M3) ----
     def _fetch_news_data(self) -> list[dict]:
@@ -2058,6 +2231,7 @@ class GoogleTUI(App):
             return  # superseded by a newer _apply_news_data call
         lst = self.query_one("#news-list")
         self._news_by_cid = {}
+        items = []
         for e in sorted(entries, key=lambda e: e.get("published") or "", reverse=True):
             cid = _mk_id("n", e["id"])
             self._news_by_cid[cid] = e
@@ -2071,7 +2245,8 @@ class GoogleTUI(App):
             # Content.from_markup() (what Label routes through) would
             # otherwise silently swallow "[Feed Title]" as a bogus style tag.
             line = f"{date}  [{feed_title}] {title}"
-            lst.append(ListItem(Label(line, markup=False), id=cid))
+            items.append(ListItem(Label(line, markup=False), id=cid))
+        lst.extend(items)
 
     def _fetch_and_merge_one_feed(self, url: str) -> None:
         """Background fetch for a single newly-added feed (Settings tab),
@@ -2212,6 +2387,7 @@ class GoogleTUI(App):
                 "Reconnect from Settings -> General to load contacts.",
                 markup=False)))
             return
+        items = []
         for c in _fuzzy_filter_contacts(self._contacts_cache, query):
             name = (c.get("name") or "").strip()
             addr = (c.get("email") or "").strip()
@@ -2220,7 +2396,8 @@ class GoogleTUI(App):
             cid = _mk_id("ct", c.get("resource_name", ""))
             self._contacts_by_cid[cid] = c
             label = f"{name[:30]:<30} {addr[:40]}" if name else addr[:40]
-            lst.append(ListItem(Label(label, markup=False), id=cid))
+            items.append(ListItem(Label(label, markup=False), id=cid))
+        lst.extend(items)
 
     def _open_contact_detail(self, cid: str) -> None:
         c = self._contacts_by_cid.get(cid)
@@ -2606,6 +2783,17 @@ class GoogleReauthModal(ModalScreen):
                 # way — that covers "copy or click" without fighting the
                 # markup parser for a cosmetic OSC-8 tag.
                 yield Static(self._auth_url, id="reauth-url", markup=False)
+                with Horizontal(classes="btnrow"):
+                    yield Button("Copy URL", id="reauth-copy", variant="primary")
+                    yield Button("Save to file", id="reauth-save")
+                yield Static(
+                    "Copy URL puts it on your computer's clipboard even over "
+                    "SSH (terminal must allow OSC 52 — in tmux: "
+                    "set -g set-clipboard on). If nothing lands on your "
+                    "clipboard, use Save to file, or press F2 to release the "
+                    "mouse and select the URL with your terminal as usual.",
+                    id="reauth-copy-help", classes="muted",
+                )
                 yield Static(
                     "2. Sign in and grant access. You will land on a page "
                     "that fails to load (\"can't reach this page\" / "
@@ -2625,9 +2813,39 @@ class GoogleReauthModal(ModalScreen):
         if not self._error:
             self.query_one("#reauth-code-input", Input).focus()
 
+    def _copy_url(self) -> None:
+        """OSC 52 — the escape sequence goes to the TERMINAL EMULATOR, not the
+        machine the app runs on, so the URL lands on the clipboard of whatever
+        computer you're sitting at even when the app is on a headless box over
+        SSH. Not universal (macOS Terminal ignores it; tmux needs
+        `set-clipboard on`), which is exactly why "Save to file" and the F2
+        mouse-release toggle exist alongside it.
+        """
+        self.app.copy_to_clipboard(self._auth_url or "")
+        self.query_one("#reauth-status", Static).update(
+            "Copied to clipboard. If your clipboard is still empty, your "
+            "terminal blocks OSC 52 — use Save to file or F2 instead.")
+
+    def _save_url(self) -> None:
+        """Bulletproof fallback for terminals that swallow OSC 52: drop the URL
+        in a file the user can `cat`, `scp`, or open from another shell."""
+        path = AUTH_URL_FILE
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text((self._auth_url or "") + "\n", encoding="utf-8")
+        except Exception as e:
+            self.query_one("#reauth-status", Static).update(f"Couldn't write {path}: {e}")
+            return
+        self.query_one("#reauth-status", Static).update(f"Saved to {path}")
+        self.notify(f"Auth URL written to {path}")
+
     def on_button_pressed(self, e: Button.Pressed) -> None:
         if e.button.id in ("reauth-cancel", "reauth-close"):
             self.dismiss(None)
+        elif e.button.id == "reauth-copy":
+            self._copy_url()
+        elif e.button.id == "reauth-save":
+            self._save_url()
         elif e.button.id == "reauth-submit":
             self._submit()
 

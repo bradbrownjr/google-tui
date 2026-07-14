@@ -176,8 +176,46 @@ def list_labels(svc) -> list[dict]:
     return g.users().labels().list(userId="me").execute().get("labels", [])
 
 
+def _thread_summary(thread_id: str, th: dict) -> dict | None:
+    """Shape one threads().get(format="metadata") response into the row dict
+    the Email pane renders. Returns None for a thread with no messages."""
+    msgs = th.get("messages", [])
+    if not msgs:
+        return None
+    last = msgs[-1]
+    hdrs = {h["name"].lower(): h["value"] for h in last.get("payload", {}).get("headers", [])}
+    return {
+        "threadId": thread_id,
+        "subject": hdrs.get("subject", "(no subject)"),
+        "from": hdrs.get("from", ""),
+        "date": hdrs.get("date", ""),
+        "count": len(msgs),
+        "unread": any("UNREAD" in m.get("labelIds", []) for m in msgs),
+        # Gmail message resources include a top-level "snippet" regardless
+        # of `format` — no extra API call needed. Backs the Email pane's
+        # Space-to-expand inline preview (main.py's _toggle_thread_expand).
+        "snippet": last.get("snippet", ""),
+    }
+
+
+# Gmail's JSON-batch endpoint accepts up to 100 sub-requests per HTTP call;
+# Google's own docs recommend staying at/below 50 to avoid rate-limit blowback.
+_BATCH_SIZE = 50
+
+
 def list_threads(svc, max_results: int = 50, q: str | None = None,
                  label_ids: list[str] | None = None) -> list[dict]:
+    """List threads with their metadata.
+
+    The per-thread `threads().get()` calls are issued via Gmail's HTTP batch
+    endpoint (ONE request per _BATCH_SIZE threads) rather than sequentially.
+    The old one-round-trip-per-thread loop meant `max_results=80` cost ~160
+    sequential HTTPS calls and was measured at ~20 SECONDS; batching makes the
+    same fetch a couple of round-trips. Order is preserved (results are keyed
+    by thread id and reassembled in the order Gmail listed them), and a
+    sub-request that fails is skipped rather than taking the whole list down —
+    the same per-item defensiveness the callers already assume.
+    """
     g = svc["gmail"]
     params = {"userId": "me", "maxResults": max_results}
     if q:
@@ -185,29 +223,39 @@ def list_threads(svc, max_results: int = 50, q: str | None = None,
     if label_ids:
         params["labelIds"] = label_ids
     resp = g.users().threads().list(**params).execute()
+    ids = [t["id"] for t in resp.get("threads", [])]
+    if not ids:
+        return []
+
+    fetched: dict[str, dict] = {}
+
+    def _on_thread(request_id: str, response: dict, exception) -> None:
+        if exception is not None or not response:
+            return  # skip this row; a single bad thread shouldn't kill the list
+        fetched[request_id] = response
+
+    for i in range(0, len(ids), _BATCH_SIZE):
+        chunk = ids[i:i + _BATCH_SIZE]
+        batch = g.new_batch_http_request()
+        for tid in chunk:
+            batch.add(
+                g.users().threads().get(
+                    userId="me", id=tid, format="metadata",
+                    metadataHeaders=["From", "Subject", "Date"],
+                ),
+                request_id=tid,
+                callback=_on_thread,
+            )
+        batch.execute()
+
     out = []
-    for t in resp.get("threads", []):
-        th = g.users().threads().get(
-            userId="me", id=t["id"], format="metadata",
-            metadataHeaders=["From", "Subject", "Date"],
-        ).execute()
-        msgs = th.get("messages", [])
-        if not msgs:
+    for tid in ids:
+        th = fetched.get(tid)
+        if th is None:
             continue
-        last = msgs[-1]
-        hdrs = {h["name"].lower(): h["value"] for h in last.get("payload", {}).get("headers", [])}
-        out.append({
-            "threadId": t["id"],
-            "subject": hdrs.get("subject", "(no subject)"),
-            "from": hdrs.get("from", ""),
-            "date": hdrs.get("date", ""),
-            "count": len(msgs),
-            "unread": any("UNREAD" in m.get("labelIds", []) for m in msgs),
-            # Gmail message resources include a top-level "snippet" regardless
-            # of `format` — no extra API call needed. Backs the Email pane's
-            # Space-to-expand inline preview (main.py's _toggle_thread_expand).
-            "snippet": last.get("snippet", ""),
-        })
+        row = _thread_summary(tid, th)
+        if row is not None:
+            out.append(row)
     return out
 
 
