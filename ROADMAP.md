@@ -15,33 +15,6 @@ just checking it off here, so ROADMAP.md only ever shows what's still open.
   this sandbox — run it yourself when ready. Never auto-send in
   unsupervised tests — mock `gauth.reply_to`/`forward` as usual.
 
-## P1 — Major Feature Epics (ordered build sequence)
-
-Epics remaining from the 2026-07-13 planning pass (Labels-as-folders,
-multi-provider AI/onboarding, the Google Console setup guide, M1's shared
-rendering module, M2's Browser tab, M3's News tab, M4's rich HTML email
-rendering, M5's Contacts tab, and M6's Navigation tab all shipped — see
-CHANGELOG). Only M7 (repo screenshot) remains, deliberately LAST — take it
-now that the major UI work (M5 Contacts) has landed, so it's a current
-snapshot instead of one that goes stale after the next epic. Tagged with
-the Claude Code agent recommended for a future session tackling it —
-**Explore** for read-only research, **Plan** for architecture/design before
-non-trivial code, **general-purpose** for the actual multi-step
-implementation, **claude-code-guide** where the step is specifically about
-the Claude Code CLI/SDK itself. Small one-shot steps with no real
-research/design component are left untagged (just do them).
-
-### M7 — Repo screenshot
-Last, on purpose — a single current snapshot taken once the major UI
-work above (M5 Contacts) has landed, rather than one that goes stale after
-the next epic. (M2 Browser, M3 News, M4 rich HTML, M5 Contacts, and M6
-Navigation already landed, see CHANGELOG.)
-- [ ] Build a fake dataset (dummy threads/events/tasks/Drive files, zero
-  real PII) and drive the app against it with the existing `run_test`
-  pilot + `save_screenshot` → cairosvg pipeline (AGENTS.md §6) to produce
-  a PNG. *(general-purpose)*
-- [ ] Add it to the top of README.md as the project hero image.
-
 ## P2 — UX polish
 
 - [ ] **Task subtasks + add/delete.** `TaskDetailModal` shows subtasks

@@ -3,12 +3,14 @@
 A multi-pane terminal UI (TUI) for your Google Workspace, built with
 [Textual](https://textual.textualize.io/).
 
+![google-tui: the Mail tab, showing Email/Events/Tasks/Hermes panes populated with sample data](assets/screenshot.png)
+
 ## Features
 
-Seven full-width **tabs** live in the blue bar: **Mail**, **Calendar**,
-**Drive**, **Browser**, **News**, **Navigation**, **Settings** (`Ctrl+1..7`).
-The Mail tab holds four **panes**: Email, Events, Tasks, Hermes (`Alt+1..4`,
-or `Alt+arrows` to move relatively).
+Eight full-width **tabs** live in the blue bar: **Mail**, **Calendar**,
+**Drive**, **Browser**, **News**, **Navigation**, **Settings**, **Contacts**
+(`Ctrl+1..8`). The Mail tab holds four **panes**: Email, Events, Tasks,
+Hermes (`Alt+1..4`, or `Alt+arrows` to move relatively).
 
 **Works offline, to a degree.** The app is cache-first: whatever it fetched
 last time shows up instantly on launch, while it reconnects to Google in the
@@ -21,12 +23,13 @@ toggling a task) are disabled with a warning instead of failing silently.
 - **Mail tab — Email pane** (left, full height): a label/folder picker
   (All Mail, system labels, nested user labels) above a threaded Gmail
   list with a lightbar. `l` jumps straight to the folder picker and opens
-  it. `Enter` opens the full thread; `Space` expands/collapses the
-  highlighted row in place to show its snippet (and message count, for
-  threads with more than one message) without leaving the list; `r` / `a` /
-  `f` reply / reply-all / forward (compose modal, with a 5-second
-  cancelable countdown before it actually sends). Unread threads are
-  marked with a bullet.
+  it. `Enter` opens the full thread — HTML-heavy messages render as actual
+  formatted HTML (bold, links, etc.) instead of stripped plain text;
+  `Space` expands/collapses the highlighted row in place to show its
+  snippet (and message count, for threads with more than one message)
+  without leaving the list; `r` / `a` / `f` reply / reply-all / forward
+  (compose modal, with a 5-second cancelable countdown before it actually
+  sends). Unread threads are marked with a bullet.
 - **Mail tab — Events pane** (upcoming): next ~3 weeks of events, lightbar,
   `Enter`/`Space` for detail.
 - **Mail tab — Tasks pane:** all Google Task lists, lightbar. `Space` toggles
@@ -78,6 +81,13 @@ toggling a task) are disabled with a warning instead of failing silently.
   — Google/DuckDuckGo/SearXNG — and set the API key/Search Engine ID or
   instance URL it needs), and **Navigation** (set the Routes API key used
   by the Navigation tab) — all without hand-editing config files.
+- **Contacts tab:** your Google Contacts, searchable live with fuzzy
+  matching as you type. `Enter`/`Space` opens a contact's detail (name,
+  email, phone) with a "Compose Email" button; a "Compose New" button
+  starts a blank message. The same fuzzy match also powers a suggestion
+  dropdown in Compose's To field as you type a name. Needs the
+  `contacts.readonly` scope on your Google token — see
+  [SETUP.md](SETUP.md) §7.
 
 **First run with nothing configured?** google-tui still launches — an
 onboarding wizard walks you through whatever's missing (Google account,
@@ -87,7 +97,7 @@ full Google Cloud Console walkthrough.
 ## Layout & keys
 
 ```
-┌[Mail¹] Calendar² Drive³ Browser⁴ News⁵ Navigation⁶ Settings⁷ ── Synced 14:32 ┐  ← blue bar
+┌[Mail¹] Calendar² Drive³ Browser⁴ News⁵ Navigation⁶ Settings⁷ Contacts⁸ ── Synced 14:32 ┐  ← blue bar
 ├─ EMAIL ──────────────────────┐ ┌─ EVENTS ─────────────────────┤
 │ ▸ Frank Krizan                │ │ ▸ 07/13 Tick/Flea Appt       │
 │   Fwd: [DigiPi] …             │ │ ▸ 07/15 OHD Water Testing    │
@@ -101,8 +111,8 @@ full Google Cloud Console walkthrough.
 
 | Key | Action |
 |-----|--------|
-| `Ctrl+1..7` | switch tab (Mail / Calendar / Drive / Browser / News / Navigation / Settings) |
-| `Ctrl+Left/Right` | cycle tabs — use this if `Ctrl+1..7` doesn't reach the app (common in browser-based terminals, which reserve `Ctrl+1..8` for switching *their own* tabs) |
+| `Ctrl+1..8` | switch tab (Mail / Calendar / Drive / Browser / News / Navigation / Settings / Contacts) |
+| `Ctrl+Left/Right` | cycle tabs — use this if `Ctrl+1..8` doesn't reach the app (common in browser-based terminals, which reserve `Ctrl+1..8` for switching *their own* tabs) |
 | `Alt+1..4` | jump to Mail pane (Email / Events / Tasks / Hermes) |
 | `Alt+Left/Right/Up/Down` | move to the adjacent Mail pane; on the Browser tab, back/forward through history; on the Settings tab, cycle General/AI Provider/News Feeds/Search/Navigation |
 | `Tab` / `Shift+Tab` | cycle Mail panes |
@@ -154,7 +164,7 @@ google-tui/
 ├── google_tui/
 │   ├── __init__.py
 │   ├── __main__.py        # `python -m google_tui` entry
-│   ├── gauth.py          # Google auth + Gmail/Cal/Tasks/Drive/label helpers
+│   ├── gauth.py          # Google auth + Gmail/Cal/Tasks/Drive/Contacts/label helpers
 │   ├── ask.py            # AIProvider abstraction (Hermes/Claude Code/opencode/Gemini CLI) + search
 │   ├── render.py         # protocol-agnostic Document/Block/Link model + DocumentView
 │   ├── fetchers.py       # HTTP/Gopher/Gemini fetch (Browser) + RSS/Atom feed fetch (News) + Routes API (Navigation)
