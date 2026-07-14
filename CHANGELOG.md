@@ -12,23 +12,27 @@ touched and any breaking notes.
   OAuth script (SETUP.md §7's old only option) for the two situations that
   used to require it: the routine 7-day token expiry on Testing-status
   Google Cloud apps, and adding a new scope to an existing token (e.g. the
-  `contacts.readonly` scope P1 M5 needs). New `gauth.reauthorize(scopes=
-  None)` reuses the OAuth client (`client_id`/`client_secret`/`token_uri`)
-  already embedded in the existing token file — so re-authorizing never
-  needs the downloaded client_secret.json again after the very first setup
-  — and runs a `google_auth_oauthlib.InstalledAppFlow.run_local_server()`
-  consent flow (`access_type="offline"`, `prompt="consent"` forced so a
-  RE-consent still returns a fresh `refresh_token`, which Google otherwise
-  only issues on a true first-ever consent). On success, rebuilds `self.svc`
-  and refreshes live data immediately — no restart required, unlike the
-  encrypt-at-rest settings. Does NOT support a genuine first-ever setup (no
-  token file at all yet); that still goes through SETUP.md's manual
-  walkthrough once, since there's no existing OAuth client to reuse. New
-  `google-auth-oauthlib` dependency. Also generalizes to a real limitation:
-  this only works when google-tui and the browser completing consent share
-  a machine (the OAuth redirect targets `localhost`) — documented in
-  AGENTS.md, not solved. (`gauth.py`, `main.py`, `setup_instructions.py`,
-  `SETUP.md`, `README.md`, `pyproject.toml`)
+  `contacts.readonly` scope P1 M5 needs). This app commonly runs on a
+  headless VM or a display-less laptop, so it's deliberately NOT the usual
+  `InstalledAppFlow.run_local_server()` (spawn a local server, auto-open a
+  browser, wait for the redirect) — instead a manual copy-URL/paste-code
+  flow in a new `GoogleReauthModal`: shows an authorization URL to open in
+  any browser on any device, then accepts either the resulting (deliberately
+  failed-to-load) redirect URL or just its bare code pasted back, exchanged
+  via `gauth.complete_reauth`. New `gauth.build_reauth_flow`/
+  `reauth_authorization_url`/`complete_reauth` reuse the OAuth client
+  (`client_id`/`client_secret`/`token_uri`) already embedded in the existing
+  token file — so re-authorizing never needs the downloaded
+  client_secret.json again after the very first setup — with
+  `access_type="offline"`/`prompt="consent"` forced so a RE-consent still
+  returns a fresh `refresh_token`, which Google otherwise only issues on a
+  true first-ever consent. On success, rebuilds `self.svc` and refreshes
+  live data immediately — no restart required, unlike the encrypt-at-rest
+  settings. Does NOT support a genuine first-ever setup (no token file at
+  all yet); that still goes through SETUP.md's manual walkthrough once,
+  since there's no existing OAuth client to reuse. New
+  `google-auth-oauthlib` dependency. (`gauth.py`, `main.py`,
+  `setup_instructions.py`, `SETUP.md`, `README.md`, `pyproject.toml`)
 - **`scripts/generate_screenshot.py`**, extracted from the one-off script
   used to produce `assets/screenshot.png` (P1 M7 below) so the hero image
   can be regenerated later without re-deriving the approach — documented in

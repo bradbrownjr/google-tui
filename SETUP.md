@@ -132,13 +132,26 @@ invent one from inside the app. Every time after that — the routine
 **7-day expiry** from §4, or adding a new scope like `contacts.readonly`
 to an older token — use the **"Re-authorize Google account" button in
 Settings → General** instead: it reuses the OAuth client already embedded
-in your existing token file, opens your browser to Google's consent
-screen, and writes the refreshed token back for you. No script, no console
-commands, no scopes list to retype. The same button also appears on the
-first-run onboarding screen if google-tui detects your token has expired
-or gone missing — but note it only helps if `~/.hermes/google_token.json`
-already exists (even an expired one); a truly first-ever setup with no
-token file at all still needs the manual flow above once.
+in your existing token file and shows you a URL and a place to paste the
+result, no script and no console commands. Unlike a typical "sign in"
+button, it deliberately does **not** try to open a browser or run a local
+server on the machine running google-tui — that machine is very often a
+headless VM or a laptop with no display, so instead:
+
+1. It shows an authorization URL. Open it in any browser, on any device —
+   your phone is fine, it doesn't need to be the same machine as
+   google-tui.
+2. Sign in and grant access. The page will then fail to load ("can't reach
+   this page" / connection refused) — that's expected, not a bug; nothing
+   is meant to be listening at that address.
+3. Copy the full URL from your browser's address bar (or just the `code=`
+   value in it) and paste it into google-tui.
+
+The same button also appears on the first-run onboarding screen if
+google-tui detects your token has expired or gone missing — but note it
+only helps if `~/.hermes/google_token.json` already exists (even an
+expired one); a truly first-ever setup with no token file at all still
+needs the manual flow above once.
 
 ## 8. AI provider setup (Ask pane)
 

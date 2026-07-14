@@ -60,11 +60,31 @@ GOOGLE_SCOPES = [
 ]
 
 
-def reauthorize(scopes: list[str] | None = None) -> None:
-    """Runs a fresh Google OAuth "installed app" consent flow and overwrites
-    TOKEN_PATH with the result — the in-app replacement for the manual
-    "write a one-off script and run it" process SETUP.md §7 used to be the
-    only option for.
+# This app commonly runs on a headless VM or an underpowered laptop with no
+# X11/Wayland compositor (see AGENTS.md) — InstalledAppFlow.run_local_server()
+# (spawn a local HTTP server, auto-open a browser, wait for the redirect to
+# hit it) is the WRONG tool here: there's often no browser to open, and even
+# if the user opens the auth URL on a different device (their phone), that
+# device's browser can never reach a server listening on the headless
+# machine's localhost. build_reauth_flow/reauth_authorization_url/
+# complete_reauth below implement the manual alternative instead: show a
+# URL to open ANYWHERE, then accept whatever the browser lands on (or just
+# the bare code) pasted back into the TUI. See GoogleReauthModal in main.py
+# for the interactive side of this.
+#
+# redirect_uri="http://localhost" is never actually connected to — it's
+# purely a placeholder Google's "Desktop app" OAuth client type accepts
+# without pre-registration (RFC 8252 loopback exception). Because it's
+# "http" not "https", oauthlib refuses to parse a pasted redirect URL
+# unless OAUTHLIB_INSECURE_TRANSPORT is set — safe here since the loopback
+# leg is never actually used for anything sensitive (nothing listens on
+# it), only the exchange with Google's real (https) token endpoint is.
+os.environ.setdefault("OAUTHLIB_INSECURE_TRANSPORT", "1")
+
+
+def build_reauth_flow(scopes: list[str] | None = None):
+    """Builds (but does not run) a re-authorization flow — step 1 of 3, see
+    reauth_authorization_url/complete_reauth below.
 
     Reuses the OAuth CLIENT (client_id/client_secret/token_uri) already
     embedded in the EXISTING token file, so the user never has to re-find or
@@ -74,11 +94,8 @@ def reauthorize(scopes: list[str] | None = None) -> None:
     through the manual SETUP.md walkthrough; this function deliberately
     doesn't try to replace it.
 
-    BLOCKS the calling thread until the user finishes the browser consent
-    flow (or it times out) — this can take minutes, not just a network
-    round trip, so callers MUST run this on a worker thread, never the main
-    thread (same rule as every other gauth call in this app — see
-    AGENTS.md's fetch/apply split).
+    Fast/local (file read + object construction, no network) — safe to call
+    from the main thread, unlike complete_reauth below.
     """
     if not os.path.exists(TOKEN_PATH):
         raise RuntimeError(
@@ -96,9 +113,8 @@ def reauthorize(scopes: list[str] | None = None) -> None:
             f"{TOKEN_PATH} is missing client_id/client_secret — can't reuse it "
             "for re-authorization. Re-run the manual flow in SETUP.md §7."
         )
-    # Imported lazily: only this one function needs it, and it's a fairly
-    # heavy optional dependency (pulls in a local HTTP server + a browser
-    # launcher) that every other gauth call has no use for.
+    # Imported lazily: only these functions need it, and it's an optional
+    # dependency every other gauth call has no use for.
     from google_auth_oauthlib.flow import InstalledAppFlow
 
     client_config = {
@@ -111,17 +127,42 @@ def reauthorize(scopes: list[str] | None = None) -> None:
         }
     }
     flow = InstalledAppFlow.from_client_config(client_config, scopes=scopes or GOOGLE_SCOPES)
+    flow.redirect_uri = "http://localhost"
+    return flow
+
+
+def reauth_authorization_url(flow) -> str:
+    """Step 2 of 3: the URL to show the user (any device, any browser — see
+    the module note above). Also local/no-network; safe on the main thread.
+    """
     # access_type="offline" + prompt="consent": without BOTH of these, a
     # RE-consent (the normal case here — the user has already granted access
     # once before) very often does NOT come back with a refresh_token at
     # all, since Google only issues one on a truly first-ever consent by
     # default. Forcing both guarantees a fresh refresh_token every time,
     # which is the entire point of a flow meant to replace an expired one.
-    # port=0 lets the OS pick a free local port instead of hardcoding one
-    # that might already be in use.
-    creds = flow.run_local_server(
-        port=0, access_type="offline", prompt="consent", open_browser=True, timeout_seconds=300,
-    )
+    url, _state = flow.authorization_url(access_type="offline", prompt="consent")
+    return url
+
+
+def complete_reauth(flow, response_or_code: str) -> None:
+    """Step 3 of 3: exchanges whatever the user pasted back — either the
+    FULL URL their browser tried (and failed) to load after consenting, or
+    just the bare `code=...` value out of it, whichever they found easier to
+    copy — for tokens, and overwrites TOKEN_PATH with the result.
+
+    BLOCKS on a network call (the token exchange with Google) — callers MUST
+    run this on a worker thread, same rule as every other gauth call (see
+    AGENTS.md's fetch/apply split). Must be called with the SAME `flow`
+    object `reauth_authorization_url` was called on (it carries the OAuth
+    `state` generated in that step, needed to validate a full pasted URL).
+    """
+    response_or_code = response_or_code.strip()
+    if "://" in response_or_code:
+        flow.fetch_token(authorization_response=response_or_code)
+    else:
+        flow.fetch_token(code=response_or_code)
+    creds = flow.credentials
     with open(TOKEN_PATH, "w") as f:
         f.write(creds.to_json())
 

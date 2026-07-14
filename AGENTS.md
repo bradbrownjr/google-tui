@@ -335,50 +335,86 @@ Other tabs:
   one-off OAuth script by hand (SETUP.md §7) for the two cases that used
   to require it: the routine **7-day token expiry** (Testing-status Google
   Cloud apps — SETUP.md §4) and adding a new scope to an existing token
-  (e.g. `contacts.readonly` for P1 M5). Backed by `gauth.reauthorize
-  (scopes=None)`: reads `client_id`/`client_secret`/`token_uri` out of the
-  EXISTING `TOKEN_PATH` (so the user never re-supplies their downloaded
-  OAuth client JSON), builds a `google_auth_oauthlib.flow.InstalledAppFlow`
-  from it, and calls `run_local_server(port=0, access_type="offline",
-  prompt="consent", open_browser=True, timeout_seconds=300)` — `port=0`
-  avoids a hardcoded-port conflict; `access_type="offline"` +
-  `prompt="consent"` are BOTH required to guarantee a fresh `refresh_token`
-  comes back on a RE-consent (Google's default behavior only issues one on
-  a truly first-ever consent, and a re-auth's whole point is replacing a
-  dead refresh_token). New `google-auth-oauthlib` dependency
-  (`pyproject.toml`) — imported lazily inside `reauthorize()`, not at
-  `gauth.py` module level, since nothing else in this app needs it.
-  Deliberately does NOT support a genuinely first-ever setup (no
-  `TOKEN_PATH` at all yet) — there's no existing OAuth client to reuse in
-  that case, so `reauthorize()` raises a clear error pointing at SETUP.md's
-  manual walkthrough instead of trying to build a "paste your
-  client_secret.json into the TUI" flow, which was judged not worth the
-  complexity for a once-ever step.
-  `reauthorize()` BLOCKS the calling thread until the browser consent flow
-  completes (or times out) — same "worker thread only" rule as every other
-  gauth call, doubly important here since a human, not a network round
-  trip, is on the other end. `GoogleTUI._start_google_reauth` (shared by
-  both buttons) → `_google_reauth_thread` (worker) →
-  `_on_google_reauth_success`/`_on_google_reauth_error` (`call_from_thread`
-  back to the main thread). On success it does NOT ask for a restart like
+  (e.g. `contacts.readonly` for P1 M5).
+
+  **Deliberately NOT** `InstalledAppFlow.run_local_server()` (spawn a local
+  HTTP server, auto-open a system browser, block until the redirect hits
+  it) — this app commonly runs on a **headless VM** or an underpowered
+  laptop with no X11/Wayland compositor, where there's no browser to open,
+  and even opening the URL on a different device (a phone) could never
+  reach a server listening on the headless machine's own `localhost`.
+  Instead a manual copy-URL/paste-code flow, entirely inside
+  `GoogleReauthModal` (`main.py`):
+  1. `gauth.build_reauth_flow(scopes=None)` — reads `client_id`/
+     `client_secret`/`token_uri` out of the EXISTING `TOKEN_PATH` (so the
+     user never re-supplies their downloaded OAuth client JSON — only a
+     genuinely first-ever setup, no `TOKEN_PATH` at all, still needs
+     SETUP.md's manual walkthrough; this raises a clear error pointing at
+     it instead of trying to build a "paste your client_secret.json into
+     the TUI" flow, judged not worth the complexity for a once-ever step),
+     builds an `InstalledAppFlow`, and sets `flow.redirect_uri =
+     "http://localhost"` — a placeholder Google's "Desktop app" OAuth
+     client type always accepts without pre-registration (RFC 8252
+     loopback exception); nothing ever actually listens there. Local/no
+     network — safe on the main thread, called from `GoogleReauthModal.
+     __init__` directly (not a worker).
+  2. `gauth.reauth_authorization_url(flow)` — `flow.authorization_url
+     (access_type="offline", prompt="consent")`. Both kwargs are REQUIRED:
+     without them, a RE-consent (the normal case here — the user already
+     granted access once before) very often does NOT come back with a
+     `refresh_token` at all, since Google only issues one on a truly
+     first-ever consent by default, and a re-auth's whole point is
+     replacing a dead one. Also local/no-network, safe on the main thread.
+     The modal shows this URL as PLAIN text (`Static(..., markup=False)`
+     — see the widget-level NOTE below for why not a `[link=...]` markup
+     tag), with instructions: open it on ANY device with ANY browser, sign
+     in, and expect the resulting redirect to FAIL to load ("can't reach
+     this page") since nothing listens at `http://localhost` — that's
+     correct, not a bug; the query string it failed to load is what gets
+     pasted back.
+  3. User pastes either the full failed-redirect URL or just its `code=`
+     value into `Input#reauth-code-input`; `gauth.complete_reauth(flow,
+     pasted)` sniffs which (`"://" in pasted`) and calls `flow.fetch_token
+     (authorization_response=pasted)` or `flow.fetch_token(code=pasted)`
+     accordingly, then writes `flow.credentials.to_json()` to `TOKEN_PATH`.
+     THIS step hits the network (the actual token exchange with Google) —
+     runs on a worker thread (`run_worker(..., thread=True)`), same rule as
+     every other gauth call. Must reuse the SAME `flow` object step 1
+     created (it carries the OAuth `state` from step 2, needed to validate
+     a full pasted URL) — `GoogleReauthModal` holds it as `self.flow`
+     across both steps; don't rebuild a fresh flow for step 3.
+  Module-level `os.environ.setdefault("OAUTHLIB_INSECURE_TRANSPORT", "1")`
+  in `gauth.py`: required because the placeholder redirect is `http://` not
+  `https://` — oauthlib refuses to parse a pasted redirect URL against an
+  insecure scheme otherwise. Safe here since the loopback leg is never
+  actually connected to; only the real exchange with Google's (https) token
+  endpoint matters, and that's unaffected by this flag.
+  New `google-auth-oauthlib` dependency (`pyproject.toml`) — imported
+  lazily inside `build_reauth_flow()`, not at `gauth.py` module level,
+  since nothing else in this app needs it.
+  **Widget-level NOTE**: the auth-URL `Static` is `markup=False` — Textual's
+  own markup parser (`Content.from_markup`, not Rich's) throws a
+  `MarkupError` on `://` inside a `[link=...]` tag value (confirmed
+  empirically; same family of gotcha as the News tab's bracketed-feed-title
+  issue elsewhere in this file). Plain text is the correct fix here too,
+  not escaping — most terminals auto-linkify bare URLs in plain output on
+  their own, and native mouse-drag selection works on it either way, which
+  covers "copy or click" without fighting the markup parser for a cosmetic
+  OSC-8 hyperlink tag.
+  On success (`GoogleReauthModal` dismisses `"reauthorized"`),
+  `GoogleTUI._apply_google_reauth_success` does NOT ask for a restart like
   the encrypt-at-rest settings do (§7) — it rebuilds `self.svc = gauth.
   services()` and kicks `_live_refresh_thread` immediately, since re-auth
-  touches neither the cache nor the encryption key, so there's no reason to
-  make the user restart just to see it take effect. If triggered from
-  `OnboardingWizardModal`, success also dismisses that screen (`isinstance
-  (self.screen, OnboardingWizardModal)` check) via the same
-  `push_screen(..., callback)` timing the rest of this app's modal-result
-  relays use. `self._google_reauth_in_progress: bool` guards against a
-  double-click spawning two concurrent local-server flows (harmless since
-  each binds `port=0`, but confusing). **Known limitation, not fixed**:
-  this assumes google-tui and the browser completing consent share the
-  same machine (the OAuth redirect goes to `http://localhost:<port>` on
-  whichever machine started the flow) — it will NOT work over a plain SSH
-  session with no port forwarding, or if you open the consent URL on a
-  different device (e.g. your phone). That's a fundamental constraint of
-  the "Desktop app" / installed-app OAuth client type Google issues here,
-  not something this app's code could work around; SETUP.md's manual flow
-  has the same constraint.
+  touches neither the cache nor the encryption key. If triggered from
+  `OnboardingWizardModal`, `GoogleReauthModal` is pushed ON TOP of it
+  (stacked modals); success dismisses BOTH (`isinstance(self.screen,
+  OnboardingWizardModal)` check) via the same `push_screen(..., callback)`
+  timing the rest of this app's modal-result relays use.
+  **Known limitation, not fixed**: still assumes SOME browser, on SOME
+  device, can reach the public internet to complete Google's consent
+  screen — obviously true in practice, just noting this app's own machine
+  never needs to be that device, which is the entire point of this design
+  versus `run_local_server()`.
 
 ## 2. Key bindings
 
@@ -613,10 +649,11 @@ user_cache_dir("google-tui")/cache.db`; `KEY_FILE_PATH` and `SETTINGS_PATH`
   caller (`main.py`'s `_contacts_fetch_thread`) catches and surfaces this.
 - `GOOGLE_SCOPES` — the canonical scope list this app requests, kept in
   sync with SETUP.md §7 by convention (not by code — it's plain text there).
-- `reauthorize(scopes=None)` — in-app Google OAuth re-authorization; see
-  the "In-app Google re-authorization" entry in §1 for the full design
-  (why `access_type`/`prompt` are forced, the worker-thread requirement,
-  the same-machine limitation).
+- `build_reauth_flow(scopes=None)` / `reauth_authorization_url(flow)` /
+  `complete_reauth(flow, response_or_code)` — the three-step in-app Google
+  OAuth re-authorization flow (headless-safe: manual copy-URL/paste-code,
+  not `run_local_server()`); see the "In-app Google re-authorization" entry
+  in §1 for the full design.
 - `reply_to(...)`, `forward(...)`, `send_message(...)` (plain new-message
   send, backs `ComposeModal`'s `mode == "new"`, P1 M5), `set_task_status(...)`
   — MUTATING helpers.
@@ -668,14 +705,15 @@ user_cache_dir("google-tui")/cache.db`; `KEY_FILE_PATH` and `SETTINGS_PATH`
   feeds the SAME `_apply_*` methods the live path uses; returns whether
   anything was found (decides whether `LoadingModal` is needed).
 - Modals (all subclass `ModalScreen`): `OnboardingWizardModal` (forced
-  first-run guidance, see the Google re-authorization entry below),
-  `LoadingModal`, `UnlockModal`, `ThreadModal`, `ComposeModal`, `EventModal`,
-  `TaskModal`, `DayEventsModal` (Calendar day/hour-slot overflow),
-  `NewsEntryModal` (News tab, P1 M3), `ContactModal` (Contacts tab detail,
-  P1 M5), `HelpModal` (`Ctrl+H`). `CalendarModal`/`DriveModal`/
-  `DriveFileModal`/`SearchModal` from the pre-tab-redesign version are
-  GONE — their content is inline in the Calendar/Drive/Search `TabPane`s
-  now; do not recreate them as modals.
+  first-run guidance), `GoogleReauthModal` (in-app OAuth re-auth, see the
+  Google re-authorization entry below — can be pushed standalone or
+  stacked on top of `OnboardingWizardModal`), `LoadingModal`, `UnlockModal`,
+  `ThreadModal`, `ComposeModal`, `EventModal`, `TaskModal`, `DayEventsModal`
+  (Calendar day/hour-slot overflow), `NewsEntryModal` (News tab, P1 M3),
+  `ContactModal` (Contacts tab detail, P1 M5), `HelpModal` (`Ctrl+H`).
+  `CalendarModal`/`DriveModal`/`DriveFileModal`/`SearchModal` from the
+  pre-tab-redesign version are GONE — their content is inline in the
+  Calendar/Drive/Search `TabPane`s now; do not recreate them as modals.
 - `ThreadModal` (P1 M4 rewrite): no longer a single `RichLog#thread-body`.
   Each message is rendered through `render.parse_feed_entry` (HTML-sniffing
   — routes through `render.parse_html` when `gauth.get_thread`'s new
@@ -802,9 +840,11 @@ Gotchas that cost time before:
   sends. Also mock `gauth.list_contacts` if the test's token doesn't have
   the `contacts.readonly` scope yet — otherwise the Contacts tab's fetch
   raises and the test only exercises the error-notify path. ALWAYS mock
-  `gauth.reauthorize` too — the real one opens an actual browser and blocks
-  on human interaction, which will hang any test/pilot run that ever clicks
-  `#settings-reauth-google` or `#onboarding-reauth-google`.
+  `gauth.build_reauth_flow`/`reauth_authorization_url`/`complete_reauth`
+  too before clicking `#settings-reauth-google` or `#onboarding-reauth-google`
+  — the real `complete_reauth` blocks on an actual network round trip to
+  Google, which will hang any test/pilot run waiting on a fabricated code
+  that was never really issued.
 - Do NOT assert on `ListView.highlighted`/`highlighted_child` after setting the
   attribute directly (read-only setters differ between versions). Drive selection
   through key presses instead.

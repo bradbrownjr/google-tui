@@ -74,11 +74,13 @@ toggling a task) are disabled with a warning instead of failing silently.
   unlike the other APIs this app uses).
 - **Settings tab:** five sub-tabs (`Alt+Left/Right` cycles between them
   while the Settings tab is active) — **General** (a "Re-authorize Google
-  account" button — opens your browser for sign-in, no console commands
-  needed, use it whenever a tab shows an auth error or roughly weekly since
-  Google expires test-app tokens after 7 days, see [SETUP.md](SETUP.md) §4;
-  encrypt-at-rest for the local cache, off by default; choose how the
-  encryption key is handled; clear the local cache), **AI Provider** (pick
+  account" button — shows a URL to open in any browser, on any device, and
+  a place to paste back what you get; works with no browser and no display
+  on the machine running google-tui, use it whenever a tab shows an auth
+  error or roughly weekly since Google expires test-app tokens after 7
+  days, see [SETUP.md](SETUP.md) §4 and §7; encrypt-at-rest for the local
+  cache, off by default; choose how the encryption key is handled; clear
+  the local cache), **AI Provider** (pick
   your AI provider, set a Nous API key), **News Feeds** (manage your
   News-tab feed subscriptions — add/remove URLs), **Search** (pick the
   Browser tab's search provider — Google/DuckDuckGo/SearXNG — and set the
