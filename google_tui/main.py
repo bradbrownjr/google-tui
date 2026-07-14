@@ -11,6 +11,7 @@ from __future__ import annotations
 import base64
 import datetime as dt
 import email.utils
+import logging
 import os
 import re
 import sys
@@ -71,6 +72,17 @@ NAV_EXPORT_DIR = Path(platformdirs.user_documents_dir()) / "google-tui"
 # Where "Save to file" in the re-auth modal drops the Google authorization URL,
 # for terminals that swallow OSC 52 clipboard writes (see GoogleReauthModal).
 AUTH_URL_FILE = Path(platformdirs.user_cache_dir("google-tui")) / "auth_url.txt"
+
+# Every error-severity toast is also appended here (see GoogleTUI.notify) — a
+# toast that gets missed or scrolls past (e.g. a duplicate pair firing at
+# startup) previously left no other record it ever happened.
+LOG_FILE = Path(platformdirs.user_log_dir("google-tui")) / "google-tui.log"
+LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+_logger = logging.getLogger("google_tui")
+_logger.setLevel(logging.INFO)
+_log_handler = logging.FileHandler(LOG_FILE, encoding="utf-8")
+_log_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+_logger.addHandler(_log_handler)
 
 # Seconds the Drive cursor must sit still before we fetch a preview, and the
 # Contacts search box must sit idle before we re-filter. Both handlers fire on
@@ -705,6 +717,20 @@ class GoogleTUI(App):
         # pointing at Settings, instead of dumping stale/blank-name rows.
         self._contacts_auth_broken = False
 
+    def notify(self, message: str, *, title: str = "", severity: str = "information",
+               timeout: float | None = None, markup: bool = True) -> None:
+        """Every notify() call in this app — including from ModalScreens,
+        which proxy through Widget.notify -> self.app.notify — funnels
+        through here, so this is the one place that can catch all of them
+        without touching 20+ call sites. Toasts are ephemeral (easy to miss,
+        and worse when a bug fires the same one twice); error/warning ones
+        also get a durable line in LOG_FILE so a missed toast isn't gone
+        for good.
+        """
+        if severity in ("error", "warning"):
+            _logger.log(logging.ERROR if severity == "error" else logging.WARNING, message)
+        super().notify(message, title=title, severity=severity, timeout=timeout, markup=markup)
+
     # ---- data layer ----
     @cached_property
     def svc(self):
@@ -1257,12 +1283,25 @@ class GoogleTUI(App):
         self._current_label_id = value
 
     def on_select_changed(self, event: Select.Changed) -> None:
+        # Constructing a Select with value=... fires Select.Changed once on
+        # mount even though nothing was actually changed by the user
+        # (confirmed empirically with a standalone Textual pilot) — the
+        # Settings tab is composed at startup with both cache Selects preset
+        # to the current setting, so without this guard every launch fired
+        # two spurious "No cache limits set" toasts before the user touched
+        # anything. Comparing against the already-saved value filters out
+        # that mount-time echo while still catching every real user change
+        # (which always differs from what's currently saved).
         if event.select.id == "settings-cache-retention":
+            if int(event.value) == self.settings.cache_retention_days:
+                return
             self.settings.cache_retention_days = int(event.value)
             save_settings(self.settings)
             self._prune_cache()  # apply immediately — a limit you have to
             return               # remember to trigger isn't a limit
         if event.select.id == "settings-cache-max":
+            if int(event.value) == self.settings.cache_max_mb:
+                return
             self.settings.cache_max_mb = int(event.value)
             save_settings(self.settings)
             self._prune_cache()

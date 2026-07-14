@@ -3,6 +3,26 @@
 Format: keep newest at top. One entry per meaningful change. Reference files
 touched and any breaking notes.
 
+## [2026-07-14] — Fix duplicate startup toast, log errors to a file
+
+### Fixed
+Settings' two cache-limit `Select` widgets are constructed with `value=` set
+to whatever's already saved, and Textual fires `Select.Changed` once on
+mount even though nothing changed (confirmed with a standalone pilot test).
+With no limit configured (the default), that fired `_prune_cache()` twice at
+every startup, each popping a "No cache limits set — nothing to apply."
+toast. `on_select_changed` now no-ops when the incoming value matches what's
+already saved, which only the mount-time echo can do — a real user edit
+always differs.
+
+### Added
+`GoogleTUI.notify()` now overrides `App.notify()` (every `Widget.notify()` —
+including from ModalScreens — proxies through it, so one override catches
+every call site) and appends `error`/`warning` severity notifications to
+`~/.local/state/google-tui/log/google-tui.log` before showing the toast.
+Toasts are ephemeral and easy to miss (doubly so when a bug fires the same
+one twice, as above); this gives every error a durable record regardless.
+
 ## [2026-07-14] — Fix Ctrl+Left/Right tab cycling in Browser address bar
 
 ### Fixed
