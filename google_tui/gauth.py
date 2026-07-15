@@ -424,6 +424,61 @@ def mark_read(svc, thread_id: str) -> None:
             userId="me", body={"ids": ids, "removeLabelIds": ["UNREAD"]}).execute()
 
 
+def mark_unread(svc, thread_id: str) -> dict:
+    """Mark a whole thread unread again (adds the UNREAD label to every
+    message in it). The inverse of ``mark_read``; ``threads().modify`` is
+    the thread-level counterpart to ``mark_read``'s per-message
+    ``batchModify`` — either works, thread-level is one call."""
+    g = svc["gmail"]
+    return g.users().threads().modify(
+        userId="me", id=thread_id, body={"addLabelIds": ["UNREAD"]}).execute()
+
+
+def trash_thread(svc, thread_id: str) -> dict:
+    """Move a whole thread to Trash — the RECOVERABLE delete.
+
+    Named ``trash_thread`` (not ``delete_thread``) on purpose: this calls
+    ``threads().trash``, which moves the thread to Trash (recoverable for
+    ~30 days), exactly like pressing "Delete" in Gmail's own web UI does.
+    It deliberately does NOT call ``threads().delete``, which is a
+    permanent, irreversible removal — a genuinely destructive action the
+    ROADMAP's literal "delete" wording would have implied but no user
+    pressing a "delete" key expects. See CHANGELOG [2026-07-15]."""
+    g = svc["gmail"]
+    return g.users().threads().trash(userId="me", id=thread_id).execute()
+
+
+def archive_thread(svc, thread_id: str) -> dict:
+    """Archive a thread = remove it from the Inbox (remove the INBOX label).
+
+    Safely reversible: the thread isn't deleted, it just no longer appears
+    in the Inbox view. This is what "remove from inbox"/"save & archive"
+    means in Gmail."""
+    g = svc["gmail"]
+    return g.users().threads().modify(
+        userId="me", id=thread_id, body={"removeLabelIds": ["INBOX"]}).execute()
+
+
+def modify_labels(svc, thread_id: str, add: list[str] | None = None,
+                  remove: list[str] | None = None) -> dict:
+    """Add/remove Gmail labels on a whole thread via ``threads().modify``.
+
+    ``add``/``remove`` are lists of label IDs (not display names — see
+    ``list_labels``). A no-op (both empty) short-circuits without an API
+    call."""
+    add = add or []
+    remove = remove or []
+    if not add and not remove:
+        return {}
+    g = svc["gmail"]
+    body: dict = {}
+    if add:
+        body["addLabelIds"] = add
+    if remove:
+        body["removeLabelIds"] = remove
+    return g.users().threads().modify(userId="me", id=thread_id, body=body).execute()
+
+
 # ----------------------------------------------------------------------------
 # Calendar
 # ----------------------------------------------------------------------------

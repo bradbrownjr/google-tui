@@ -29,7 +29,8 @@ from textual.containers import Container, Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
 from textual.widgets import (
     Button, DataTable, Header, Input, Label, ListItem, ListView,
-    RadioButton, RadioSet, RichLog, Select, Static, Switch, TabbedContent, TabPane, TextArea,
+    RadioButton, RadioSet, RichLog, Select, SelectionList, Static, Switch,
+    TabbedContent, TabPane, TextArea,
 )
 from textual.worker import get_current_worker  # noqa: F401 (kept for future threaded workers)
 
@@ -771,6 +772,10 @@ class GoogleTUI(App):
     #nav-summary { color: $accent; text-style: bold; height: 1; margin: 1 0; }
     #nav-log { height: 1fr; border: round $panel-darken-1; }
     #thread-messages { height: 1fr; }
+    #thread-search { margin-bottom: 1; }
+    #thread-help { color: $text-muted; height: auto; margin-top: 1; }
+    #labelpick-box { height: auto; max-height: 80%; }
+    #labelpick-list { height: auto; max-height: 20; border: round $panel-darken-1; margin-bottom: 1; }
     .thread-msg-header { color: $text-muted; text-style: bold; margin-top: 1; border-bottom: solid $panel-darken-2; }
     #help-bar { height: auto; background: $panel; padding: 0 1; }
     #help-context { color: $text; }
@@ -886,6 +891,9 @@ class GoogleTUI(App):
         self._drive_preview_cache: dict[str, tuple[str, str]] = {}
         self.settings: Settings = load_settings()
         self._current_label_id = self.settings.default_label_id
+        # Full Gmail label list from the last _apply_labels call — backs both
+        # the Email pane's folder Select and ThreadModal's "L" label picker.
+        self._labels_cache: list[dict] = []
         self._cache: Cache | None = None
         self._online = False
         self._loading_modal: LoadingModal | None = None
@@ -1641,6 +1649,7 @@ class GoogleTUI(App):
 
     # ---- labels (folders) ----
     def _apply_labels(self, labels: list[dict]) -> None:
+        self._labels_cache = labels
         try:
             select = self.query_one("#email-label-select", Select)
         except Exception:
@@ -1995,6 +2004,18 @@ class GoogleTUI(App):
         cid = el.highlighted_child.id or ""
         return cid[2:] if cid.startswith("t-") else None
 
+    def _email_thread_order(self) -> list[str]:
+        """The thread ids currently shown in #email-list, in display order.
+        Backs ThreadModal's Left/Right prev/next-message navigation so it can
+        page through the same (possibly search-filtered) list the user is
+        looking at, without reopening the modal."""
+        try:
+            el = self.query_one("#email-list")
+        except Exception:
+            return []
+        return [c.id[2:] for c in el.children
+                if getattr(c, "id", "") and c.id.startswith("t-")]
+
     def action_reply(self):
         if not self._require_online():
             return
@@ -2017,6 +2038,34 @@ class GoogleTUI(App):
         if self._main_tabs().active != "tab-mail" or PANE_IDS[self.active] != "email":
             return
         self._open_compose_new()
+
+    def action_mark_unread(self) -> None:
+        """Mark the highlighted Email-pane thread UNREAD again, from the list
+        (no need to open it). Email pane only; no-op elsewhere. Runs the
+        network write on a worker thread per the fetch/apply split, then
+        refreshes so the • unread bullet reappears."""
+        if self._main_tabs().active != "tab-mail" or PANE_IDS[self.active] != "email":
+            return
+        if not self._require_online():
+            return
+        tid = self._selected_thread()
+        if not tid:
+            return
+
+        def _work() -> None:
+            try:
+                gauth.mark_unread(self.svc, tid)
+            except Exception as e:
+                self.call_from_thread(self.notify, f"Mark-unread error: {e}", severity="error")
+                return
+            # Reflect the new unread state in the cached summary so the •
+            # bullet is right even before the full refresh lands, then refresh.
+            summary = self._threads_cache.get(tid)
+            if summary is not None:
+                summary["unread"] = True
+            self._refresh_all_thread()
+
+        self.run_worker(_work, thread=True, exclusive=True)
 
     def action_focus_label_select(self) -> None:
         if self._main_tabs().active != "tab-mail" or PANE_IDS[self.active] != "email":
@@ -2262,7 +2311,14 @@ class GoogleTUI(App):
     def on_list_view_selected(self, event: ListView.Selected) -> None:
         cid = event.item.id or ""
         if cid.startswith("t-"):
-            self.push_screen(ThreadModal(self.svc, cid[2:]), self._on_thread_modal_result)
+            tid = cid[2:]
+            order = self._email_thread_order()
+            try:
+                index = order.index(tid)
+            except ValueError:
+                order, index = [tid], 0
+            self.push_screen(ThreadModal(self.svc, tid, thread_ids=order, index=index),
+                              self._on_thread_modal_result)
         elif cid.startswith("e-"):
             self._open_event_by_id(cid[2:])
         elif cid.startswith("k-"):
@@ -2296,6 +2352,11 @@ class GoogleTUI(App):
         if isinstance(result, tuple) and result and result[0] == "compose":
             _, tid, mode = result
             self.call_after_refresh(self._open_compose_from_thread, tid, mode)
+        elif result == "refresh":
+            # ThreadModal trashed/archived a thread — refetch the mail list so
+            # the removed thread drops out of the Email pane (same post-write
+            # refresh path the reply/forward "sent" flow uses).
+            self.run_worker(self._refresh_all_thread, thread=True, exclusive=True)
 
     def _open_compose_from_thread(self, tid: str, mode: str) -> None:
         self.push_screen(ComposeModal(self.svc, tid, mode), self._on_compose_result)
@@ -3989,6 +4050,42 @@ class UnlockModal(ModalScreen):
             self.dismiss(None)
 
 
+class LabelPickerModal(ModalScreen):
+    """Multi-select label picker for ThreadModal's "L" action. Presents the
+    account's user labels as a checklist; dismisses with the list of selected
+    label ids to ADD to the thread (or None on cancel).
+
+    Deliberately assign-only (add), not a full add/remove editor: the thread
+    body fetch (gauth.get_thread) doesn't return per-thread labelIds, so we
+    can't pre-check "already applied" labels to offer removal without an extra
+    round-trip. "Assign labels" is what the ROADMAP asked for; a
+    remove/toggle editor is a reasonable future extension (see CHANGELOG)."""
+
+    def __init__(self, labels: list[dict]):
+        super().__init__()
+        self._labels = labels
+
+    def compose(self) -> ComposeResult:
+        with Container(id="labelpick-box", classes="pane"):
+            yield Label("ASSIGN LABELS", classes="pane-title-text")
+            yield SelectionList(
+                *[(_label_display_name(l), l["id"]) for l in self._labels],
+                id="labelpick-list")
+            with Horizontal(classes="btnrow"):
+                yield Button("Apply", id="labelpick-apply")
+                yield Button("Cancel", id="labelpick-cancel")
+
+    def on_button_pressed(self, e: Button.Pressed) -> None:
+        if e.button.id == "labelpick-apply":
+            self.dismiss(list(self.query_one("#labelpick-list", SelectionList).selected))
+        else:
+            self.dismiss(None)
+
+    def on_key(self, e) -> None:
+        if e.key == "escape":
+            self.dismiss(None)
+
+
 class ThreadModal(ModalScreen):
     """Thread detail. Each message is rendered through M1's shared renderer
     (P1 M4) instead of the old plain-text-stripped RichLog: an HTML message
@@ -4018,23 +4115,70 @@ class ThreadModal(ModalScreen):
     # not a reliance on that (previously dead) app-level fallthrough.
     BINDINGS = bindings.bindings_for_scope("modal:ThreadModal")
 
-    def __init__(self, svc, thread_id: str):
+    # Disable Textual's auto-focus-on-mount for this modal. compose() yields a
+    # `.hidden` (CSS display:none) #thread-search Input BEFORE the message
+    # VerticalScroll. `.hidden` only sets `display`, but Widget.focusable keys
+    # off `visibility` (DOMNode.visible) — so a display:none widget is still
+    # "focusable", and Screen._update_auto_focus (driven by app.AUTO_FOCUS="*")
+    # would silently focus that hidden search box as the first focusable widget
+    # in DOM order the instant this modal opens. A focused Input swallows
+    # printable keys, so r/a/f/d/s/l/arrows would all no-op on first open until
+    # focus moved. Must be "" (falsy), NOT None: Screen.AUTO_FOCUS=None means
+    # "inherit app.AUTO_FOCUS" (="*"), which is exactly the buggy behavior;
+    # only a falsy-but-not-None value makes _update_auto_focus skip focusing.
+    # "/" still calls search.focus() itself, independent of AUTO_FOCUS.
+    AUTO_FOCUS = ""
+
+    def __init__(self, svc, thread_id: str, thread_ids: list[str] | None = None,
+                 index: int = 0):
         super().__init__()
         self.svc = svc
         self.thread_id = thread_id
+        # The ordered list of thread ids in the Email pane (as it looked when
+        # this modal was opened) + our position in it, so Left/Right can page
+        # to the prev/next message's thread IN PLACE without closing/reopening
+        # (see AGENTS.md P2 item). Defaults to a single-element list so the
+        # modal still works when opened outside that context.
+        self.thread_ids: list[str] = list(thread_ids) if thread_ids else [thread_id]
+        self.index: int = index if 0 <= index < len(self.thread_ids) else 0
+        # Search-within-thread state (the "/" action). _search_targets is
+        # (DocumentView, lowercased-searchable-text) per mounted message,
+        # rebuilt every _apply_thread; _search_matches/_search_pos track the
+        # current find-next cursor over the last query's hits.
+        self._search_targets: list[tuple[DocumentView, str]] = []
+        self._search_matches: list[DocumentView] = []
+        self._search_pos: int = -1
 
     def compose(self) -> ComposeResult:
         with Container(id="thread-box", classes="pane"):
-            yield Label("THREAD", classes="pane-title-text")
+            yield Label("THREAD", classes="pane-title-text", id="thread-title")
+            yield Input(placeholder="Find in thread… (Enter = next)",
+                        id="thread-search", classes="hidden")
             with VerticalScroll(id="thread-messages"):
                 yield Static("Loading…", markup=False)
+            # Contextual help bar for this modal, consistent with the app's
+            # global help bar — entries are clickable action links (see
+            # bindings.modal_help_markup).
+            yield Static(bindings.modal_help_markup("modal:ThreadModal",
+                                                    self.app.settings.ascii_mode),
+                         id="thread-help")
         with Horizontal(classes="btnrow"):
             yield Button(bindings.hinted_label("modal:ThreadModal", "reply"), id="r")
             yield Button(bindings.hinted_label("modal:ThreadModal", "reply_all"), id="ra")
             yield Button(bindings.hinted_label("modal:ThreadModal", "forward"), id="fwd")
+            yield Button(bindings.hinted_label("modal:ThreadModal", "trash"), id="trash")
+            yield Button(bindings.hinted_label("modal:ThreadModal", "archive"), id="archive")
+            yield Button(bindings.hinted_label("modal:ThreadModal", "labels"), id="labels")
             yield Button("Close", id="close")
 
     def on_mount(self) -> None:
+        # Respect Settings.ascii_mode for this modal's borders: _apply_ascii_mode
+        # can't have reached #thread-box (it's only in the DOM while this modal
+        # is open, and that method runs at startup / on the Settings toggle),
+        # so apply the class here on open. The paired ".pane.ascii-border" CSS
+        # rule does the actual border-glyph swap.
+        if self.app.settings.ascii_mode:
+            self.query_one("#thread-box").add_class("ascii-border")
         # gauth.get_thread is a blocking synchronous network call (same as
         # every other gauth-touching method in this app) — must run on a
         # worker THREAD, not directly in on_mount, both so it doesn't freeze
@@ -4088,32 +4232,57 @@ class ThreadModal(ModalScreen):
         # `await container.mount(...)` is what guarantees that, a bare
         # fire-and-forget `.mount()` races it. call_from_thread awaits a
         # coroutine callback via `invoke()`, so returning one here is safe.
+        self._update_title()
+        # A fresh thread body invalidates the previous message's search hits.
+        self._search_targets = []
+        self._search_matches = []
+        self._search_pos = -1
+        ascii_mode = self.app.settings.ascii_mode
         container = self.query_one("#thread-messages", VerticalScroll)
         await container.remove_children()
         if not msgs:
             await container.mount(Static("(no messages)", markup=False))
             return
-        pending: list[tuple[DocumentView, "render.Document"]] = []
+        pending: list[tuple[DocumentView, "render.Document", str]] = []
         new_widgets = []
         for m in msgs:
             header = f"From: {m.get('from', '')}    Date: {m.get('date', '')}"
-            new_widgets.append(Static(header, classes="thread-msg-header", markup=False))
+            header_widget = Static(header, classes="thread-msg-header", markup=False)
+            if ascii_mode:
+                header_widget.add_class("ascii-border")  # see on_mount / _apply_ascii_mode
+            new_widgets.append(header_widget)
             html_body = (m.get("html_body") or "").strip()
             text_body = m.get("body") or ""
             source = html_body if html_body else text_body
             doc = render.parse_feed_entry(m.get("subject", ""), source, base_url="",
-                                           ascii_mode=self.app.settings.ascii_mode)
+                                           ascii_mode=ascii_mode)
             dv = DocumentView(classes="thread-msg-doc")
             new_widgets.append(dv)
-            pending.append((dv, doc))
+            # Searchable text for the "/" find: the header plus every block's
+            # rendered text, lowercased once so find-next is a cheap substring
+            # test per message (not a re-parse per keystroke).
+            searchable = (header + "\n"
+                          + "\n".join(b.text for b in doc.blocks)).lower()
+            pending.append((dv, doc, searchable))
         await container.mount(*new_widgets)
-        for dv, doc in pending:
+        for dv, doc, searchable in pending:
             # DocumentView's own DEFAULT_CSS sets height:1fr (correct for
             # its usual full-pane use in the Browser/News tabs); stacking
             # several inside one VerticalScroll needs auto height instead
             # so each message takes only the space its content needs.
             dv.styles.height = "auto"
             dv.document = doc
+            self._search_targets.append((dv, searchable))
+
+    def _update_title(self) -> None:
+        try:
+            title = self.query_one("#thread-title", Label)
+        except Exception:
+            return
+        if len(self.thread_ids) > 1:
+            title.update(f"THREAD  ({self.index + 1}/{len(self.thread_ids)})")
+        else:
+            title.update("THREAD")
 
     def _apply_error(self, error: Exception) -> None:
         container = self.query_one("#thread-messages", VerticalScroll)
@@ -4130,14 +4299,143 @@ class ThreadModal(ModalScreen):
     def action_forward(self) -> None:
         self.dismiss(("compose", self.thread_id, "forward"))
 
+    # ---- Left/Right: prev/next message in the current folder, in place ----
+    def action_prev_message(self) -> None:
+        self._navigate(-1)
+
+    def action_next_message(self) -> None:
+        self._navigate(1)
+
+    def _navigate(self, delta: int) -> None:
+        new_index = self.index + delta
+        if not (0 <= new_index < len(self.thread_ids)):
+            return  # at an end — no wraparound (matches the list's own edges)
+        self.index = new_index
+        self.thread_id = self.thread_ids[new_index]
+        # Hide any open search box and show the loading placeholder, then
+        # re-run the exact same fetch/apply path as on open for the new id.
+        self._hide_search()
+        container = self.query_one("#thread-messages", VerticalScroll)
+        container.remove_children()
+        container.mount(Static("Loading…", markup=False))
+        self._update_title()
+        self.run_worker(self._fetch_thread, thread=True, exclusive=True)
+
+    # ---- "/" find-in-thread ----
+    def action_focus_search(self) -> None:
+        search = self.query_one("#thread-search", Input)
+        search.remove_class("hidden")
+        search.focus()
+
+    def _hide_search(self) -> None:
+        try:
+            search = self.query_one("#thread-search", Input)
+        except Exception:
+            return
+        search.value = ""
+        search.add_class("hidden")
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        if event.input.id == "thread-search":
+            self._find(event.value)
+
+    def _find(self, query: str) -> None:
+        query = query.strip().lower()
+        if not query:
+            return
+        matches = [dv for dv, text in self._search_targets if query in text]
+        if not matches:
+            self.app.notify("No match in this thread", severity="warning")
+            self._search_matches = []
+            self._search_pos = -1
+            return
+        # Re-run of the same query → advance to the next hit (find-next);
+        # a new query → start at the first hit.
+        if matches == self._search_matches:
+            self._search_pos = (self._search_pos + 1) % len(matches)
+        else:
+            self._search_matches = matches
+            self._search_pos = 0
+        target = matches[self._search_pos]
+        self.query_one("#thread-messages", VerticalScroll).scroll_to_widget(
+            target, top=True, animate=False)
+        if len(matches) > 1:
+            self.app.notify(f"Match {self._search_pos + 1} of {len(matches)}")
+
+    # ---- D trash / S archive / L labels (all reversible; see gauth.py) ----
+    def action_trash(self) -> None:
+        if not self.app._require_online():
+            return
+        self._run_mutation(lambda: gauth.trash_thread(self.svc, self.thread_id),
+                           "Moved to Trash")
+
+    def action_archive(self) -> None:
+        if not self.app._require_online():
+            return
+        self._run_mutation(lambda: gauth.archive_thread(self.svc, self.thread_id),
+                           "Archived (removed from Inbox)")
+
+    def action_labels(self) -> None:
+        if not self.app._require_online():
+            return
+        labels = getattr(self.app, "_labels_cache", [])
+        pickable = [l for l in labels
+                    if l.get("type") != "system" and l.get("id") and l.get("name")]
+        if not pickable:
+            self.app.notify("No labels available to assign", severity="warning")
+            return
+        self.app.push_screen(LabelPickerModal(pickable), self._on_labels_result)
+
+    def _on_labels_result(self, add_ids) -> None:
+        if not add_ids:
+            return
+        self._run_mutation(
+            lambda: gauth.modify_labels(self.svc, self.thread_id, add=list(add_ids)),
+            f"Applied {len(add_ids)} label(s)", close=False)
+
+    def _run_mutation(self, fn, success_msg: str, close: bool = True) -> None:
+        """Run a mutating gauth call on a worker thread (fetch/apply split),
+        then notify + (optionally) dismiss with "refresh" so the Email pane
+        drops/updates the thread. `close=False` keeps the modal open (used for
+        label changes, which don't remove the thread from view)."""
+        def work() -> None:
+            try:
+                fn()
+            except Exception as e:
+                self.app.call_from_thread(self.app.notify, f"Action failed: {e}",
+                                          severity="error")
+                return
+            self.app.call_from_thread(self._after_mutation, success_msg, close)
+        self.run_worker(work, thread=True, exclusive=True)
+
+    def _after_mutation(self, msg: str, close: bool) -> None:
+        self.app.notify(msg)
+        if close:
+            self.dismiss("refresh")
+
     def on_button_pressed(self, e: Button.Pressed) -> None:
+        handlers = {
+            "r": self.action_reply, "ra": self.action_reply_all,
+            "fwd": self.action_forward, "trash": self.action_trash,
+            "archive": self.action_archive, "labels": self.action_labels,
+        }
         if e.button.id == "close":
             self.dismiss(None)
-        else:
-            {"r": self.action_reply, "ra": self.action_reply_all, "fwd": self.action_forward}[e.button.id]()
+        elif e.button.id in handlers:
+            handlers[e.button.id]()
 
     def on_key(self, e) -> None:
         if e.key == "escape":
+            # Escape closes the search box first (if open), otherwise the modal.
+            try:
+                search = self.query_one("#thread-search", Input)
+            except Exception:
+                search = None
+            if search is not None and not search.has_class("hidden"):
+                self._hide_search()
+                self.query_one("#thread-messages", VerticalScroll).focus()
+                e.stop()
+                return
             self.dismiss(None)
 
 

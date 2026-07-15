@@ -61,6 +61,7 @@ GLOBAL_ACTIONS: list[ActionSpec] = [
     ActionSpec("reply_all", "a", "Reply All"),
     ActionSpec("forward", "f", "Forward"),
     ActionSpec("compose_new", "c", "Compose"),
+    ActionSpec("mark_unread", "u", "Unread"),
     ActionSpec("focus_label_select", "l", "Folder"),
     ActionSpec("focus_search", "/", "Search"),
     ActionSpec("context_space", "space", "Context"),
@@ -82,6 +83,17 @@ THREAD_MODAL_ACTIONS: list[ActionSpec] = [
     ActionSpec("reply", "r", "Reply", scope="modal:ThreadModal"),
     ActionSpec("reply_all", "a", "Reply All", scope="modal:ThreadModal"),
     ActionSpec("forward", "f", "Forward", scope="modal:ThreadModal"),
+    ActionSpec("trash", "d", "Trash", scope="modal:ThreadModal"),
+    ActionSpec("archive", "s", "Archive", scope="modal:ThreadModal"),
+    ActionSpec("labels", "l", "Labels", scope="modal:ThreadModal"),
+    # No button (navigation/search live on keys + the help bar, not the
+    # button row) — bindable + hinted only in the help bar text above.
+    ActionSpec("prev_message", "left", "Prev", scope="modal:ThreadModal",
+               show_in_button=False),
+    ActionSpec("next_message", "right", "Next", scope="modal:ThreadModal",
+               show_in_button=False),
+    ActionSpec("focus_search", "slash", "Search", scope="modal:ThreadModal",
+               show_in_button=False),
 ]
 
 # Not wired into Textual's BINDINGS (ComposeModal handles it via a raw
@@ -158,7 +170,7 @@ HELP_GLOBAL_TEXT = (
 # Keyed "pane:<id>" for Mail-tab panes, "tab:<id>" for every other tab —
 # matches GoogleTUI._context_help_text's former if/elif exactly.
 CONTEXT_HELP: dict[str, str] = {
-    "pane:email": "Enter Open   c Compose   r Reply   a Reply All   f Forward   Space Expand   l Folder   / Search",
+    "pane:email": "Enter Open   c Compose   r Reply   a Reply All   f Forward   u Unread   Space Expand   l Folder   / Search",
     "pane:events": "Enter/Space Detail   n New Event   / Search",
     "pane:tasks": "Space Toggle Complete   Enter Detail   / Search",
     "pane:hermes": "Enter Ask",
@@ -170,7 +182,54 @@ CONTEXT_HELP: dict[str, str] = {
     "tab:tab-settings": "Alt+←/→ Switch Section   Toggle encryption   Choose key method   Clear local cache   "
                          "Manage feeds   Search provider   Routes API key",
     "tab:tab-contacts": "Type to search (or / from elsewhere in the tab)   Enter/Space Detail (compose to contact)   Refresh",
+    # ThreadModal's own contextual help row (P2 2026-07-15). Rendered as a
+    # clickable help bar inside the modal via modal_help_markup() below —
+    # each "Key Label" pair becomes a Textual @click action link so a mouse
+    # user can trigger the action, the same affordance the rest of the app's
+    # help bar gains from action-link markup. The plain-text form here is the
+    # fallback (and what non-clickable renders / HelpModal would show).
+    "modal:ThreadModal": ("←/→ Prev/Next   R Reply   A Reply All   F Forward   "
+                          "D Trash   S Archive   L Labels   / Search   Esc Close"),
 }
+
+# Maps each entry in the "modal:ThreadModal" help text above to the modal
+# action it should invoke when clicked. Keyed by the exact "Key Label" span
+# as it appears in the string, so modal_help_markup() can wrap just that span
+# in a [@click=...] action link. Entries with no clickable action (Esc Close
+# is handled by the modal's own key handler, arrows too) are left plain.
+_THREAD_MODAL_CLICK_ACTIONS: dict[str, str] = {
+    "R Reply": "reply",
+    "A Reply All": "reply_all",
+    "F Forward": "forward",
+    "D Trash": "trash",
+    "S Archive": "archive",
+    "L Labels": "labels",
+}
+
+
+def modal_help_markup(scope: str, ascii_mode: bool = False) -> str:
+    """Render a modal's CONTEXT_HELP entry as a Textual-markup string whose
+    actionable "Key Label" spans are clickable [@click=action] links.
+
+    Returned string is meant for a ``Static``/``Label`` with markup enabled
+    (the default). Spans with no mapped action stay plain text. Applies the
+    same arrow-glyph ASCII fallback the rest of the help bar uses when
+    ``ascii_mode`` is set.
+    """
+    text = CONTEXT_HELP.get(scope, "")
+    if ascii_mode:
+        text = ascii_safe(text)
+    actions = _THREAD_MODAL_CLICK_ACTIONS if scope == "modal:ThreadModal" else {}
+    for span, action in actions.items():
+        # The mapping keys are the Unicode form; when ascii_mode rewrote the
+        # arrows the alnum spans above are untouched, so a plain replace is
+        # safe (arrows aren't in any clickable span).
+        # ``screen.`` namespace: these actions live on ThreadModal (the
+        # active ModalScreen), NOT on the App — GoogleTUI also has
+        # action_reply/reply_all/forward but they act on the Email list, so
+        # routing to ``app.`` would run the wrong handler.
+        text = text.replace(span, f"[@click=screen.{action}]{span}[/]")
+    return text
 
 # Transcribed verbatim from the former module-level HELP_TEXT constant.
 HELP_TEXT = """\

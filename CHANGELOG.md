@@ -3,6 +3,103 @@
 Format: keep newest at top. One entry per meaningful change. Reference files
 touched and any breaking notes.
 
+## [2026-07-15] — Email viewer (`ThreadModal`): help bar + remaining actions
+
+Closes the ROADMAP P2 item "Email viewer (`ThreadModal`): help bar and
+remaining actions." `R`/`A`/`F` already worked (the earlier binding-registry
+pass); this finishes everything else it listed.
+
+### Added
+- **Contextual help bar inside `ThreadModal`** (`#thread-help`), consistent
+  with the app's global help bar: `←/→ Prev/Next  R Reply  A Reply All
+  F Forward  D Trash  S Archive  L Labels  / Search  Esc Close`. The
+  actionable spans are clickable `[@click=screen.<action>]` links via a new
+  `bindings.modal_help_markup(scope, ascii_mode)` (with a
+  `_THREAD_MODAL_CLICK_ACTIONS` map). Routed to the `screen.` namespace, not
+  `app.` — `GoogleTUI` also has `action_reply`/`reply_all`/`forward`, but
+  those act on the Email *list*; the modal's own handlers must win.
+- **Left/Right = prev/next message in place.** `ThreadModal` now takes
+  `thread_ids`/`index` (the Email pane's display order, captured at open time
+  via `_email_thread_order()`), and Left/Right re-run the same fetch/apply
+  path for the adjacent thread without closing the modal. The title shows
+  `THREAD (i/N)` while navigating. **No wraparound at the ends** — this
+  matches the underlying list's own edges (you can't arrow "past" the last
+  row in the Email pane either), so the modal shouldn't teleport from the
+  last message back to the first.
+- **`/` find-in-thread.** Reveals a hidden `#thread-search` Input; Enter
+  scrolls to the next matching message (`Match n of m` notify), a repeated
+  query advances find-next. Each message's searchable text is lowercased
+  once at render time, so find is a cheap substring test, not a re-parse per
+  keystroke. Escape closes the search box first if it's open, and only closes
+  the whole modal on a second press.
+- **`D` Trash, `S` Archive, `L` Labels** (with matching buttons in the
+  button row, and a border on `#thread-box` that honors `Settings.ascii_mode`):
+  - `gauth.trash_thread` — `threads().trash` (see naming note below).
+  - `gauth.archive_thread` — `threads().modify` removing the `INBOX` label
+    (reversible; the thread isn't deleted, just out of the inbox view).
+  - `gauth.modify_labels` — `threads().modify` add/remove label ids, driven
+    by a new `LabelPickerModal` (a `SelectionList` checklist of the account's
+    user labels). Trash/Archive dismiss the modal with `"refresh"` so the
+    Email pane drops the thread; Labels keeps the modal open.
+- **`u` = mark unread from the Email list** (`gauth.mark_unread`,
+  `threads().modify` adding `UNREAD`) — re-adds the `•` bullet without
+  opening the thread. Added to the Email pane's context help row.
+
+### Fixed — auto-focus stealing (found while finishing this)
+`compose()` yields the `.hidden` `#thread-search` Input *before* the message
+`VerticalScroll`. `.hidden` only sets CSS `display:none`, but Textual's
+`Widget.focusable` keys off `visibility` (`DOMNode.visible`), which
+`display:none` does **not** change — so the hidden search box still counted
+as "focusable." With `App.AUTO_FOCUS = "*"`, `Screen._update_auto_focus()`
+focuses the first focusable widget in DOM order on mount, i.e. that hidden
+Input — and a focused `Input` swallows printable keys, so on the very first
+open of the modal `R`/`A`/`F`/`D`/`S`/`L`/arrows all silently no-op'd (the
+keypress went into the invisible search box instead). Confirmed live: before
+the fix, pressing `d` immediately after open put `"d"` in the search Input and
+never called `trash_thread`.
+
+Fix: `ThreadModal.AUTO_FOCUS = ""`. Note it must be the **empty string, not
+`None`** — `Screen.AUTO_FOCUS = None` means "inherit `app.AUTO_FOCUS`" (which
+is `"*"`, the buggy value); only a falsy-but-not-`None` value makes
+`_update_auto_focus`'s `if auto_focus and ...` guard skip focusing. Nothing
+in this modal needs a default focus target; `/` still calls `.focus()` on the
+search box itself, independently of `AUTO_FOCUS`.
+
+### Notes / deliberate scope decisions
+- **Trash, not permanent delete.** The ROADMAP wording said "delete," but
+  `gauth.trash_thread` calls `threads().trash` (recoverable ~30 days),
+  exactly like Gmail's own web "Delete" button — deliberately NOT
+  `threads().delete` (permanent, irreversible). No user pressing a "delete"
+  key on an email expects it to be unrecoverable; the recoverable behavior is
+  the safe and least-surprising default. Named `trash_thread` (not
+  `delete_thread`) so the code makes that distinction obvious.
+- **Label picker is assign-only (add), not a full add/remove editor.** The
+  thread-body fetch (`gauth.get_thread`) doesn't return per-thread `labelIds`,
+  so we can't pre-check "already applied" labels to offer removal without an
+  extra round-trip. "Assign labels" is what the ROADMAP asked for; a
+  remove/toggle editor is a reasonable future extension (documented in
+  `LabelPickerModal`'s docstring). System labels are filtered out of the
+  picker — only user labels are assignable.
+
+### Verified
+`run_test` + pilot, `size=(140,44)`, every `gauth` call mocked (including
+`trash_thread`/`archive_thread`/`modify_labels`/`mark_unread` — never run
+against the live account): 26/26 checks — genuine list→modal open passes the
+Email-pane order/index; no widget auto-focused on open (the fix); `d`/`s`/`l`
+immediately after open call the right mocked mutation (`l` via
+`LabelPickerModal`, modal stays open after apply); Left/Right page between
+threads without closing and don't wrap at the ends; `/` opens the box +
+scrolls to a match, Escape closes the box then (second press) the modal; the
+help bar renders with working `[@click=...]` markup; and R/A/F still dismiss
+with the correct compose tuple (no regression from the AUTO_FOCUS change).
+A separate single-process run confirmed `u` calls `mark_unread` with the
+highlighted thread id.
+
+Files: `google_tui/gauth.py` (`mark_unread`/`trash_thread`/`archive_thread`/
+`modify_labels`), `google_tui/bindings.py` (ThreadModal action specs +
+`modal_help_markup`), `google_tui/main.py` (`ThreadModal`, `LabelPickerModal`,
+`_email_thread_order`, `action_mark_unread`, help-bar CSS).
+
 ## [2026-07-15] — Calendar create event (`n`, Calendar tab + Mail's Events pane)
 
 ### Added
