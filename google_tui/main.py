@@ -752,6 +752,7 @@ class GoogleTUI(App):
     .btnrow { height: 3; align: left middle; }
     #send-countdown { height: 1; color: $accent; text-style: bold; }
     .section { height: 1fr; border: round $panel-darken-2; padding: 0 1; }
+    #cal-search { width: 1fr; }
     #cal-grid, #cal-week-grid { height: 1fr; }
     #drive-body { height: 1fr; }
     #drive-list-col { width: 40%; border: round $panel-darken-1; }
@@ -877,6 +878,12 @@ class GoogleTUI(App):
         self._cal_year, self._cal_month = now.year, now.month
         self._cal_by_day: dict[int, list[dict]] = {}
         self._cal_week_cells: dict[tuple[int, int], list[dict]] = {}
+        # Calendar tab "/" jump-to-next-match state (find-next over the grid,
+        # mirrors ThreadModal._find). _cal_search_matches is the last query's
+        # ordered (row, col) hit list; a repeat-Enter of the SAME query
+        # advances _cal_search_pos through it — see _cal_find.
+        self._cal_search_matches: list[tuple[int, int]] = []
+        self._cal_search_pos: int = -1
         today = dt.date.today()
         self._cal_week_start = today - dt.timedelta(days=today.weekday())
         self._drive_folder_id = "root"
@@ -1193,6 +1200,9 @@ class GoogleTUI(App):
             with TabPane(_tab_label("Calendar", 2, self.settings.ascii_mode), id="tab-calendar"):
                 with Container(id="calendar-section", classes="section"):
                     yield Label("CALENDAR", classes="pane-title-text")
+                    with Horizontal(id="cal-search-bar", classes="btnrow"):
+                        yield Input(placeholder="Jump to event (summary/description), Enter for next… (/)",
+                                    id="cal-search")
                     with TabbedContent(id="cal-tabs"):
                         with TabPane("Month", id="cal-tab-month"):
                             yield DataTable(id="cal-grid")
@@ -2079,11 +2089,12 @@ class GoogleTUI(App):
 
     def action_focus_search(self) -> None:
         # Dispatched per active TAB, then (for Mail) per active PANE — see
-        # AGENTS.md §2 for the tab/pane distinction. Calendar is deliberately
-        # a no-op here: its search UX is a "jump to next match on the date
-        # grid" design question, not just wiring a text Input onto an
-        # existing ListView the way the four panes/tabs below were — see
-        # ROADMAP.
+        # AGENTS.md §2 for the tab/pane distinction. The Mail panes / Drive /
+        # News below wire "/" onto a live ListView FILTER. The Calendar tab is
+        # different: its Month/Week views are a fetched date GRID, not a list,
+        # so "/" is a "jump to next matching day/hour-cell" (find-next), not a
+        # filter — the Input is Enter-triggered (see on_input_submitted /
+        # _cal_find), like ThreadModal's find-in-thread, not live-as-you-type.
         tab = self._main_tabs().active
         if tab == "tab-mail":
             pane = PANE_IDS[self.active]
@@ -2093,6 +2104,8 @@ class GoogleTUI(App):
                 self.query_one("#tasks-search", Input).focus()
             elif pane == "events":
                 self.query_one("#events-search", Input).focus()
+        elif tab == "tab-calendar":
+            self.query_one("#cal-search", Input).focus()
         elif tab == "tab-drive":
             self.query_one("#drive-search", Input).focus()
         elif tab == "tab-news":
@@ -2383,6 +2396,8 @@ class GoogleTUI(App):
             self._add_feed_url()
         elif event.input.id in ("nav-origin", "nav-destination"):
             self._nav_go()
+        elif event.input.id == "cal-search":
+            self._cal_find(event.value)
 
     def on_input_changed(self, event: Input.Changed) -> None:
         if event.input.id == "contacts-search":
@@ -2836,6 +2851,82 @@ class GoogleTUI(App):
         else:
             day = (self._cal_week_start + dt.timedelta(days=col)).day
             self.push_screen(DayEventsModal(day, self._cal_week_start.month, self._cal_week_start.year, evs))
+
+    # ---- calendar "/" jump-to-next-match (find-next over the date grid) ----
+    # Enter-triggered, NOT a live filter: the Month/Week views are a fetched
+    # date grid, not a ListView, so there's no list to hide non-matching rows
+    # from — instead "/" moves the DataTable cursor to the next day (Month) or
+    # hour-cell (Week) whose event(s) match, wrapping around, exactly like a
+    # text editor's find-next. Mirrors ThreadModal._find (same
+    # matches-equal-last-query → advance-pos idiom) and reuses _fuzzy_score so
+    # the short-query / false-positive behaviour matches every other search in
+    # the app. Searches only what the currently-active view has loaded
+    # (_cal_by_day for Month, _cal_week_cells for Week) — a jump within what's
+    # on screen, never a new fetch.
+    def _event_matches(self, e: dict, query_lower: str, threshold: int) -> bool:
+        target = f"{e.get('summary','')} {e.get('description','')}".strip().lower()
+        return bool(target) and _fuzzy_score(query_lower, target, threshold) is not None
+
+    def _cal_month_matches(self, query_lower: str, threshold: int) -> list[tuple[int, int]]:
+        # Map each matching day to its (row, col) cell in #cal-grid. The month
+        # grid lays day d at flat index offset+d-1 (offset = weekday of the 1st,
+        # Mon=0), so row = idx // 7, col = idx % 7 — the same layout
+        # _apply_cal_month builds. sorted() keeps reading order so a repeat-Enter
+        # walks days top-to-bottom, left-to-right.
+        first = dt.date(self._cal_year, self._cal_month, 1)
+        offset = first.weekday()
+        matches: list[tuple[int, int]] = []
+        for day in sorted(self._cal_by_day):
+            if any(self._event_matches(e, query_lower, threshold)
+                   for e in self._cal_by_day[day]):
+                idx = offset + day - 1
+                matches.append((idx // 7, idx % 7))
+        return matches
+
+    def _cal_week_matches(self, query_lower: str, threshold: int) -> list[tuple[int, int]]:
+        # #cal-week-grid column 0 is the Hour label, so a stored week-cell col
+        # (0..6) maps to DataTable column col+1; the row IS the hour. A
+        # multi-hour event spans several hour-cells, each a distinct jump
+        # target — deliberate, so find-next steps through the block hour by hour.
+        matches: list[tuple[int, int]] = []
+        for (hour, col) in sorted(self._cal_week_cells):
+            if any(self._event_matches(e, query_lower, threshold)
+                   for e in self._cal_week_cells[(hour, col)]):
+                matches.append((hour, col + 1))
+        return matches
+
+    def _cal_find(self, query: str) -> None:
+        query = query.strip()
+        if not query:
+            return
+        query_lower = query.lower()
+        week = self.query_one("#cal-tabs", TabbedContent).active == "cal-tab-week"
+        grid = self.query_one("#cal-week-grid" if week else "#cal-grid", DataTable)
+        threshold = 75
+        matches = (self._cal_week_matches if week else self._cal_month_matches)(
+            query_lower, threshold)
+        if not matches:
+            self.notify("No matching events in this view", severity="warning")
+            self._cal_search_matches = []
+            self._cal_search_pos = -1
+            return
+        if matches == self._cal_search_matches:
+            # Repeat-Enter of the same query → advance to the next hit (wraps).
+            self._cal_search_pos = (self._cal_search_pos + 1) % len(matches)
+        else:
+            # New query → jump to the first hit at/after the current cursor
+            # (wrapping to the first overall if none follow it), so "/" behaves
+            # relative to where the user is looking, like find-next.
+            self._cal_search_matches = matches
+            cur = grid.cursor_coordinate
+            here = (cur.row, cur.column)
+            self._cal_search_pos = next(
+                (i for i, c in enumerate(matches) if c > here), 0)
+        row, col = matches[self._cal_search_pos]
+        grid.move_cursor(row=row, column=col, scroll=True)
+        grid.focus()
+        if len(matches) > 1:
+            self.notify(f"Match {self._cal_search_pos + 1} of {len(matches)}")
 
     # ---- new event (Calendar tab, and the Mail tab's Events pane) ----
     def action_new_event(self) -> None:

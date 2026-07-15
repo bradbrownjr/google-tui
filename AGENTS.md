@@ -114,7 +114,16 @@ Other tabs:
   columns, an event's summary is written into every hour row it spans (a
   text-cell approximation of a Gantt block — DataTable is a grid of cells,
   not a pixel canvas). `[`/`]` page the month, or the week when the Week
-  sub-tab is active.
+  sub-tab is active. `/` focuses `Input#cal-search` (in `#cal-search-bar`,
+  above `#cal-tabs`, visible in both sub-tabs) and is a **jump-to-next-match**,
+  NOT a filter like the ListView-backed panes: Enter runs `_cal_find`, which
+  moves the active grid's `DataTable` cursor to the next day (Month) or
+  hour-cell (Week) whose event(s) match `_fuzzy_score` (summary+description),
+  relative to the current cursor and wrapping — repeat-Enter of the same query
+  advances (`_cal_search_matches`/`_cal_search_pos`, the same find-next idiom
+  as `ThreadModal._find`). Searches only what the active view has loaded
+  (`_cal_by_day`/`_cal_week_cells`), never a new fetch. See CHANGELOG
+  `[2026-07-15]`.
 - **Drive tab**: `ListView#drive-list` (left) + live preview pane (right).
   Preview updates on `ListView.Highlighted` (cursor movement), not just
   `Selected` — metadata (who/what/where/when) always shown; text preview

@@ -3,6 +3,74 @@
 Format: keep newest at top. One entry per meaningful change. Reference files
 touched and any breaking notes.
 
+## [2026-07-15] — Calendar tab: `/` jump-to-next-match
+
+Closes the last remaining ROADMAP P2 item, "Calendar tab: `/` jump-to-next-match"
+(the `## P2 — UX polish` section is now empty and removed). This was flagged as
+a genuine design decision, not copy-paste plumbing: every other pane's `/`
+(Email/Tasks/Events/Drive/News/Contacts) live-*filters* a `ListView`, but the
+Calendar tab's Month/Week views are a fetched date **grid** (`DataTable`), not a
+list — there are no rows to hide. So `/` here is a **find-next**, not a filter.
+
+### Design choice — Enter-triggered find-next, not live-as-you-type
+Modeled on `ThreadModal`'s `/` find-in-thread (same-day work), not the
+Contacts-style live filter. Rationale: a filter answers "show me only the
+matches"; a date grid can't shrink to matches (the calendar layout is the
+point). What the user actually wants is "move me to the next day/hour that has a
+match" — a cursor jump, which is inherently a discrete, Enter-triggered action
+(you jump, look, press Enter again to jump further), not a continuous
+per-keystroke rebuild. Live-as-you-type would also fight the grid: every
+keystroke would yank the cursor around mid-word. So the interaction mirrors a
+text editor's find-next exactly.
+
+### Added
+- **`Input#cal-search`** in a `#cal-search-bar` row between the `CALENDAR`
+  label and `#cal-tabs`, so it's visible whichever of Month/Week is active
+  (same widget-id/CSS convention as `#events-search`/`#drive-search`/
+  `#news-search`). `/` (`action_focus_search`) now focuses it instead of the
+  old deliberate Calendar no-op branch.
+- **`_cal_find(query)`** (Enter → `on_input_submitted`): finds the next
+  grid cell whose event(s) match and moves the `DataTable` cursor there
+  (`move_cursor(..., scroll=True)` + `focus()`), with a `Match n of m` notify.
+  - **Month** (`#cal-grid`): jumps to the next **day** cell — matching days
+    from `_cal_by_day` mapped to `(row, col)` via the same
+    `offset + day - 1` layout `_apply_cal_month` builds.
+  - **Week** (`#cal-week-grid`): jumps to the next **hour-cell** — matching
+    `_cal_week_cells` keys mapped to `(hour, col + 1)` (column 0 is the Hour
+    label). A multi-hour event spans several hour-cells, each a distinct
+    jump target, so find-next walks the block hour by hour — deliberate.
+  - **New query** starts at the first match at/after the current cursor
+    (wrapping), so `/` behaves relative to where you're looking; **repeat-Enter
+    of the same query** advances to the next hit and **wraps** past the last —
+    the same `matches == last_matches → advance pos` idiom as `ThreadModal._find`.
+  - **Matching** reuses the app-wide `_fuzzy_score()` (summary + description),
+    so the short-query/false-positive behavior stays consistent everywhere:
+    queries under `_FUZZY_MIN_QUERY_LEN` only match as exact substrings, never
+    via `partial_ratio` (a 3-char `"tng"` fuzzy-scores 80 vs "budget planning
+    meeting" but is correctly rejected).
+  - **No match** notifies a warning ("No matching events in this view") and
+    leaves the cursor put.
+- Searches only what the active view currently has loaded (`_cal_by_day` /
+  `_cal_week_cells`) — a jump within what's on screen, never a new fetch or a
+  reach outside the rendered month/week.
+
+### Verified
+`run_test` + pilot, `size=(140,44)`, all `gauth` calls mocked (screenshot-script
+template), fabricated events on known dates. 15/15 checks: `/` focuses
+`#cal-search` from both Month and Week sub-tabs; a matching query jumps the
+cursor to the correct day cell (Month) and hour-cell (Week); repeat-Enter
+advances through multiple hits and wraps back; a non-matching query warns
+without moving the cursor; the short non-substring `"tng"` does not
+false-positive; and Email/Drive/News `/` still focus their own search inputs
+(regression check — six other `/`-wiring changes landed today).
+
+### Files
+- `google_tui/main.py` — `#cal-search` widget + CSS, `action_focus_search`
+  Calendar branch, `on_input_submitted` branch, `_cal_find` /
+  `_cal_month_matches` / `_cal_week_matches` / `_event_matches`, and the
+  `_cal_search_matches`/`_cal_search_pos` `__init__` state.
+- `ROADMAP.md` — removed the (now empty) `## P2 — UX polish` section.
+
 ## [2026-07-15] — Email viewer (`ThreadModal`): help bar + remaining actions
 
 Closes the ROADMAP P2 item "Email viewer (`ThreadModal`): help bar and

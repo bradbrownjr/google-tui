@@ -5,18 +5,6 @@ Update this file as items are completed — move the completed item's entry
 into CHANGELOG.md under a new dated section (`## [YYYY-MM-DD]`) instead of
 just checking it off here, so ROADMAP.md only ever shows what's still open.
 
-## P2 — UX polish
-
-- [ ] **Calendar tab: `/` jump-to-next-match.** `action_focus_search`
-  now covers Email/Tasks/Events/Drive/News/Contacts (see CHANGELOG
-  `[2026-07-15]`); Calendar remains the one deliberate no-op. Month/Week
-  views are a date grid, not a fetched `ListView`, so there's nothing to
-  hide/filter the way the other panes do — `/` would need a different
-  interaction entirely (e.g. highlight/jump to the next day containing a
-  match rather than hiding non-matching rows). A real design decision, not
-  a copy-paste of the `ListView`-filter wiring used everywhere else.
-  *(Suggested model: Opus — new interaction design, not just plumbing.)*
-
 ## P3 — Robustness
 
 - [ ] **Pagination / "load more".** Email caps at 80 threads; events at 3
