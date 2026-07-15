@@ -12,8 +12,6 @@ just checking it off here, so ROADMAP.md only ever shows what's still open.
   `gauth.create_task` / `delete_task` / `patch_subtask`).
 - [ ] **Calendar create event** from a modal (date/time/title) →
   `gauth.create_event`. Currently read-only.
-- [ ] **Threading depth.** Show full thread tree (multiple messages) with
-  expand/collapse; today each thread shows the latest message only.
 - [ ] **Web browser: Alt+H home, fix Alt+Left history, slow Page Up/Down/End.**
   Add a home shortcut (Alt+H) to a configurable start URL. `action_switch_left`
   already calls `_browser_back()` when `tab-browser` is active
@@ -214,6 +212,10 @@ just checking it off here, so ROADMAP.md only ever shows what's still open.
   the blue bar (`Ctrl+1..4`); Mail tab holds Email / Events / Tasks / Hermes
   panes (`Alt+1..4`, adjacency-based `Alt+arrows`).
 - [x] Threaded email list + thread view + reply/reply-all/forward compose.
+  Full thread tree (every message, oldest-first, own `DocumentView` each) —
+  not just the latest message — shipped in the P1 M4 rewrite (`bec0aae`,
+  see `ThreadModal`/`_apply_thread` in `main.py`); a since-stale ROADMAP P2
+  entry claiming otherwise was removed `[2026-07-15]`.
 - [x] Calendar tab: full month grid (events in each day square, `+N more`
   overflow modal) and hour-grid week view, modeled on Google Calendar's web UI.
 - [x] Tasks list with Space-toggle complete + task detail/subtasks view.
