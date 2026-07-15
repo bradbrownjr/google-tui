@@ -31,6 +31,7 @@ from textual.widgets import (
 )
 from textual.worker import get_current_worker  # noqa: F401 (kept for future threaded workers)
 
+from . import bindings
 from . import gauth
 from . import ask
 from .ask import needs_agent
@@ -164,109 +165,14 @@ def _nearest_choice(choices: list[tuple[str, int]], value: int) -> int:
         return value
     return min(allowed, key=lambda v: abs(v - value))
 
-HELP_GLOBAL = (
-    "Ctrl+# / Ctrl+←→ Tab   Alt+# Pane   Alt+←→↑↓ Move Pane   "
-    "Ctrl+P Commands   F2 Mouse   Ctrl+H Help   Ctrl+Q Quit"
-)
+HELP_GLOBAL = bindings.HELP_GLOBAL_TEXT
 
 _KEY_METHOD_LABELS = {
     "passphrase": "Passphrase (prompt at launch)",
     "keyfile": "Local key file (no prompt)",
 }
 
-HELP_TEXT = """\
-GLOBAL
-  Ctrl+1..8        Switch tab (Mail / Calendar / Drive / Browser / News / Navigation / Settings / Contacts)
-  Ctrl+Left/Right  Cycle tabs (use this if Ctrl+1..7 doesn't reach the app —
-                   some terminals/browsers don't transmit Ctrl+digit)
-  Alt+1..4         Jump to Mail pane (Email / Events / Tasks / Hermes)
-  Alt+arrows       Move to the adjacent Mail pane
-  Tab / Shift+Tab  Cycle Mail panes
-  Ctrl+R           Reconnect / refresh live data
-  Ctrl+P           Command palette
-  Ctrl+H           This help
-  F2               Release/recapture the mouse. While the app holds the mouse
-                   your terminal can't draw its own selection, so you can't
-                   drag-copy text (a URL, say) the way you normally would.
-                   F2 hands the mouse back; F2 again takes it. You can also
-                   drag-select inside the app and press Ctrl+C, which copies
-                   over SSH via OSC 52 where the terminal allows it.
-  Ctrl+Q           Quit
-
-MAIL TAB
-  Email pane:   Enter open thread, Space expand/collapse (shows snippet),
-                l open folder picker, c Compose new, r Reply, a Reply All,
-                f Forward
-  Events pane:  Enter/Space open event detail
-  Tasks pane:   Space toggle complete, Enter open detail
-  Hermes pane:  type a question, Enter to ask
-
-CALENDAR TAB
-  [ / ]         Previous / next month (or week, in Week view)
-  Enter/click   Open a day's full event list (Month view)
-                Open an event, or a chooser if several share an hour (Week view)
-
-DRIVE TAB
-  Up/Down       Move selection — preview pane updates live
-  Enter/click   Open a folder, or re-load a file's preview
-
-BROWSER TAB
-  Enter (address bar)    Load URL, or run a search (bare text w/ no scheme searches)
-  Bookmark buttons       Starter destinations (Google/Wikipedia/Gopherpedia/
-                         Gemini Protocol) shown until you navigate anywhere,
-                         then hidden for the rest of the session
-  Alt+Left / Alt+Right   Back / forward through this session's history
-  Tab                    Toggle focus: address bar <-> page content
-  0-9 then Enter (page)  Jump to numbered link
-  Esc (page)             Cancel a pending number entry
-
-NEWS TAB
-  Enter/Space   Open the selected entry (rendered via the shared Document view)
-  Entries from every subscribed feed are combined, newest first. Manage
-  subscriptions (add/remove feed URLs) from the Settings tab.
-
-NAVIGATION TAB
-  Origin/Destination inputs, then Enter or the Go button, compute a driving
-  route via the Google Routes API (free-text addresses — no need for exact
-  coordinates). Shows total distance/duration plus a turn-by-turn step list.
-  Export     Save the current itinerary to a text file (Documents/google-tui)
-  Needs a Routes API key, set in Settings -> Navigation.
-
-SETTINGS TAB
-  Sub-tabs      General / AI Provider / News Feeds / Search / Navigation —
-                Alt+Left/Right cycles between them while the Settings tab
-                is active
-  Switch        Toggle encrypt-at-rest for the local cache (General)
-  RadioSet      Choose passphrase-at-launch vs. local key file (General)
-  Button        Clear the local cache immediately (General)
-  RadioSet      Choose AI provider for the Hermes Ask pane (AI Provider)
-  Input+Button  Set/save the Nous API key (AI Provider)
-  Input+Button  Add a News-tab feed subscription (URL) (News Feeds)
-  Button        Remove the selected feed subscription (News Feeds)
-  RadioSet      Choose the Browser tab's search provider: Google /
-                DuckDuckGo / SearXNG (Search)
-  Input+Button  Set Google Custom Search API key + Search Engine ID, or a
-                SearXNG instance URL, then save (Search)
-  Input+Button  Set/save the Routes API key used by the Navigation tab
-                (Navigation)
-
-CONTACTS TAB
-  Type to search    Live fuzzy filter (name or email) over your fetched
-                    Google Contacts — no re-query as you type
-  Enter/Space       Open the highlighted contact's detail (name/email/phone),
-                    with a "Compose Email" button to start a new message to them
-  Refresh           Re-fetch contacts from Google now
-  (Blank Compose New moved to the Email pane's "c" key)
-  Contacts are fetched lazily (once, the first time you open this tab, not
-  on every startup/Ctrl+R) since they change far less often than mail/
-  calendar/drive. Needs the contacts.readonly scope on your Google token —
-  if that's missing, this notifies an error instead of crashing (SETUP.md §7).
-  ComposeModal's To field also fuzzy-suggests from these same contacts as
-  you type a name.
-
-Reply/Forward/Toggle-complete are disabled while offline (shown in the
-title bar as "Offline (cached HH:MM)"); browsing cached data still works.
-"""
+HELP_TEXT = bindings.HELP_TEXT
 
 
 class GtHeader(Header):
@@ -620,40 +526,9 @@ class GoogleTUI(App):
     #unlock-error { height: 1; }
     """
 
-    BINDINGS = [
-        ("alt+left", "switch_left", "Pane Left"),
-        ("alt+right", "switch_right", "Pane Right"),
-        ("alt+up", "switch_up", "Pane Up"),
-        ("alt+down", "switch_down", "Pane Down"),
-        ("tab", "cycle", "Cycle"),
-        ("shift+tab", "cycle_back", "Cycle"),
-        ("ctrl+1", "goto_tab_mail", "Mail"),
-        ("ctrl+2", "goto_tab_calendar", "Calendar"),
-        ("ctrl+3", "goto_tab_drive", "Drive"),
-        ("ctrl+4", "goto_tab_browser", "Browser"),
-        ("ctrl+5", "goto_tab_news", "News"),
-        ("ctrl+6", "goto_tab_navigation", "Navigation"),
-        ("ctrl+7", "goto_tab_contacts", "Contacts"),
-        ("ctrl+8", "goto_tab_settings", "Settings"),
-        ("ctrl+left", "cycle_tab_back", "Prev Tab"),
-        ("ctrl+right", "cycle_tab", "Next Tab"),
-        ("alt+1", "goto_pane_email", "Email"),
-        ("alt+2", "goto_pane_events", "Events"),
-        ("alt+3", "goto_pane_tasks", "Tasks"),
-        ("alt+4", "goto_pane_hermes", "Hermes"),
-        ("r", "reply", "Reply"),
-        ("a", "reply_all", "Reply All"),
-        ("f", "forward", "Forward"),
-        ("c", "compose_new", "Compose"),
-        ("l", "focus_label_select", "Folder"),
-        ("space", "context_space", "Context"),
-        ("[", "cal_prev", "Prev"),
-        ("]", "cal_next", "Next"),
-        ("ctrl+r", "refresh", "Refresh"),
-        ("ctrl+h", "help", "Help"),
-        ("f2", "toggle_mouse", "Mouse"),
-        ("ctrl+q", "quit", "Quit"),
-    ]
+    # Generated from google_tui/bindings.py — the single source of truth for
+    # this app's keymap (see that module's docstring).
+    BINDINGS = bindings.bindings_for_scope("global")
 
     def __init__(self):
         super().__init__()
@@ -800,30 +675,8 @@ class GoogleTUI(App):
     def _context_help_text(self) -> str:
         tab = self._main_tabs().active
         if tab == "tab-mail":
-            pane = PANE_IDS[self.active]
-            if pane == "email":
-                return "Enter Open   c Compose   r Reply   a Reply All   f Forward   Space Expand   l Folder"
-            if pane == "events":
-                return "Enter/Space Detail"
-            if pane == "tasks":
-                return "Space Toggle Complete   Enter Detail"
-            if pane == "hermes":
-                return "Enter Ask"
-        if tab == "tab-calendar":
-            return "[ / ] Prev/Next Month or Week   Enter Day Detail"
-        if tab == "tab-drive":
-            return "Enter Open Folder / Reload Preview"
-        if tab == "tab-browser":
-            return "Enter Load/Search   Alt+←/→ Back/Forward   Tab Toggle Focus   0-9+Enter Link"
-        if tab == "tab-news":
-            return "Enter/Space Open Entry"
-        if tab == "tab-navigation":
-            return "Enter/Go Compute Route   Export Save Itinerary To File"
-        if tab == "tab-settings":
-            return "Alt+←/→ Switch Section   Toggle encryption   Choose key method   Clear local cache   Manage feeds   Search provider   Routes API key"
-        if tab == "tab-contacts":
-            return "Type to search   Enter/Space Detail (compose to contact)   Refresh"
-        return ""
+            return bindings.CONTEXT_HELP.get(f"pane:{PANE_IDS[self.active]}", "")
+        return bindings.CONTEXT_HELP.get(f"tab:{tab}", "")
 
     def _update_help_bar(self) -> None:
         try:
@@ -3319,6 +3172,12 @@ class ThreadModal(ModalScreen):
     its keep yet. A v1 simplification, not an oversight.
     """
 
+    # ThreadModal is a ModalScreen, which truncates Textual's binding-chain
+    # walk at the modal boundary — so the App-level r/a/f bindings never
+    # reach here while this is open. These are real modal-scoped bindings,
+    # not a reliance on that (previously dead) app-level fallthrough.
+    BINDINGS = bindings.bindings_for_scope("modal:ThreadModal")
+
     def __init__(self, svc, thread_id: str):
         super().__init__()
         self.svc = svc
@@ -3330,9 +3189,9 @@ class ThreadModal(ModalScreen):
             with VerticalScroll(id="thread-messages"):
                 yield Static("Loading…", markup=False)
         with Horizontal(classes="btnrow"):
-            yield Button("Reply", id="r")
-            yield Button("Reply All", id="ra")
-            yield Button("Forward", id="fwd")
+            yield Button(bindings.hinted_label("modal:ThreadModal", "reply"), id="r")
+            yield Button(bindings.hinted_label("modal:ThreadModal", "reply_all"), id="ra")
+            yield Button(bindings.hinted_label("modal:ThreadModal", "forward"), id="fwd")
             yield Button("Close", id="close")
 
     def on_mount(self) -> None:
@@ -3421,12 +3280,20 @@ class ThreadModal(ModalScreen):
         container.mount(Static(f"Couldn't load this thread:\n{error}", markup=False))
         self.app.notify(f"Thread load error: {error}", severity="error")
 
+    def action_reply(self) -> None:
+        self.dismiss(("compose", self.thread_id, "reply"))
+
+    def action_reply_all(self) -> None:
+        self.dismiss(("compose", self.thread_id, "reply_all"))
+
+    def action_forward(self) -> None:
+        self.dismiss(("compose", self.thread_id, "forward"))
+
     def on_button_pressed(self, e: Button.Pressed) -> None:
         if e.button.id == "close":
             self.dismiss(None)
         else:
-            mode = {"r": "reply", "ra": "reply_all", "fwd": "forward"}[e.button.id]
-            self.dismiss(("compose", self.thread_id, mode))
+            {"r": self.action_reply, "ra": self.action_reply_all, "fwd": self.action_forward}[e.button.id]()
 
     def on_key(self, e) -> None:
         if e.key == "escape":

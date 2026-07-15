@@ -32,25 +32,46 @@ just checking it off here, so ROADMAP.md only ever shows what's still open.
   `ThreadModal`'s docstring, `main.py:3236-3240`). Wire up number-key activation
   in both, and give link text its own color/style in `render.py` so links are
   visually distinct from body text. *(Suggested model: Sonnet.)*
-- [ ] **Email viewer (`ThreadModal`): help bar, keyboard nav, and actions.**
-  Currently a bare button row (Reply/Reply All/Forward/Close) with no help bar.
-  Add:
+- [ ] **Email viewer (`ThreadModal`): help bar and remaining actions.**
+  `R`/`A`/`F` key shortcuts (matching the Reply/Reply All/Forward buttons,
+  which now show their shortcut in-label) now work — done in the
+  `[2026-07-15]` binding-registry pass, see CHANGELOG.md and
+  `google_tui/bindings.py`. Still open:
   - A contextual help bar listing this modal's shortcuts (consistent with the
     rest of the app), with entries clickable the same way as the global help bar.
   - Left/Right to move to the next/previous message in the current folder
     without closing the modal.
   - `/` to search within the open message — context-aware continuation of the
     app's existing search-within-pane behavior.
-  - `R`/`A`/`F` key shortcuts matching the existing Reply/Reply All/Forward
-    buttons, plus `D` delete, `S` save-and-archive (remove from inbox), and `L`
-    assign labels.
+  - `D` delete, `S` save-and-archive (remove from inbox), and `L` assign
+    labels (need new `gauth.delete_thread`/`archive_thread`/`modify_labels`
+    calls — not yet in `gauth.py`).
   - Border on the dialog and any missing buttons for the above actions.
   - Mark the thread read on open (already partially done — `gauth.mark_read`
-    fires in `_fetch_thread`, `main.py:3300-3304`) and add a shortcut to mark a
+    fires in `_fetch_thread`, `main.py:3200-3204`) and add a shortcut to mark a
     thread unread again from the list.
-  *(Suggested model: Opus — touches `gauth` for delete/archive/labels, new
-  modal-local bindings, and the shared help-bar/search patterns; biggest single
-  item on this list.)*
+  *(Suggested model: Opus — touches `gauth` for delete/archive/labels, and
+  the shared help-bar/search patterns.)*
+- [ ] **ASCII-fallback rendering mode.** The UI is Unicode-first by design
+  today (round box-drawing borders throughout `main.py`'s CSS, superscript
+  tab numbers `_SUPERSCRIPT`, arrow glyphs in help text, curly quotes/dashes/
+  bullets via `render.decode_html_entities`) with no fallback for terminals
+  that mangle non-ASCII (plain vt100, some serial consoles/older SSH
+  clients). Add a Settings toggle that swaps to ASCII-safe equivalents
+  (`solid`/`ascii` CSS border style, `1..8` instead of superscripts, `<-`/`->`
+  instead of arrows, plain quotes/dashes). Auto-detecting terminal Unicode
+  support isn't reliable enough to gate this automatically — an explicit,
+  user-flippable setting is the right default, not detection.
+- [ ] **Narrow-terminal (80x25) responsive layout.** Layout today is
+  fixed-percentage CSS only (e.g. `#left { width: 65%; }`, `#drive-list-col
+  { width: 40%; }`) with no breakpoints — untested below the screenshot
+  harness's 150x42. Add real breakpoint logic so side-by-side columns
+  (Drive list+preview, a future Email preview pane) stack or hide the
+  secondary column below a width threshold, and help-bar text
+  shortens/wraps sensibly, so the app is genuinely usable at 80x25, not just
+  non-crashing. *(Suggested model: Sonnet — mostly CSS/layout, informed by
+  the `bindings.py` registry from the `[2026-07-15]` pass for what help text
+  needs to shrink.)*
 
 ## P3 — Robustness
 

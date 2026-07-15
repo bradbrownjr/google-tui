@@ -423,6 +423,20 @@ Other tabs:
 
 ## 2. Key bindings
 
+The actual keymap, help-bar text (both rows), and `HelpModal`'s reference
+text are now generated from `google_tui/bindings.py` — a single
+`ActionSpec` registry — instead of living independently in `main.py`'s
+`BINDINGS`, `HELP_GLOBAL`, `_context_help_text()`, and `HELP_TEXT` the way
+they used to. Edit `bindings.py` when adding/changing a shortcut; the table
+below is a human-readable summary of it, not a second source of truth.
+
+`ThreadModal` (opened via `Enter` on a thread) now has its own real
+`r`/`a`/`f` bindings (`bindings.bindings_for_scope("modal:ThreadModal")`),
+with the Reply/Reply All/Forward buttons showing the shortcut in their
+label. Previously these keys were dead while the modal was open — Textual
+truncates the binding-chain walk at a `ModalScreen` boundary, so the
+App-level `r`/`a`/`f` bindings never reached it.
+
 | Key | Action |
 |-----|--------|
 | `Ctrl+1..8` | switch **tab** (Mail / Calendar / Drive / Browser / News / Navigation / Settings / Contacts) |

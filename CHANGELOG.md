@@ -3,6 +3,32 @@
 Format: keep newest at top. One entry per meaningful change. Reference files
 touched and any breaking notes.
 
+## [2026-07-15] — Central keybinding/help-bar registry; ThreadModal r/a/f now work
+
+### Added
+New `google_tui/bindings.py`: a single `ActionSpec` registry that generates
+the App's `BINDINGS`, both help-bar rows (`HELP_GLOBAL`/context text), and
+`HelpModal`'s `HELP_TEXT` — these previously lived as four independently
+hand-maintained strings in `main.py` that could (and did) drift apart.
+`hinted_label()` renders a button's shortcut in its own label, e.g.
+"Reply (R)".
+
+### Fixed
+`ThreadModal`'s Reply/Reply All/Forward buttons had no keyboard equivalent
+that actually worked while the modal was open — it's a `ModalScreen`, and
+Textual truncates the app-level binding-chain walk at the modal boundary, so
+the global `r`/`a`/`f` bindings never reached it (confirmed dead, not a
+fragile coincidence as first assumed). `ThreadModal` now has its own
+`BINDINGS` for `r`/`a`/`f`, and its buttons show the shortcut in their label.
+
+### Not changed
+`ComposeModal`'s Ctrl+Enter-to-send stays exactly as shipped in the
+[2026-07-14] entry below — bindable in the registry but hidden from every UI
+surface (button label, help bar, HelpModal), preserving that day's decision
+not to advertise a shortcut most terminals don't transmit distinctly from
+Enter. ASCII-fallback-glyph mode and narrow-terminal (80x25) responsive
+layout are deliberately out of scope for this pass — see ROADMAP.md.
+
 ## [2026-07-14] — P0 live send smoke test passed; drop Ctrl+Enter hint
 
 ### Verified

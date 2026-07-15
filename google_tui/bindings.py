@@ -1,0 +1,250 @@
+"""Single source of truth for google-tui's keyboard shortcuts.
+
+Before this module, a key/action pairing lived in up to four independently
+hand-maintained places (App.BINDINGS, the global help row, the per-tab/pane
+context help row, and HelpModal's HELP_TEXT), so they silently drifted out
+of sync — e.g. ThreadModal's Reply/Reply All/Forward buttons had no visible
+key hint, and ComposeModal's Ctrl+Enter was undiscoverable. ActionSpec is now
+the one place a shortcut is declared; BINDINGS lists and button hints are
+generated from it so they can't drift apart again.
+
+HELP_GLOBAL_TEXT, CONTEXT_HELP, and HELP_TEXT stay hand-curated strings
+rather than being mechanically rebuilt from individual ActionSpecs: the
+current text often condenses several bindings into one summary phrase
+(e.g. "Ctrl+1..8 Switch tab" covers eight separate ActionSpecs), which is a
+deliberate editorial choice, not something a generator should reverse-
+engineer. Centralizing them here alongside ACTIONS still means there's one
+file to edit when a shortcut changes, instead of three scattered ones.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+from textual.binding import Binding
+
+
+@dataclass(frozen=True)
+class ActionSpec:
+    id: str
+    keys: str | None
+    label: str
+    scope: str = "global"
+    show_in_button: bool = True
+    show_in_help: bool = True
+    bindable: bool = True
+
+
+# Transcribed verbatim from the former GoogleTUI.BINDINGS list — order
+# preserved (it matters for anything that walks BINDINGS in sequence).
+GLOBAL_ACTIONS: list[ActionSpec] = [
+    ActionSpec("switch_left", "alt+left", "Pane Left"),
+    ActionSpec("switch_right", "alt+right", "Pane Right"),
+    ActionSpec("switch_up", "alt+up", "Pane Up"),
+    ActionSpec("switch_down", "alt+down", "Pane Down"),
+    ActionSpec("cycle", "tab", "Cycle"),
+    ActionSpec("cycle_back", "shift+tab", "Cycle"),
+    ActionSpec("goto_tab_mail", "ctrl+1", "Mail"),
+    ActionSpec("goto_tab_calendar", "ctrl+2", "Calendar"),
+    ActionSpec("goto_tab_drive", "ctrl+3", "Drive"),
+    ActionSpec("goto_tab_browser", "ctrl+4", "Browser"),
+    ActionSpec("goto_tab_news", "ctrl+5", "News"),
+    ActionSpec("goto_tab_navigation", "ctrl+6", "Navigation"),
+    ActionSpec("goto_tab_contacts", "ctrl+7", "Contacts"),
+    ActionSpec("goto_tab_settings", "ctrl+8", "Settings"),
+    ActionSpec("cycle_tab_back", "ctrl+left", "Prev Tab"),
+    ActionSpec("cycle_tab", "ctrl+right", "Next Tab"),
+    ActionSpec("goto_pane_email", "alt+1", "Email"),
+    ActionSpec("goto_pane_events", "alt+2", "Events"),
+    ActionSpec("goto_pane_tasks", "alt+3", "Tasks"),
+    ActionSpec("goto_pane_hermes", "alt+4", "Hermes"),
+    ActionSpec("reply", "r", "Reply"),
+    ActionSpec("reply_all", "a", "Reply All"),
+    ActionSpec("forward", "f", "Forward"),
+    ActionSpec("compose_new", "c", "Compose"),
+    ActionSpec("focus_label_select", "l", "Folder"),
+    ActionSpec("context_space", "space", "Context"),
+    ActionSpec("cal_prev", "[", "Prev"),
+    ActionSpec("cal_next", "]", "Next"),
+    ActionSpec("refresh", "ctrl+r", "Refresh"),
+    ActionSpec("help", "ctrl+h", "Help"),
+    ActionSpec("toggle_mouse", "f2", "Mouse"),
+    ActionSpec("quit", "ctrl+q", "Quit"),
+]
+
+# ThreadModal is a ModalScreen (`is_modal = True`), which truncates
+# Textual's binding-chain walk at the modal boundary — so the app-level
+# r/a/f bindings above never reach it while it's open. These give it its
+# own real bindings instead of relying on dead keys.
+THREAD_MODAL_ACTIONS: list[ActionSpec] = [
+    ActionSpec("reply", "r", "Reply", scope="modal:ThreadModal"),
+    ActionSpec("reply_all", "a", "Reply All", scope="modal:ThreadModal"),
+    ActionSpec("forward", "f", "Forward", scope="modal:ThreadModal"),
+]
+
+# Not wired into Textual's BINDINGS (ComposeModal handles it via a raw
+# on_key check, kept as-is). Recorded here only so the registry is the one
+# place that "knows" this key exists. Deliberately hidden from every UI
+# surface (button label / help bar / HelpModal): a visible "(Ctrl+Enter)"
+# hint shipped 2026-07-14 and was reverted the same day after live testing
+# showed many terminals don't transmit Ctrl+Enter distinctly from Enter —
+# see CHANGELOG.md. Don't re-add visibility here.
+COMPOSE_MODAL_ACTIONS: list[ActionSpec] = [
+    ActionSpec("ctrl_enter_send", "ctrl+enter", "Send", scope="modal:ComposeModal",
+               show_in_button=False, show_in_help=False),
+]
+
+ACTIONS: dict[tuple[str, str], ActionSpec] = {
+    (spec.scope, spec.id): spec
+    for spec in [*GLOBAL_ACTIONS, *THREAD_MODAL_ACTIONS, *COMPOSE_MODAL_ACTIONS]
+}
+
+
+def bindings_for_scope(scope: str) -> list[Binding]:
+    """Build a Textual BINDINGS list for one scope, in declaration order."""
+    return [
+        Binding(spec.keys, spec.id, spec.label, show=spec.show_in_help)
+        for (sc, _id), spec in ACTIONS.items()
+        if sc == scope and spec.bindable and spec.keys
+    ]
+
+
+def _key_glyph(keys: str) -> str:
+    first = keys.split(",")[0]
+    return "+".join(part.upper() if len(part) == 1 else part.capitalize()
+                    for part in first.split("+"))
+
+
+def hinted_label(scope: str, action_id: str) -> str:
+    """A button label with its shortcut appended, e.g. "Reply (R)".
+
+    No-ops (returns the plain label) for actions with no bound key, so
+    wrapping every Button(...) call site through this costs nothing today
+    and means a future keybinding addition is a one-line registry edit.
+    """
+    spec = ACTIONS.get((scope, action_id))
+    if spec is None:
+        return action_id
+    if not spec.show_in_button or not spec.keys:
+        return spec.label
+    return f"{spec.label} ({_key_glyph(spec.keys)})"
+
+
+HELP_GLOBAL_TEXT = (
+    "Ctrl+# / Ctrl+←→ Tab   Alt+# Pane   Alt+←→↑↓ Move Pane   "
+    "Ctrl+P Commands   F2 Mouse   Ctrl+H Help   Ctrl+Q Quit"
+)
+
+# Keyed "pane:<id>" for Mail-tab panes, "tab:<id>" for every other tab —
+# matches GoogleTUI._context_help_text's former if/elif exactly.
+CONTEXT_HELP: dict[str, str] = {
+    "pane:email": "Enter Open   c Compose   r Reply   a Reply All   f Forward   Space Expand   l Folder",
+    "pane:events": "Enter/Space Detail",
+    "pane:tasks": "Space Toggle Complete   Enter Detail",
+    "pane:hermes": "Enter Ask",
+    "tab:tab-calendar": "[ / ] Prev/Next Month or Week   Enter Day Detail",
+    "tab:tab-drive": "Enter Open Folder / Reload Preview",
+    "tab:tab-browser": "Enter Load/Search   Alt+←/→ Back/Forward   Tab Toggle Focus   0-9+Enter Link",
+    "tab:tab-news": "Enter/Space Open Entry",
+    "tab:tab-navigation": "Enter/Go Compute Route   Export Save Itinerary To File",
+    "tab:tab-settings": "Alt+←/→ Switch Section   Toggle encryption   Choose key method   Clear local cache   "
+                         "Manage feeds   Search provider   Routes API key",
+    "tab:tab-contacts": "Type to search   Enter/Space Detail (compose to contact)   Refresh",
+}
+
+# Transcribed verbatim from the former module-level HELP_TEXT constant.
+HELP_TEXT = """\
+GLOBAL
+  Ctrl+1..8        Switch tab (Mail / Calendar / Drive / Browser / News / Navigation / Settings / Contacts)
+  Ctrl+Left/Right  Cycle tabs (use this if Ctrl+1..7 doesn't reach the app —
+                   some terminals/browsers don't transmit Ctrl+digit)
+  Alt+1..4         Jump to Mail pane (Email / Events / Tasks / Hermes)
+  Alt+arrows       Move to the adjacent Mail pane
+  Tab / Shift+Tab  Cycle Mail panes
+  Ctrl+R           Reconnect / refresh live data
+  Ctrl+P           Command palette
+  Ctrl+H           This help
+  F2               Release/recapture the mouse. While the app holds the mouse
+                   your terminal can't draw its own selection, so you can't
+                   drag-copy text (a URL, say) the way you normally would.
+                   F2 hands the mouse back; F2 again takes it. You can also
+                   drag-select inside the app and press Ctrl+C, which copies
+                   over SSH via OSC 52 where the terminal allows it.
+  Ctrl+Q           Quit
+
+MAIL TAB
+  Email pane:   Enter open thread, Space expand/collapse (shows snippet),
+                l open folder picker, c Compose new, r Reply, a Reply All,
+                f Forward
+  Events pane:  Enter/Space open event detail
+  Tasks pane:   Space toggle complete, Enter open detail
+  Hermes pane:  type a question, Enter to ask
+
+  Thread view (opened via Enter): R/A/F Reply / Reply All / Forward — same
+  keys as the Email pane, now with visible button hints — Esc/Close closes.
+
+CALENDAR TAB
+  [ / ]         Previous / next month (or week, in Week view)
+  Enter/click   Open a day's full event list (Month view)
+                Open an event, or a chooser if several share an hour (Week view)
+
+DRIVE TAB
+  Up/Down       Move selection — preview pane updates live
+  Enter/click   Open a folder, or re-load a file's preview
+
+BROWSER TAB
+  Enter (address bar)    Load URL, or run a search (bare text w/ no scheme searches)
+  Bookmark buttons       Starter destinations (Google/Wikipedia/Gopherpedia/
+                         Gemini Protocol) shown until you navigate anywhere,
+                         then hidden for the rest of the session
+  Alt+Left / Alt+Right   Back / forward through this session's history
+  Tab                    Toggle focus: address bar <-> page content
+  0-9 then Enter (page)  Jump to numbered link
+  Esc (page)             Cancel a pending number entry
+
+NEWS TAB
+  Enter/Space   Open the selected entry (rendered via the shared Document view)
+  Entries from every subscribed feed are combined, newest first. Manage
+  subscriptions (add/remove feed URLs) from the Settings tab.
+
+NAVIGATION TAB
+  Origin/Destination inputs, then Enter or the Go button, compute a driving
+  route via the Google Routes API (free-text addresses — no need for exact
+  coordinates). Shows total distance/duration plus a turn-by-turn step list.
+  Export     Save the current itinerary to a text file (Documents/google-tui)
+  Needs a Routes API key, set in Settings -> Navigation.
+
+SETTINGS TAB
+  Sub-tabs      General / AI Provider / News Feeds / Search / Navigation —
+                Alt+Left/Right cycles between them while the Settings tab
+                is active
+  Switch        Toggle encrypt-at-rest for the local cache (General)
+  RadioSet      Choose passphrase-at-launch vs. local key file (General)
+  Button        Clear the local cache immediately (General)
+  RadioSet      Choose AI provider for the Hermes Ask pane (AI Provider)
+  Input+Button  Set/save the Nous API key (AI Provider)
+  Input+Button  Add a News-tab feed subscription (URL) (News Feeds)
+  Button        Remove the selected feed subscription (News Feeds)
+  RadioSet      Choose the Browser tab's search provider: Google /
+                DuckDuckGo / SearXNG (Search)
+  Input+Button  Set Google Custom Search API key + Search Engine ID, or a
+                SearXNG instance URL, then save (Search)
+  Input+Button  Set/save the Routes API key used by the Navigation tab
+                (Navigation)
+
+CONTACTS TAB
+  Type to search    Live fuzzy filter (name or email) over your fetched
+                    Google Contacts — no re-query as you type
+  Enter/Space       Open the highlighted contact's detail (name/email/phone),
+                    with a "Compose Email" button to start a new message to them
+  Refresh           Re-fetch contacts from Google now
+  (Blank Compose New moved to the Email pane's "c" key)
+  Contacts are fetched lazily (once, the first time you open this tab, not
+  on every startup/Ctrl+R) since they change far less often than mail/
+  calendar/drive. Needs the contacts.readonly scope on your Google token —
+  if that's missing, this notifies an error instead of crashing (SETUP.md §7).
+  ComposeModal's To field also fuzzy-suggests from these same contacts as
+  you type a name.
+
+Reply/Forward/Toggle-complete are disabled while offline (shown in the
+title bar as "Offline (cached HH:MM)"); browsing cached data still works.
+"""
