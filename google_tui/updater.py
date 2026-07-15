@@ -29,9 +29,22 @@ from pathlib import Path
 
 # Bound every git call: a hung network (or a git that decides to prompt for
 # credentials) must never wedge startup. Fetch gets the longer budget since
-# it's the only one that talks to the network.
+# it's the only one that talks to the network. Merge gets the longest budget
+# of all: repos with `core.hooksPath` pointed at hooks/ (see SETUP.md) run
+# hooks/post-merge synchronously as *part of* the merge command, and that
+# hook does `pip install -e .` whenever pyproject.toml changed — which it
+# does on every commit here, since hooks/pre-commit bumps its version field
+# each time. A no-op `pip install -e .` reinstall reliably takes 10+ seconds
+# even when nothing actually needs installing, comfortably outrunning
+# _GIT_TIMEOUT. If it does, subprocess.run(timeout=...) kills the `git`
+# process, but pip keeps running as an orphan in the background, writing
+# into the very venv the restarted process (see restart() below) is about
+# to re-import from — a race that can corrupt the relaunch. Give merge a
+# budget wide enough to cover a cold pip resolve so it always finishes
+# before we act on its result.
 _GIT_TIMEOUT = 10
 _FETCH_TIMEOUT = 20
+_MERGE_TIMEOUT = 90
 
 
 def _repo_root() -> Path | None:
@@ -66,8 +79,8 @@ def describe(root: Path | None = None) -> str:
     "v" glued on the front, which just looks like a corrupt version number.
     """
     root = root or _repo_root()
-    from . import __version__
     if root is None:
+        from . import __version__
         return f"v{__version__}"
     # An exact tag on HEAD wins — that's a deliberate release marker. Otherwise
     # __version__ is authoritative (hooks/pre-commit bumps it on every commit,
@@ -78,8 +91,30 @@ def describe(root: Path | None = None) -> str:
     rc, tag = _git(root, "describe", "--tags", "--exact-match")
     if rc == 0 and tag:
         return tag if tag[:1] == "v" else f"v{tag}"
+    version = _read_version_from_disk(root)
     rc, sha = _git(root, "rev-parse", "--short", "HEAD")
-    return f"v{__version__} ({sha})" if rc == 0 and sha else f"v{__version__}"
+    return f"v{version} ({sha})" if rc == 0 and sha else f"v{version}"
+
+
+def _read_version_from_disk(root: Path) -> str:
+    """`__version__` as it stands in the *checked-out file*, not the cached
+    `google_tui` module attribute. describe() is called right after
+    check_for_update() fast-forwards the checkout — at that point the
+    already-imported module still holds the pre-update version (Python
+    doesn't re-read a module off disk just because git rewrote it), while
+    the sha we pair it with (`git rev-parse`) is already the new one. Reading
+    the file directly keeps the two in sync instead of reporting an old
+    version number next to a new commit hash.
+    """
+    try:
+        text = (root / "google_tui" / "__init__.py").read_text()
+        for line in text.splitlines():
+            if line.strip().startswith("__version__"):
+                return line.split("=", 1)[1].strip().strip("\"'")
+    except OSError:
+        pass
+    from . import __version__
+    return __version__
 
 
 def check_for_update(quiet: bool = False) -> bool:
@@ -149,7 +184,7 @@ def check_for_update(quiet: bool = False) -> bool:
 
     # One line, completed in place: "Downloading update... updated to v1.2.3".
     print("Downloading update...", end="", flush=True)
-    rc, _ = _git(root, "merge", "--ff-only", f"origin/{branch}")
+    rc, _ = _git(root, "merge", "--ff-only", f"origin/{branch}", timeout=_MERGE_TIMEOUT)
     if rc != 0:
         print()  # close the dangling line before reporting the failure
         say("Can't reach update server, skipping update check.")
