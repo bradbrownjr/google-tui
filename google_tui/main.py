@@ -15,6 +15,7 @@ import logging
 import os
 import re
 import sys
+import textwrap
 import urllib.parse
 from dataclasses import dataclass
 from functools import cached_property
@@ -66,6 +67,26 @@ TAB_ORDER = ["tab-mail", "tab-calendar", "tab-drive", "tab-browser", "tab-news",
              "tab-settings"]
 SETTINGS_TAB_ORDER = ["settings-tab-general", "settings-tab-ai", "settings-tab-feeds", "settings-tab-search",
                        "settings-tab-navigation"]
+
+# Narrow-terminal responsive layout (P2, 2026-07-15). Textual 8.2.8 has no
+# CSS media-query/container-query feature scoped to an arbitrary container,
+# but App/Screen DO support a native width-breakpoint mechanism
+# (App.HORIZONTAL_BREAKPOINTS -- see screen.py's Screen._on_resize, which
+# toggles a class on the Screen automatically on every resize): a breakpoint
+# list of (min_width, class_name) tuples, the highest one whose min_width the
+# current width satisfies gets applied as a class on the Screen. GoogleTUI
+# sets HORIZONTAL_BREAKPOINTS = [(0, "-narrow"), (NARROW_WIDTH_THRESHOLD,
+# "-normal")] below, so "Screen.-narrow ..." selectors in CSS drive the
+# purely-visual parts of this (Drive tab list/preview stacking) with no
+# Python code. The one part that ISN'T pure CSS -- hiding every Mail-tab pane
+# except the active one, since which pane is "active" is runtime state, not
+# something a CSS selector can see -- is handled by GoogleTUI.on_resize +
+# _apply_narrow_layout()/_focus_pane(), using this same threshold so both
+# mechanisms agree on what "narrow" means. 100 columns (not the 80 the
+# ROADMAP names as the target) leaves headroom for borders/padding, and was
+# chosen so 80x25 -- the smallest size this is verified against -- is
+# comfortably inside "-narrow", not right at the boundary.
+NARROW_WIDTH_THRESHOLD = 100
 
 _SUPERSCRIPT = {1: "¹", 2: "²", 3: "³", 4: "⁴", 5: "⁵", 6: "⁶", 7: "⁷", 8: "⁸"}
 
@@ -784,7 +805,46 @@ class GoogleTUI(App):
     #c-to-suggestions.ascii-border { border: ascii $panel-darken-1; }
     #drive-preview-meta.ascii-border { border-bottom: ascii $panel-darken-2; }
     .thread-msg-header.ascii-border { border-bottom: ascii $panel-darken-2; }
+
+    /* Narrow-terminal responsive layout (P2, 2026-07-15) -- see the
+       NARROW_WIDTH_THRESHOLD comment above for the breakpoint mechanism.
+
+       Drive tab: STACK list-over-preview rather than hide either one. Both
+       are genuinely useful at once even at 80 columns (the list to keep
+       browsing, the preview's who/what/where/when + text to actually read
+       something) and, unlike the Mail tab's four panes, there are only two
+       of them, so a 60/40 height split still leaves each one usable in a
+       25-row terminal -- hiding the preview would leave Drive as a bare
+       filename list with no way to see what's selected without opening it.
+    */
+    Screen.-narrow #drive-body { layout: vertical; height: 1fr; }
+    Screen.-narrow #drive-list-col { width: 1fr; height: 60%; }
+    Screen.-narrow #drive-preview-col { width: 1fr; height: 1fr; }
+
+    /* Mail tab: HIDE the inactive column instead of stacking. Email vs.
+       Events/Tasks/Hermes is a 1-vs-3 split, and Events/Tasks/Hermes are
+       already themselves stacked inside #right -- stacking a 4th thing
+       (Email) on top would quarter an already-scarce 25 rows into
+       unreadable slivers. Showing exactly ONE pane full width/full height
+       (whichever is "active" -- Alt+1..4/Tab/arrows already track that via
+       _focus_pane, this just also hides the rest when narrow) keeps the
+       primary content dominant instead of squeezed. See
+       GoogleTUI._apply_narrow_layout, which toggles this class. */
+    .narrow-hidden { display: none; }
+    /* #left/#right keep their normal 65%/1fr split (see the CSS block
+       above) even when one of them is display:none'd by .narrow-hidden --
+       display:none doesn't relinquish the width, it just leaves the other
+       column's dead space empty. Whichever one IS visible needs to claim
+       the full row. */
+    Screen.-narrow #left, Screen.-narrow #right { width: 1fr; }
     """
+
+    # Screen.-narrow / Screen.-normal, applied automatically by Textual on
+    # every resize (Screen._on_resize) -- see the NARROW_WIDTH_THRESHOLD
+    # comment above. Drives the Drive-tab CSS above with no Python code;
+    # GoogleTUI.on_resize below uses the same threshold for the Mail-tab
+    # active-pane-hide logic a CSS selector can't express on its own.
+    HORIZONTAL_BREAKPOINTS = [(0, "-narrow"), (NARROW_WIDTH_THRESHOLD, "-normal")]
 
     # Generated from google_tui/bindings.py — the single source of truth for
     # this app's keymap (see that module's docstring).
@@ -871,6 +931,12 @@ class GoogleTUI(App):
         # (possibly stale) contacts and a single "not connected" notice
         # pointing at Settings, instead of dumping stale/blank-name rows.
         self._contacts_auth_broken = False
+        # Narrow-terminal responsive layout (P2, 2026-07-15) -- see
+        # NARROW_WIDTH_THRESHOLD. Kept as an explicit bool (rather than
+        # re-deriving it from self.size everywhere) since _apply_narrow_layout
+        # and the help-bar wrap helper both need to read it, and self.size
+        # isn't meaningful until the first Resize event arrives anyway.
+        self._narrow = False
 
     def notify(self, message: str, *, title: str = "", severity: str = "information",
                timeout: float | None = None, markup: bool = True) -> None:
@@ -939,7 +1005,64 @@ class GoogleTUI(App):
             self.query_one(targets[pane_id]).focus()
         except Exception:
             pass
+        self._apply_narrow_layout()
         self._update_help_bar()
+
+    # ---- narrow-terminal responsive layout (P2, 2026-07-15) ----
+    # See the NARROW_WIDTH_THRESHOLD / HORIZONTAL_BREAKPOINTS comments above
+    # for the overall mechanism. This method handles only the part CSS
+    # can't: which single Mail-tab pane should be visible depends on
+    # runtime state (self.active), not just terminal width.
+    def _apply_narrow_layout(self) -> None:
+        """When narrow, show only the active Mail pane (Email, OR the
+        Events/Tasks/Hermes column) full width/full height; when not
+        narrow, restore the normal Email+stack side-by-side layout. Safe to
+        call any time (pane switch, resize, startup) — a no-op query
+        failure (e.g. called before compose() has mounted anything) is
+        swallowed the same way _apply_ascii_mode's widget lookups are.
+        """
+        try:
+            left = self.query_one("#left")
+            right = self.query_one("#right")
+        except Exception:
+            return
+        narrow = self._narrow
+        active_pane = PANE_IDS[self.active] if narrow else None
+        left.set_class(narrow and active_pane != "email", "narrow-hidden")
+        right.set_class(narrow and active_pane == "email", "narrow-hidden")
+        for pid in PANE_IDS[1:]:  # events / tasks / hermes, inside #right
+            try:
+                self.query_one(f"#{pid}").set_class(narrow and pid != active_pane, "narrow-hidden")
+            except Exception:
+                pass
+
+    def _narrow_wrap(self, text: str) -> str:
+        """Word-wrap help-bar text to the current terminal width when
+        narrow, so long strings (HELP_GLOBAL_TEXT is 111 chars; the
+        tab-settings context string is 132) don't get silently clipped
+        mid-word at 80 columns. Static's own `height: auto` (its
+        DEFAULT_CSS) already lets #help-bar grow to fit however many
+        wrapped lines result — no extra CSS needed here. Left untouched
+        above the threshold, where every current help string already fits
+        on one line at the sizes this app was tested at before (140x44).
+        """
+        if not self._narrow or not text:
+            return text
+        width = max(20, self.size.width - 2)
+        return "\n".join(textwrap.wrap(text, width=width))
+
+    def on_resize(self, event: events.Resize) -> None:
+        """Public resize hook (see AGENTS.md's note on `_on_xxx` vs `on_xxx`
+        dispatch — this is the documented user-overridable one, distinct
+        from Textual's own internal `_on_resize`, so there's no MRO
+        collision to worry about here). Recomputes narrow-mode state on
+        every resize, not just on a narrow/not-narrow transition, since the
+        help-bar wrap width in _narrow_wrap depends on the exact width.
+        """
+        self._narrow = event.size.width < NARROW_WIDTH_THRESHOLD
+        self._apply_narrow_layout()
+        self._update_help_bar()
+        self._update_help_global()
 
     def _adjacent(self, direction: str) -> None:
         if self._main_tabs().active != "tab-mail":
@@ -960,7 +1083,14 @@ class GoogleTUI(App):
 
     def _update_help_bar(self) -> None:
         try:
-            self.query_one("#help-context").update(self._context_help_text())
+            self.query_one("#help-context").update(self._narrow_wrap(self._context_help_text()))
+        except Exception:
+            pass
+
+    def _update_help_global(self) -> None:
+        try:
+            text = bindings.ascii_safe(HELP_GLOBAL) if self.settings.ascii_mode else HELP_GLOBAL
+            self.query_one("#help-global", Static).update(self._narrow_wrap(text))
         except Exception:
             pass
 
@@ -1000,11 +1130,7 @@ class GoogleTUI(App):
         for selector in self._ASCII_BORDER_SELECTORS:
             for widget in self.query(selector):
                 widget.set_class(ascii_mode, "ascii-border")
-        try:
-            help_global = bindings.ascii_safe(HELP_GLOBAL) if ascii_mode else HELP_GLOBAL
-            self.query_one("#help-global", Static).update(help_global)
-        except Exception:
-            pass
+        self._update_help_global()
         self._update_help_bar()
 
     # ---- compose ----
@@ -1273,6 +1399,12 @@ class GoogleTUI(App):
     # ---- startup: resolve encryption key, then cache-first load + background sync ----
     def on_mount(self) -> None:
         _logger.info("google-tui %s starting", updater.describe())
+        # Don't rely on the initial Resize event having already reached
+        # on_resize by this point (ordering isn't guaranteed relative to
+        # on_mount) — read the size directly so a launch straight into an
+        # 80x25 terminal starts in narrow mode instead of only fixing itself
+        # on the first actual resize.
+        self._narrow = self.size.width < NARROW_WIDTH_THRESHOLD
         self._focus_pane(0)
         self._apply_ascii_mode()  # applies whatever Settings.ascii_mode loaded from disk; also updates the help bar
         problems = self._diagnose_setup()

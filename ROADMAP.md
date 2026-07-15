@@ -41,16 +41,6 @@ just checking it off here, so ROADMAP.md only ever shows what's still open.
   match rather than hiding non-matching rows). A real design decision, not
   a copy-paste of the `ListView`-filter wiring used everywhere else.
   *(Suggested model: Opus — new interaction design, not just plumbing.)*
-- [ ] **Narrow-terminal (80x25) responsive layout.** Layout today is
-  fixed-percentage CSS only (e.g. `#left { width: 65%; }`, `#drive-list-col
-  { width: 40%; }`) with no breakpoints — untested below the screenshot
-  harness's 150x42. Add real breakpoint logic so side-by-side columns
-  (Drive list+preview, a future Email preview pane) stack or hide the
-  secondary column below a width threshold, and help-bar text
-  shortens/wraps sensibly, so the app is genuinely usable at 80x25, not just
-  non-crashing. *(Suggested model: Sonnet — mostly CSS/layout, informed by
-  the `bindings.py` registry from the `[2026-07-15]` pass for what help text
-  needs to shrink.)*
 
 ## P3 — Robustness
 

@@ -3,6 +3,99 @@
 Format: keep newest at top. One entry per meaningful change. Reference files
 touched and any breaking notes.
 
+## [2026-07-15] — Narrow-terminal (80x25) responsive layout
+
+### Added
+Closes the ROADMAP P2 item: layout used to be fixed-percentage CSS only
+(`#left { width: 65%; }`, `#drive-list-col { width: 40%; }`), untested below
+the screenshot harness's 150x42 and unusable at the 80x25 the ROADMAP named
+as the real target.
+
+**Breakpoint mechanism — verified Textual 8.2.8 first, used its native
+feature instead of a manual one.** Before writing any resize-tracking code,
+checked whether this Textual version has something like a CSS container
+query — it does: `App`/`Screen.HORIZONTAL_BREAKPOINTS` / `VERTICAL_BREAKPOINTS`
+(`screen.py`'s `Screen._on_resize`), a list of `(min_width, class_name)`
+tuples; Textual applies the highest-matching class to the `Screen`
+automatically on every resize, no app code needed to detect the resize
+itself. `GoogleTUI` now sets `HORIZONTAL_BREAKPOINTS = [(0, "-narrow"),
+(NARROW_WIDTH_THRESHOLD, "-normal")]` (`NARROW_WIDTH_THRESHOLD = 100`), and
+the purely-visual part of this (Drive tab stacking, below) is driven
+entirely by `Screen.-narrow ...` CSS selectors — no Python logic at all.
+100, not 80, so the smallest verified size (80x25) sits comfortably inside
+`-narrow` rather than right at the boundary.
+
+The one part that ISN'T pure CSS — hiding every Mail-tab pane except the
+active one, since "which pane is active" is runtime state a CSS selector
+can't see — is handled in Python: `GoogleTUI.on_resize` (the public,
+user-overridable hook — confirmed distinct from Textual's own internal
+`_on_resize`, so no MRO-dispatch collision the way a naive `_on_click`
+override would have, per AGENTS.md §2's NOTE) recomputes `self._narrow`
+from the event's width and calls `_apply_narrow_layout()`, which is also
+called from `_focus_pane()` so switching panes while already narrow
+re-applies the hide/show immediately. `on_mount` also seeds `self._narrow`
+directly from `self.size.width` rather than trusting resize-event ordering
+relative to mount, so a launch straight into an 80x25 terminal starts
+correct instead of only fixing itself on the first real resize.
+
+**Stack vs. hide, decided per surface:**
+- **Drive tab (list + preview): STACK.** `#drive-list-col`/`#drive-preview-col`
+  go from side-by-side to a 60/40 top/bottom split (`Screen.-narrow
+  #drive-body { layout: vertical; }` + height overrides) when narrow. Only
+  two panes here, and both are genuinely useful at once even at 80 columns —
+  the list to keep browsing, the preview's who/what/where/when (and text,
+  when previewable) to actually read something — so hiding either one would
+  leave Drive either a bare filename list or a preview with nothing to
+  browse. A 60/40 height split still leaves each one usable in 25 rows.
+- **Mail tab (Email vs. Events/Tasks/Hermes): HIDE.** This is a 1-vs-3 split,
+  and Events/Tasks/Hermes are already themselves stacked vertically inside
+  `#right` — stacking Email on top as a 4th thing would quarter an already-
+  scarce 25 rows into unreadable slivers, the opposite of "primary content
+  stays dominant." Instead, exactly ONE pane is shown at a time, full width
+  and full height: `#left`/`#right` and the individual `#events`/`#tasks`/
+  `#hermes` containers get a `.narrow-hidden` (`display: none`) class
+  toggled by `_apply_narrow_layout()` based on `PANE_IDS[self.active]` —
+  the same active-pane tracking `Alt+1..4`/`Tab`/`Shift+Tab`/arrows already
+  drive via `_focus_pane`, so no new navigation was needed, switching panes
+  IS switching which column is visible. `Screen.-narrow #left, Screen.-narrow
+  #right { width: 1fr; }` was also needed: `display: none` on the sibling
+  doesn't relinquish its share of the row, so without this override the
+  visible column stayed pinned at its normal 65%/1fr width with dead space
+  next to it (caught and fixed during visual verification, below).
+
+**Help-bar text**: `_narrow_wrap()` (`main.py`) word-wraps
+`HELP_GLOBAL_TEXT` (111 chars) and the per-tab/pane `CONTEXT_HELP` strings
+(up to 132, for `tab-settings`) via `textwrap.wrap(text, width=self.size.width
+- 2)` whenever `self._narrow` is set — never truncated/abbreviated, since
+`Static`'s own `DEFAULT_CSS` (`height: auto`) already lets `#help-bar` grow
+to fit however many wrapped lines result, so wrapping loses no information
+and never cuts a word mid-character. Left byte-for-byte unchanged above the
+threshold, where every existing string already fit on one line at the sizes
+this app was tested at before. Wired into `_update_help_bar()` (context row)
+and a new `_update_help_global()` (global row, factored out of
+`_apply_ascii_mode()`, which now also gets narrow-wrap for free), both
+called from `on_resize` so the wrap width tracks the exact terminal width,
+not just the narrow/not-narrow boundary.
+
+### Verified
+Throwaway `run_test` + pilot scripts, one process per size per AGENTS.md
+§6 (every `gauth` call mocked, modeled on `scripts/generate_screenshot.py`):
+`size=(80, 25)` (the new target), plus `size=(150, 42)` and `size=(140, 44)`
+(the two sizes already in use elsewhere) to confirm no regression. At 80x25:
+Email-pane-active screenshot shows `#left` filling the full width with 8
+readable subject/sender rows and no `#right` bleed-through; Events-pane-
+active screenshot shows Events full width/height with Tasks/Hermes/Email
+all hidden; Drive tab screenshot shows the file list stacked above the
+(empty-in-this-fixture) preview pane, both full width. At 150x42/140x44,
+confirmed byte-identical layout/class state to before this change
+(`narrow-hidden` never applied, `Screen` carries `-normal` not `-narrow`,
+help text unwrapped). SVG screenshots converted to PNG via `cairosvg` and
+visually inspected (not just asserted) at both the narrow and normal sizes;
+this is what caught the `#left`/`#right` width bug above before it shipped.
+
+### Files touched
+`google_tui/main.py`, `ROADMAP.md`.
+
 ## [2026-07-15] — ASCII-safe mode (Settings toggle) for terminals that mangle Unicode
 
 ### Added
