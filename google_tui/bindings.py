@@ -3,10 +3,9 @@
 Before this module, a key/action pairing lived in up to four independently
 hand-maintained places (App.BINDINGS, the global help row, the per-tab/pane
 context help row, and HelpModal's HELP_TEXT), so they silently drifted out
-of sync — e.g. ThreadModal's Reply/Reply All/Forward buttons had no visible
-key hint, and ComposeModal's Ctrl+Enter was undiscoverable. ActionSpec is now
-the one place a shortcut is declared; BINDINGS lists and button hints are
-generated from it so they can't drift apart again.
+of sync — e.g. ComposeModal's Ctrl+Enter was undiscoverable. ActionSpec is
+now the one place a shortcut is declared; BINDINGS lists are generated from
+it so they can't drift apart again.
 
 HELP_GLOBAL_TEXT, CONTEXT_HELP, and HELP_TEXT stay hand-curated strings
 rather than being mechanically rebuilt from individual ActionSpecs: the
@@ -29,7 +28,6 @@ class ActionSpec:
     keys: str | None
     label: str
     scope: str = "global"
-    show_in_button: bool = True
     show_in_help: bool = True
     bindable: bool = True
 
@@ -86,26 +84,21 @@ THREAD_MODAL_ACTIONS: list[ActionSpec] = [
     ActionSpec("trash", "d", "Trash", scope="modal:ThreadModal"),
     ActionSpec("archive", "s", "Archive", scope="modal:ThreadModal"),
     ActionSpec("labels", "l", "Labels", scope="modal:ThreadModal"),
-    # No button (navigation/search live on keys + the help bar, not the
-    # button row) — bindable + hinted only in the help bar text above.
-    ActionSpec("prev_message", "left", "Prev", scope="modal:ThreadModal",
-               show_in_button=False),
-    ActionSpec("next_message", "right", "Next", scope="modal:ThreadModal",
-               show_in_button=False),
-    ActionSpec("focus_search", "slash", "Search", scope="modal:ThreadModal",
-               show_in_button=False),
+    ActionSpec("prev_message", "left", "Prev", scope="modal:ThreadModal"),
+    ActionSpec("next_message", "right", "Next", scope="modal:ThreadModal"),
+    ActionSpec("focus_search", "slash", "Search", scope="modal:ThreadModal"),
 ]
 
 # Not wired into Textual's BINDINGS (ComposeModal handles it via a raw
 # on_key check, kept as-is). Recorded here only so the registry is the one
 # place that "knows" this key exists. Deliberately hidden from every UI
-# surface (button label / help bar / HelpModal): a visible "(Ctrl+Enter)"
-# hint shipped 2026-07-14 and was reverted the same day after live testing
-# showed many terminals don't transmit Ctrl+Enter distinctly from Enter —
-# see CHANGELOG.md. Don't re-add visibility here.
+# surface (help bar / HelpModal): a visible "(Ctrl+Enter)" hint shipped
+# 2026-07-14 and was reverted the same day after live testing showed many
+# terminals don't transmit Ctrl+Enter distinctly from Enter — see
+# CHANGELOG.md. Don't re-add visibility here.
 COMPOSE_MODAL_ACTIONS: list[ActionSpec] = [
     ActionSpec("ctrl_enter_send", "ctrl+enter", "Send", scope="modal:ComposeModal",
-               show_in_button=False, show_in_help=False),
+               show_in_help=False),
 ]
 
 ACTIONS: dict[tuple[str, str], ActionSpec] = {
@@ -121,27 +114,6 @@ def bindings_for_scope(scope: str) -> list[Binding]:
         for (sc, _id), spec in ACTIONS.items()
         if sc == scope and spec.bindable and spec.keys
     ]
-
-
-def _key_glyph(keys: str) -> str:
-    first = keys.split(",")[0]
-    return "+".join(part.upper() if len(part) == 1 else part.capitalize()
-                    for part in first.split("+"))
-
-
-def hinted_label(scope: str, action_id: str) -> str:
-    """A button label with its shortcut appended, e.g. "Reply (R)".
-
-    No-ops (returns the plain label) for actions with no bound key, so
-    wrapping every Button(...) call site through this costs nothing today
-    and means a future keybinding addition is a one-line registry edit.
-    """
-    spec = ACTIONS.get((scope, action_id))
-    if spec is None:
-        return action_id
-    if not spec.show_in_button or not spec.keys:
-        return spec.label
-    return f"{spec.label} ({_key_glyph(spec.keys)})"
 
 
 # Settings -> General -> "ASCII-safe mode" swaps these for the plain-ASCII
@@ -183,33 +155,97 @@ CONTEXT_HELP: dict[str, str] = {
                          "Manage feeds   Search provider   Routes API key",
     "tab:tab-contacts": "Type to search (or / from elsewhere in the tab)   Enter/Space Detail (compose to contact)   Refresh",
     # ThreadModal's own contextual help row (P2 2026-07-15). Rendered as a
-    # clickable help bar inside the modal via modal_help_markup() below —
-    # each "Key Label" pair becomes a Textual @click action link so a mouse
-    # user can trigger the action, the same affordance the rest of the app's
-    # help bar gains from action-link markup. The plain-text form here is the
-    # fallback (and what non-clickable renders / HelpModal would show).
+    # clickable help bar via help_markup() below — each "Key Label" pair
+    # becomes a Textual @click action link so a mouse user can trigger the
+    # action; every other pane/tab's row gets the same treatment (see
+    # _CLICK_ACTIONS). The plain-text form here is the fallback (and what
+    # non-clickable renders / HelpModal would show).
     "modal:ThreadModal": ("←/→ Prev/Next   R Reply   A Reply All   F Forward   "
                           "D Trash   S Archive   L Labels   / Search   Esc Close"),
 }
 
-# Maps each entry in the "modal:ThreadModal" help text above to the modal
-# action it should invoke when clicked. Keyed by the exact "Key Label" span
-# as it appears in the string, so modal_help_markup() can wrap just that span
-# in a [@click=...] action link. Entries with no clickable action (Esc Close
-# is handled by the modal's own key handler, arrows too) are left plain.
-_THREAD_MODAL_CLICK_ACTIONS: dict[str, str] = {
-    "R Reply": "reply",
-    "A Reply All": "reply_all",
-    "F Forward": "forward",
-    "D Trash": "trash",
-    "S Archive": "archive",
-    "L Labels": "labels",
+# Maps each CONTEXT_HELP scope's "Key Label" spans to the action they should
+# invoke when clicked — generalizes what was originally a ThreadModal-only
+# affordance (every other section used to show shortcut keys as inert text)
+# to every pane/tab's context help row, so the whole app follows one scheme
+# instead of ThreadModal alone having clickable shortcuts AND a redundant row
+# of full-size buttons repeating the same commands (removed — see CHANGELOG).
+# Keyed by the exact substring as it appears in CONTEXT_HELP[scope]. Spans
+# left out have no single zero-argument action to click: some depend on
+# which list item is highlighted (a bare "Enter" selection), others bundle
+# two distinct keys into one reading unit a single click can't disambiguate
+# ("[ / ] Prev/Next", "Alt+←/→ Back/Forward", ThreadModal's own "←/→
+# Prev/Next"). "Esc Close" is the one exception: THREAD_MODAL_ACTIONS has no
+# ActionSpec for it (Esc is handled ad hoc in ThreadModal.on_key), but
+# ThreadModal.action_close exists precisely so this span can be clickable —
+# it's the mouse user's only way to close the modal now that the button row
+# is gone.
+_CLICK_ACTIONS: dict[str, dict[str, str]] = {
+    "pane:email": {
+        "c Compose": "compose_new",
+        "r Reply": "reply",
+        "a Reply All": "reply_all",
+        "f Forward": "forward",
+        "u Unread": "mark_unread",
+        "Space Expand": "context_space",
+        "l Folder": "focus_label_select",
+        "/ Search": "focus_search",
+    },
+    "pane:events": {
+        "n New Event": "new_event",
+        "/ Search": "focus_search",
+    },
+    "pane:tasks": {
+        "Space Toggle Complete": "context_space",
+        "/ Search": "focus_search",
+    },
+    "tab:tab-calendar": {
+        "n New Event": "new_event",
+    },
+    "tab:tab-browser": {
+        "Alt+H Home": "browser_home",
+    },
+    "tab:tab-news": {
+        "/ Search": "focus_search",
+    },
+    "modal:ThreadModal": {
+        "R Reply": "reply",
+        "A Reply All": "reply_all",
+        "F Forward": "forward",
+        "D Trash": "trash",
+        "S Archive": "archive",
+        "L Labels": "labels",
+        "Esc Close": "close",
+    },
 }
 
 
-def modal_help_markup(scope: str, ascii_mode: bool = False) -> str:
-    """Render a modal's CONTEXT_HELP entry as a Textual-markup string whose
-    actionable "Key Label" spans are clickable [@click=action] links.
+def _click_target(scope: str) -> str:
+    """modal:* scopes' actions live on the active ModalScreen — GoogleTUI
+    also has action_reply/reply_all/forward, but those act on the Email
+    list, so a modal's own "Reply" must route to ``screen.``, not ``app.``,
+    or it'd fire the wrong handler. Every other scope's actions are plain
+    App-level actions.
+    """
+    return "screen" if scope.startswith("modal:") else "app"
+
+
+def apply_click_actions(text: str, scope: str) -> str:
+    """Wrap `scope`'s clickable "Key Label" spans (see _CLICK_ACTIONS) in
+    `text` with a Textual [@click=...] action link. A span not found verbatim
+    in `text` is silently left alone — callers that line-wrap long help text
+    apply this per already-wrapped line, so a span split across a wrap
+    boundary just stays plain text on that occasion rather than erroring.
+    """
+    target = _click_target(scope)
+    for span, action in _CLICK_ACTIONS.get(scope, {}).items():
+        text = text.replace(span, f"[@click={target}.{action}]{span}[/]")
+    return text
+
+
+def help_markup(scope: str, ascii_mode: bool = False) -> str:
+    """Render a CONTEXT_HELP entry as a Textual-markup string whose
+    actionable "Key Label" spans are clickable [@click=...] action links.
 
     Returned string is meant for a ``Static``/``Label`` with markup enabled
     (the default). Spans with no mapped action stay plain text. Applies the
@@ -219,17 +255,7 @@ def modal_help_markup(scope: str, ascii_mode: bool = False) -> str:
     text = CONTEXT_HELP.get(scope, "")
     if ascii_mode:
         text = ascii_safe(text)
-    actions = _THREAD_MODAL_CLICK_ACTIONS if scope == "modal:ThreadModal" else {}
-    for span, action in actions.items():
-        # The mapping keys are the Unicode form; when ascii_mode rewrote the
-        # arrows the alnum spans above are untouched, so a plain replace is
-        # safe (arrows aren't in any clickable span).
-        # ``screen.`` namespace: these actions live on ThreadModal (the
-        # active ModalScreen), NOT on the App — GoogleTUI also has
-        # action_reply/reply_all/forward but they act on the Email list, so
-        # routing to ``app.`` would run the wrong handler.
-        text = text.replace(span, f"[@click=screen.{action}]{span}[/]")
-    return text
+    return apply_click_actions(text, scope)
 
 # Transcribed verbatim from the former module-level HELP_TEXT constant.
 HELP_TEXT = """\

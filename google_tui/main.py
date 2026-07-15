@@ -1119,17 +1119,40 @@ class GoogleTUI(App):
             self._focus_pane(PANE_IDS.index(target_id))
 
     # ---- help bar ----
-    def _context_help_text(self) -> str:
+    def _context_help_scope(self) -> str:
         tab = self._main_tabs().active
-        if tab == "tab-mail":
-            text = bindings.CONTEXT_HELP.get(f"pane:{PANE_IDS[self.active]}", "")
-        else:
-            text = bindings.CONTEXT_HELP.get(f"tab:{tab}", "")
+        return f"pane:{PANE_IDS[self.active]}" if tab == "tab-mail" else f"tab:{tab}"
+
+    def _context_help_text(self) -> str:
+        """Plain (non-clickable) context help text. Used only as the basis
+        for narrow-mode line wrapping (see _narrow_wrap_help) — wrapping
+        must be computed against the VISIBLE width, not one inflated by
+        invisible [@click=...] markup tags."""
+        text = bindings.CONTEXT_HELP.get(self._context_help_scope(), "")
         return bindings.ascii_safe(text) if self.settings.ascii_mode else text
+
+    def _narrow_wrap_help(self) -> str:
+        """Like _narrow_wrap, but keeps the context help row's shortcuts
+        clickable (bindings.help_markup — the same affordance ThreadModal's
+        help bar has) even when narrow. Line breaks are computed from the
+        PLAIN text first, then each already-wrapped line gets its "Key
+        Label" spans turned into action links — doing it in that order
+        means wrap width isn't thrown off by markup tags that render as zero
+        width. A span that happens to straddle a wrap boundary is just left
+        plain on that occasion (rare, and harmless: it already wraps
+        mid-phrase today without clickability).
+        """
+        scope = self._context_help_scope()
+        plain = self._context_help_text()
+        if not self._narrow or not plain:
+            return bindings.help_markup(scope, self.settings.ascii_mode)
+        width = max(20, self.size.width - 2)
+        lines = textwrap.wrap(plain, width=width)
+        return "\n".join(bindings.apply_click_actions(line, scope) for line in lines)
 
     def _update_help_bar(self) -> None:
         try:
-            self.query_one("#help-context").update(self._narrow_wrap(self._context_help_text()))
+            self.query_one("#help-context").update(self._narrow_wrap_help())
         except Exception:
             pass
 
@@ -4309,18 +4332,15 @@ class ThreadModal(ModalScreen):
                 yield Static("Loading…", markup=False)
             # Contextual help bar for this modal, consistent with the app's
             # global help bar — entries are clickable action links (see
-            # bindings.modal_help_markup).
-            yield Static(bindings.modal_help_markup("modal:ThreadModal",
-                                                    self.app.settings.ascii_mode),
+            # bindings.help_markup). This is the ONLY control surface for
+            # reply/reply-all/forward/trash/archive/labels/close now — a
+            # duplicate row of full-size buttons repeating the same commands
+            # used to sit below the message list too, wasting the scarce
+            # vertical space every other pane/tab keeps free by showing
+            # shortcuts as text instead of buttons (see ROADMAP/CHANGELOG).
+            yield Static(bindings.help_markup("modal:ThreadModal",
+                                              self.app.settings.ascii_mode),
                          id="thread-help")
-        with Horizontal(classes="btnrow"):
-            yield Button(bindings.hinted_label("modal:ThreadModal", "reply"), id="r")
-            yield Button(bindings.hinted_label("modal:ThreadModal", "reply_all"), id="ra")
-            yield Button(bindings.hinted_label("modal:ThreadModal", "forward"), id="fwd")
-            yield Button(bindings.hinted_label("modal:ThreadModal", "trash"), id="trash")
-            yield Button(bindings.hinted_label("modal:ThreadModal", "archive"), id="archive")
-            yield Button(bindings.hinted_label("modal:ThreadModal", "labels"), id="labels")
-            yield Button("Close", id="close")
 
     def on_mount(self) -> None:
         # Respect Settings.ascii_mode for this modal's borders: _apply_ascii_mode
@@ -4450,6 +4470,14 @@ class ThreadModal(ModalScreen):
     def action_forward(self) -> None:
         self.dismiss(("compose", self.thread_id, "forward"))
 
+    # Not on any BINDINGS entry — Esc is handled ad hoc in on_key below (it
+    # has to check the search box first). This exists only so "Esc Close" in
+    # the help bar (see bindings._CLICK_ACTIONS) can be a clickable action
+    # link, since the removed button row was mouse users' only other way to
+    # close this modal.
+    def action_close(self) -> None:
+        self.dismiss(None)
+
     # ---- Left/Right: prev/next message in the current folder, in place ----
     def action_prev_message(self) -> None:
         self._navigate(-1)
@@ -4563,17 +4591,6 @@ class ThreadModal(ModalScreen):
         self.app.notify(msg)
         if close:
             self.dismiss("refresh")
-
-    def on_button_pressed(self, e: Button.Pressed) -> None:
-        handlers = {
-            "r": self.action_reply, "ra": self.action_reply_all,
-            "fwd": self.action_forward, "trash": self.action_trash,
-            "archive": self.action_archive, "labels": self.action_labels,
-        }
-        if e.button.id == "close":
-            self.dismiss(None)
-        elif e.button.id in handlers:
-            handlers[e.button.id]()
 
     def on_key(self, e) -> None:
         if e.key == "escape":
