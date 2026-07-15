@@ -2092,12 +2092,38 @@ class GoogleTUI(App):
         self.call_after_refresh(self._browser_navigate, exc.to_url, push_history=push_history)
 
     def on_document_view_link_activated(self, event: DocumentView.LinkActivated) -> None:
-        if self._main_tabs().active != "tab-browser":
-            return
         if event.link.url.startswith("mailto:"):
             self.notify("mailto: links aren't handled by the Browser tab yet", severity="warning")
             return
+        active_screen = self.screen
+        if isinstance(active_screen, (ThreadModal, NewsEntryModal)):
+            # These are reading modals stacked over whatever tab was active
+            # when opened (Mail for ThreadModal, News for NewsEntryModal) --
+            # there's no in-place "navigate" for a modal like there is for
+            # the Browser tab's own page. Least-surprising choice, mirroring
+            # "open link in browser" from a mail/feed reader: close the
+            # modal, switch to the Browser tab, and load the link there.
+            # ThreadModal's per-message [N] numbering is independent per
+            # message (see its docstring) -- this only ever sees the single
+            # link actually activated in the DocumentView it came from, so
+            # that constraint is naturally respected, not something this
+            # handler needs to enforce itself.
+            url = event.link.url
+            active_screen.dismiss(None)
+            # dismiss() pops the screen stack synchronously but the actual
+            # DOM teardown/mount is deferred (see AGENTS.md's push_screen
+            # callback-timing NOTE) -- defer one step so the tab switch and
+            # _browser_navigate's query_one calls land cleanly on the base
+            # screen, same pattern _browser_resume_gemini_input uses above.
+            self.call_after_refresh(self._open_link_in_browser, url)
+            return
+        if self._main_tabs().active != "tab-browser":
+            return
         self._browser_navigate(event.link.url, push_history=True)
+
+    def _open_link_in_browser(self, url: str) -> None:
+        self._goto_tab("tab-browser")
+        self._browser_navigate(url, push_history=True)
 
     # ---- calendar tab ----
     def action_cal_prev(self) -> None:
@@ -3324,11 +3350,15 @@ class ThreadModal(ModalScreen):
     stacked in `#thread-messages` (a `VerticalScroll`), oldest-first —
     message order is unchanged from before (see AGENTS.md). Deliberately NOT
     a single merged `Document`: that would require renumbering each
-    message's `[N]` link markers to stay unique across the whole thread,
-    which `on_document_view_link_activated` doesn't even act on today while
-    a non-Browser tab (e.g. this modal, opened over Mail) is active — same
-    no-op as `NewsEntryModal`'s links — so that complexity isn't earning
-    its keep yet. A v1 simplification, not an oversight.
+    message's `[N]` link markers to stay unique across the whole thread.
+    `on_document_view_link_activated` now DOES act on links pressed here
+    (closes this modal, switches to the Browser tab, and loads the link —
+    see that handler in `GoogleTUI`), but strictly per-message: each
+    message's `DocumentView` keeps its own independently-numbered `[N]`s,
+    and only the one link actually activated (in whichever message's
+    `DocumentView` had focus) is ever resolved. Don't "fix" this by merging
+    to one `Document`/renumbering across messages — that's an unrelated,
+    unrequested change to the numbering scheme, not a bug.
     """
 
     # ThreadModal is a ModalScreen, which truncates Textual's binding-chain

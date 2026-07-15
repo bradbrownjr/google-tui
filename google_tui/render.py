@@ -973,6 +973,15 @@ def parse_feed_entry(title: str, html_or_text: str, base_url: str = "") -> Docum
 
 _INLINE_LINK_RE = re.compile(r"\[\d+\]")
 
+# Distinct color+underline for link text/markers, layered ON TOP of the
+# existing "dim" marker styling below rather than replacing it — so the
+# fallback path (a marker we can't confidently match back to its anchor
+# text) still looks the same as before this was added, and only the
+# positively-matched spans get the stronger, more "clickable-looking"
+# style. Picked to read as a classic terminal hyperlink (color + underline)
+# and to stay visually distinct from #doc-title's bold "$accent" styling.
+_LINK_STYLE = "underline bright_cyan"
+
 
 class DocumentView(VerticalScroll):
     """Renders any ``Document``; owns its own scrolling (no manual
@@ -1052,7 +1061,10 @@ class DocumentView(VerticalScroll):
             nav_widget.update("")
             nav_widget.remove_class("-visible")
 
-        body_widget.update(Group(*self._render_blocks(document.blocks)) if document.blocks else "")
+        content_links = [l for l in document.links if l.kind == "content"]
+        body_widget.update(
+            Group(*self._render_blocks(document.blocks, content_links)) if document.blocks else ""
+        )
 
     # -- rendering helpers --------------------------------------------------
 
@@ -1060,18 +1072,27 @@ class DocumentView(VerticalScroll):
         text = Text("  ".join(f"[{l.number}] {l.text}" for l in nav_links))
         for m in _INLINE_LINK_RE.finditer(text.plain):
             text.stylize("dim", m.start(), m.end())
+        # Nav links are formatted "[N] text" (marker BEFORE the anchor text
+        # here, unlike inline content links below) — style the whole
+        # "[N] text" span so the link's label reads as a link, not just its
+        # bracketed number.
+        for l in nav_links:
+            span = f"[{l.number}] {l.text}"
+            idx = text.plain.find(span)
+            if idx != -1:
+                text.stylize(_LINK_STYLE, idx, idx + len(span))
         return text
 
-    def _render_blocks(self, blocks: list[Block]) -> list[Text]:
+    def _render_blocks(self, blocks: list[Block], content_links: list[Link]) -> list[Text]:
         rendered: list[Text] = []
         for block in blocks:
-            rendered.append(self._render_block(block))
+            rendered.append(self._render_block(block, content_links))
             rendered.append(Text(""))
         if rendered:
             rendered.pop()  # drop the trailing spacer
         return rendered
 
-    def _render_block(self, block: Block) -> Text:
+    def _render_block(self, block: Block, content_links: list[Link]) -> Text:
         if block.kind == "preformatted":
             plain = "\n".join("    " + line for line in block.text.split("\n"))
             text = Text(plain, no_wrap=True)
@@ -1081,14 +1102,14 @@ class DocumentView(VerticalScroll):
             plain = "#" * max(block.level, 1) + " " + block.text
             text = Text(plain)
             text.stylize("bold")
-            self._stylize_links(text)
+            self._stylize_links(text, content_links)
             return text
 
         if block.kind == "list_item":
             marker = f"{max(block.level, 1)}." if block.ordered else "-"
             plain = f"  {marker} {block.text}"
             text = Text(plain)
-            self._stylize_links(text)
+            self._stylize_links(text, content_links)
             return text
 
         if block.kind == "quote":
@@ -1100,12 +1121,33 @@ class DocumentView(VerticalScroll):
         # "paragraph" and "menu_item" both render as plain styled text with
         # inline [N] markers dimmed.
         text = Text(block.text)
-        self._stylize_links(text)
+        if block.link is not None:
+            # Gopher/Gemini menu items (see parse_gopher_menu/parse_gemtext):
+            # the WHOLE block is the link -- block.text is already exactly
+            # "[N] label", bracket first, unlike the "label [N]" ordering
+            # _stylize_links' substring search looks for below. No need to
+            # search for a span here: style the entire line as a link.
+            text.stylize(_LINK_STYLE)
+        else:
+            self._stylize_links(text, content_links)
         return text
 
-    def _stylize_links(self, text: Text) -> None:
+    def _stylize_links(self, text: Text, content_links: list[Link]) -> None:
         for m in _INLINE_LINK_RE.finditer(text.plain):
             text.stylize("dim", m.start(), m.end())
+        # Inline content links are baked into block text as "text [N]" (see
+        # _html_to_blocks' _replace_link) — find that exact span per link and
+        # layer the stronger link style over it so the anchor text itself
+        # (not just the bracketed number) reads as a link. A block only ever
+        # contains a handful of a document's links, so scanning the whole
+        # list per block is cheap; a link whose formatted span isn't found
+        # (block text was reshaped somewhere unexpected) just keeps the
+        # plain "dim" marker from the pass above instead of erroring.
+        for l in content_links:
+            span = f"{l.text} [{l.number}]"
+            idx = text.plain.find(span)
+            if idx != -1:
+                text.stylize(_LINK_STYLE, idx, idx + len(span))
 
     # -- link activation ------------------------------------------------
 

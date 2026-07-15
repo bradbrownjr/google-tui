@@ -3,6 +3,58 @@
 Format: keep newest at top. One entry per meaningful change. Reference files
 touched and any breaking notes.
 
+## [2026-07-15] — Numbered inline links now work in ThreadModal/NewsEntryModal, and look like links
+
+### Added
+`render.py`'s `[N]` link numbering (nav + inline content links) already
+rendered correctly everywhere `DocumentView` is used, but
+`on_document_view_link_activated` (`main.py`) only ever acted on it while
+the Browser tab itself was active — pressing a link's number inside
+`ThreadModal` or `NewsEntryModal` silently did nothing. Both now work:
+activating a link in either modal closes the modal, switches to the
+Browser tab, and loads the URL there — the same "open link in browser"
+behavior a mail/feed reader gives you, since neither modal has an
+in-place page to navigate. Implementation note: `ModalScreen.dismiss()`
+pops the screen stack synchronously but the DOM teardown is deferred, so
+the tab-switch + navigate is done one `call_after_refresh` step later,
+the same pattern already used for `_browser_resume_gemini_input`.
+`ThreadModal`'s existing "no cross-message link renumbering" design
+(each message keeps its own independent `[N]`s) is unaffected — this
+only ever resolves the single link actually activated in whichever
+message's `DocumentView` had focus.
+
+Also gave link text an actual visual style: `_stylize_links` used to only
+dim the bracketed `[N]` marker, leaving the anchor text itself looking
+like plain body text. It now additionally locates each link's full
+"anchor text `[N]`" (or, for the nav bar, "`[N]` anchor text") span and
+layers a new `underline bright_cyan` style over it, so the whole link —
+not just its number — reads as a link. Gopher/Gemini menu items (where
+the entire block *is* the link, per `Block.link`) get the same style
+applied to the whole line directly rather than via substring search. The
+old "dim" pass on the bracket is left in place underneath as a fallback,
+so a link whose span can't be positively matched (block text reshaped
+somewhere unexpected) degrades to exactly the old look instead of erroring.
+
+### Files
+`google_tui/render.py` (`_LINK_STYLE`, `_stylize_links`/`_render_block`/
+`_render_blocks`/`_render_nav` now thread `document.links` through so
+they can style anchor text, not just the marker), `google_tui/main.py`
+(`on_document_view_link_activated`, new `_open_link_in_browser` helper,
+`ThreadModal` docstring updated to describe the new behavior instead of
+the old no-op).
+
+### Verified
+No automated test suite exists yet (ROADMAP P4). Verified with three
+throwaway `run_test`-pilot scripts (fabricated data, every `gauth`/
+`fetchers` call mocked, deleted after use — not committed): (1) a
+fabricated thread with an HTML link, opened via the normal Email-pane
+flow, `1`+Enter on the message's `DocumentView` — asserted the app
+switched to the Browser tab and loaded the URL; (2) same for a
+fabricated feed entry pushed straight into `NewsEntryModal`; (3) a
+regression check that the Browser tab's own pre-existing link activation
+(navigate to a page, `1`+Enter on a link in `#browser-doc`) still works
+exactly as before.
+
 ## [2026-07-15] — Live search within the Email and Tasks panes
 
 ### Added

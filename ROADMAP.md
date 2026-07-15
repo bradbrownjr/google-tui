@@ -20,15 +20,6 @@ just checking it off here, so ROADMAP.md only ever shows what's still open.
   repro + fix. Separately, Page Up/Down/End inside `DocumentView` are reported
   as very slow on large pages — profile the scroll/render path.
   *(Suggested model: Sonnet.)*
-- [ ] **Numbered inline links: wire up activation outside the Browser tab, and
-  color link text.** `render.py`'s link numbering (ported from `bpq-apps/apps/
-  htmlview.py` — nav links hidden until requested, inline `[N]` content links)
-  already renders correctly in email bodies and elsewhere via `DocumentView`,
-  but `on_document_view_link_activated` only acts on it in the Browser tab —
-  `ThreadModal` and `NewsEntryModal` are explicit no-ops today (see
-  `ThreadModal`'s docstring, `main.py:3236-3240`). Wire up number-key activation
-  in both, and give link text its own color/style in `render.py` so links are
-  visually distinct from body text. *(Suggested model: Sonnet.)*
 - [ ] **Email viewer (`ThreadModal`): help bar and remaining actions.**
   `R`/`A`/`F` key shortcuts (matching the Reply/Reply All/Forward buttons,
   which now show their shortcut in-label) now work — done in the
