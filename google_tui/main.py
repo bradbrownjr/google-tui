@@ -1216,6 +1216,7 @@ class GoogleTUI(App):
                                 value=self.settings.default_label_id
                                 if self.settings.default_label_id in ("ALL", "INBOX") else "INBOX",
                                 allow_blank=False, id="email-label-select",
+                                classes="hidden",
                             )
                             with Horizontal(id="email-bar", classes="btnrow hidden"):
                                 yield Input(placeholder="Search email (subject/from/snippet)… (/)",
@@ -1980,6 +1981,11 @@ class GoogleTUI(App):
                 event.stop()
                 event.prevent_default()
                 return
+            if isinstance(focused, Select) and focused.id == "email-label-select":
+                self._hide_label_select()
+                event.stop()
+                event.prevent_default()
+                return
             self._pending_escape_time = event.time
             return
         pending = self._pending_escape_time
@@ -2128,8 +2134,24 @@ class GoogleTUI(App):
             return
         try:
             sel = self.query_one("#email-label-select", Select)
+            sel.remove_class("hidden")
             sel.focus()
             sel.expanded = True
+        except Exception:
+            pass
+
+    def _hide_label_select(self) -> None:
+        """Esc counterpart to action_focus_label_select: collapses and
+        re-hides the labels Select, then hands focus back to #email-list —
+        same hidden-until-summoned pattern as _hide_pane_search."""
+        try:
+            sel = self.query_one("#email-label-select", Select)
+        except Exception:
+            return
+        sel.expanded = False
+        sel.add_class("hidden")
+        try:
+            self.query_one("#email-list").focus()
         except Exception:
             pass
 

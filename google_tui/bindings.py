@@ -60,7 +60,7 @@ GLOBAL_ACTIONS: list[ActionSpec] = [
     ActionSpec("forward", "f", "Forward"),
     ActionSpec("compose_new", "c", "Compose"),
     ActionSpec("mark_unread", "u", "Unread"),
-    ActionSpec("focus_label_select", "l", "Folder"),
+    ActionSpec("focus_label_select", "l", "Labels"),
     ActionSpec("focus_search", "/", "Search"),
     ActionSpec("context_space", "space", "Context"),
     ActionSpec("browser_home", "alt+h", "Home"),
@@ -142,7 +142,7 @@ HELP_GLOBAL_TEXT = (
 # Keyed "pane:<id>" for Mail-tab panes, "tab:<id>" for every other tab —
 # matches GoogleTUI._context_help_text's former if/elif exactly.
 CONTEXT_HELP: dict[str, str] = {
-    "pane:email": "Enter Open   c Compose   r Reply   a Reply All   f Forward   u Unread   Space Expand   l Folder   / Search",
+    "pane:email": "Enter Open   c Compose   r Reply   a Reply All   f Forward   u Unread   Space Expand   l Labels   / Search",
     "pane:events": "Enter/Space Detail   n New Event   / Search",
     "pane:tasks": "Space Toggle Complete   Enter Detail   / Search",
     "pane:hermes": "Enter Ask",
@@ -188,7 +188,7 @@ _CLICK_ACTIONS: dict[str, dict[str, str]] = {
         "f Forward": "forward",
         "u Unread": "mark_unread",
         "Space Expand": "context_space",
-        "l Folder": "focus_label_select",
+        "l Labels": "focus_label_select",
         "/ Search": "focus_search",
     },
     "pane:events": {
@@ -279,8 +279,9 @@ GLOBAL
 
 MAIL TAB
   Email pane:   Enter open thread, Space expand/collapse (shows snippet),
-                l open folder picker, c Compose new, r Reply, a Reply All,
-                f Forward, / search (live filter over subject/from/snippet)
+                l show labels filter (Esc hides), c Compose new, r Reply,
+                a Reply All, f Forward, / search (live filter over
+                subject/from/snippet)
   Events pane:  Enter/Space open event detail, n new event, / search (live
                 filter over summary/description)
   Tasks pane:   Space toggle complete, Enter open detail, / search (live

@@ -3,6 +3,19 @@
 Format: keep newest at top. One entry per meaningful change. Reference files
 touched and any breaking notes.
 
+## [2026-07-15] — Email pane: hide the labels filter until `l` is pressed
+
+`#email-label-select` (the All Mail/Inbox `Select`) was always visible above
+the email list. It's now `hidden`-by-default like `#email-bar`'s search Input,
+following the same summon-on-demand pattern as `_show_pane_search`/
+`_hide_pane_search` (`main.py`). `l` (`action_focus_label_select`,
+`main.py:2126`) reveals it, focuses it, and opens the dropdown; Esc
+(`_hide_label_select`, `main.py`, wired in `on_key`) collapses the dropdown,
+re-hides the `Select`, and refocuses `#email-list`. Renamed the pane:email
+shortcut hint from "l Folder" to "l Labels" (`bindings.py`: `GLOBAL_ACTIONS`,
+`CONTEXT_HELP`, `_CLICK_ACTIONS`, and the full help-modal text) to match what
+the field actually contains.
+
 ## [2026-07-15] — Calendar tab: `/` jump-to-next-match
 
 Closes the last remaining ROADMAP P2 item, "Calendar tab: `/` jump-to-next-match"
