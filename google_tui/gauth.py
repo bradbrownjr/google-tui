@@ -491,6 +491,34 @@ def set_task_status(svc, list_id: str, task_id: str, completed: bool) -> dict:
     return t.tasks().update(tasklist=list_id, task=task_id, body=cur).execute()
 
 
+def create_task(svc, tasklist_id: str, title: str, parent: str | None = None,
+                 notes: str | None = None) -> dict:
+    """Create a task, or a subtask if `parent` is given.
+
+    Google's Tasks API models a subtask as an ordinary task whose `parent`
+    field points at another task's id in the SAME tasklist — `tasks().list`
+    already returns that `parent` field on every item (see `list_tasks`
+    above), and `tasks().insert` accepts `parent` as a query parameter that
+    makes the newly-created task a child of it. So one helper covers both
+    "add a top-level task" (parent=None) and "add a subtask" (parent=<id>) —
+    there is no separate subtask-creation endpoint to call.
+    """
+    body: dict = {"title": title}
+    if notes:
+        body["notes"] = notes
+    kwargs: dict = {"tasklist": tasklist_id, "body": body}
+    if parent:
+        kwargs["parent"] = parent
+    return svc["tasks"].tasks().insert(**kwargs).execute()
+
+
+def delete_task(svc, tasklist_id: str, task_id: str) -> None:
+    """Delete a task OR a subtask — both are just `tasks().delete` by id;
+    Google cascades the deletion to any of its own children automatically.
+    """
+    svc["tasks"].tasks().delete(tasklist=tasklist_id, task=task_id).execute()
+
+
 # ----------------------------------------------------------------------------
 # Drive
 # ----------------------------------------------------------------------------

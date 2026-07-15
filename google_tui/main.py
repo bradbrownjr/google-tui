@@ -550,6 +550,20 @@ def _append_email_items(email_list, threads, show_sender_address: bool = False) 
     )
 
 
+def _child_tasks(task: dict, all_tasks: list[dict]) -> list[dict]:
+    """Subtasks of `task` (P2, 2026-07-15). Google Tasks models a subtask as
+    an ordinary task whose `parent` field points at another task's id in the
+    SAME tasklist — `gauth.list_tasks` already returns that field on every
+    item (it's a plain flat list, tagged with `_list` per item), so finding
+    a task's children needs no extra API call: just filter the already-
+    fetched list by `_list` + `parent`. `all_tasks` is normally the app's
+    `self._tasks_cache` (every tasklist combined).
+    """
+    lid = task.get("_list")
+    tid = task.get("id")
+    return [t for t in all_tasks if t.get("_list") == lid and t.get("parent") == tid]
+
+
 def _append_task_items(task_list, tasks) -> None:
     # Same extend()-once rationale as _append_email_items above.
     task_list.extend(
@@ -2254,7 +2268,8 @@ class GoogleTUI(App):
         elif cid.startswith("k-"):
             t = self._selected_task()
             if t:
-                self.push_screen(TaskModal(t))
+                self.push_screen(TaskModal(self.svc, t, getattr(self, "_tasks_cache", [])),
+                                  self._on_task_modal_result)
         elif cid.startswith("d-") or cid == "d-up":
             self._drive_open_selected()
         elif cid.startswith("n-"):
@@ -2287,6 +2302,14 @@ class GoogleTUI(App):
 
     def _on_compose_result(self, result) -> None:
         if result == "sent":
+            self.run_worker(self._refresh_all_thread, thread=True, exclusive=True)
+
+    def _on_task_modal_result(self, mutated) -> None:
+        # TaskModal (P2, 2026-07-15 subtask add/toggle/delete) dismisses
+        # with whether it mutated anything; only then is it safe to touch
+        # #task-list — see TaskModal's class docstring for the NoMatches
+        # this avoids by NOT refreshing while the modal was still on top.
+        if mutated:
             self.run_worker(self._refresh_all_thread, thread=True, exclusive=True)
 
     # ---- hermes ask / browser address bar (shared Input.Submitted) ----
@@ -4261,27 +4284,235 @@ class EventModal(ModalScreen):
 
 
 class TaskModal(ModalScreen):
-    def __init__(self, task: dict):
+    """Task detail + subtasks (P2, 2026-07-15 — was read-only-nothing before:
+    the old version didn't show subtasks at all, despite ROADMAP.md's stale
+    claim that it did; see CHANGELOG).
+
+    `all_tasks` is the app's full `self._tasks_cache` (every tasklist
+    combined) — subtasks are just plain tasks tagged with a `parent` field
+    (see `_child_tasks`), so no extra gauth call is needed to find them at
+    open time; only a mutation (add/toggle/delete) round-trips to Google, via
+    `self.run_worker(..., thread=True)` same as every other gauth call in
+    this app (AGENTS.md §2). Every mutation both re-renders THIS modal's own
+    subtask list right away AND sets `self._mutated = True`; the Tasks
+    pane's flat list (which shows subtasks as ordinary rows) is refreshed
+    only once this modal actually DISMISSES, via `dismiss(self._mutated)` +
+    the pusher's `_on_task_modal_result` callback calling
+    `self.app._refresh_all_thread()` — deliberately NOT while this modal is
+    still on top: `_refresh_all_thread` ends up in `_apply_mail_data`, which
+    does `self.query_one("#task-list")` etc, and `App.query_one` resolves
+    against `self.screen` (the CURRENTLY ACTIVE screen — see AGENTS.md's
+    NOTE on query_one and screens), which would be THIS modal, not the base
+    screen `#task-list` actually lives on, and raises `NoMatches`. Confirmed
+    empirically while building this feature (see CHANGELOG). Mirrors
+    `_on_compose_result`'s existing `if result == "sent": run_worker(...)`
+    pattern for the exact same reason.
+    """
+
+    def __init__(self, svc, task: dict, all_tasks: list[dict] | None = None):
         super().__init__()
-        self.task = task
+        self.svc = svc
+        self.task_data = task
+        self.subtasks = _child_tasks(task, all_tasks or [])
+        self._mutated = False
 
     def compose(self) -> ComposeResult:
         with Container(id="tk-box", classes="pane"):
             yield Label("TASK DETAIL", classes="pane-title-text")
             yield Static(id="tk-detail")
-            yield Button("Close", id="close")
+            yield Label("Subtasks — Space: toggle complete, Delete: remove",
+                        classes="muted")
+            yield ListView(id="tk-subtask-list")
+            with Horizontal(classes="btnrow"):
+                yield Input(placeholder="New subtask title…", id="tk-subtask-input")
+                yield Button("Add Subtask", id="tk-add-subtask")
+            with Horizontal(classes="btnrow"):
+                yield Button("Delete Task", id="tk-delete-task")
+                yield Button("Close", id="close")
 
-    def on_mount(self) -> None:
-        t = self.task
+    async def on_mount(self) -> None:
+        t = self.task_data
         det = (f"Title: {t.get('title','')}\nStatus: {t.get('status','')}\n"
                f"Due:   {t.get('due','')}\n\nNotes:\n{t.get('notes','')}")
         self.query_one("#tk-detail").update(det)
+        await self._render_subtasks()
 
-    def on_button_pressed(self, e):
-        self.dismiss(None)
-    def on_key(self, e):
+    async def _render_subtasks(self) -> None:
+        # `await`ed clear(), not fire-and-forget — ListView.clear() returns
+        # an AwaitRemove that is NOT synchronous (see AGENTS.md's
+        # ListView.clear() NOTE); this method can run twice in quick
+        # succession (e.g. on_mount, then a mutation's reload), and a bare
+        # `.clear()` + immediate `.extend()` intermittently raised
+        # DuplicateIds because the second populate's items (same ids) were
+        # inserted before the first populate's identically-IDed items had
+        # actually finished being removed. Confirmed via the scratch test in
+        # this change's verification pass.
+        lst = self.query_one("#tk-subtask-list", ListView)
+        await lst.clear()
+        lst.extend(
+            ListItem(
+                Label(f"{'[x]' if s.get('status') == 'completed' else '[ ]'} "
+                      f"{s.get('title','')[:50]}"),
+                id=_mk_id("sk", s["id"]))
+            for s in self.subtasks
+        )
+
+    def _highlighted_subtask(self) -> dict | None:
+        lst = self.query_one("#tk-subtask-list", ListView)
+        if lst.highlighted_child is None:
+            return None
+        cid = lst.highlighted_child.id or ""
+        if not cid.startswith("sk-"):
+            return None
+        sid = cid[3:]
+        for s in self.subtasks:
+            if s.get("id") == sid:
+                return s
+        return None
+
+    # ---- input ----
+    def on_button_pressed(self, e: Button.Pressed) -> None:
+        if e.button.id == "close":
+            self.dismiss(self._mutated)
+        elif e.button.id == "tk-add-subtask":
+            self._add_subtask()
+        elif e.button.id == "tk-delete-task":
+            self._confirm_delete_task()
+
+    def on_input_submitted(self, e: Input.Submitted) -> None:
+        if e.input.id == "tk-subtask-input":
+            self._add_subtask()
+
+    def on_key(self, e) -> None:
         if e.key == "escape":
-            self.dismiss(None)
+            self.dismiss(self._mutated)
+            return
+        # Space/Delete only act on the subtask list, not while the "new
+        # subtask" Input has focus (Space there must type a literal space).
+        focused_id = self.focused.id if self.focused is not None else None
+        if focused_id == "tk-subtask-input":
+            return
+        if e.key == "space":
+            self._toggle_highlighted_subtask()
+        elif e.key == "delete":
+            self._delete_highlighted_subtask()
+
+    # ---- add ----
+    def _add_subtask(self) -> None:
+        if not self.app._require_online():
+            return
+        inp = self.query_one("#tk-subtask-input", Input)
+        title = inp.value.strip()
+        if not title:
+            return
+        inp.value = ""
+        self.run_worker(lambda: self._add_subtask_thread(title),
+                         thread=True, exclusive=True, group="task-subtask")
+
+    def _add_subtask_thread(self, title: str) -> None:
+        try:
+            gauth.create_task(self.svc, self.task_data["_list"], title, parent=self.task_data["id"])
+        except Exception as e:
+            self.app.call_from_thread(self.notify, f"Add subtask failed: {e}", severity="error")
+            return
+        self._reload_subtasks()
+
+    # ---- toggle complete ----
+    def _toggle_highlighted_subtask(self) -> None:
+        if not self.app._require_online():
+            return
+        s = self._highlighted_subtask()
+        if not s:
+            return
+        done = s.get("status") != "completed"
+        self.run_worker(lambda: self._toggle_subtask_thread(s["id"], done),
+                         thread=True, exclusive=True, group="task-subtask")
+
+    def _toggle_subtask_thread(self, subtask_id: str, done: bool) -> None:
+        try:
+            # Same call the Tasks pane's Space-to-toggle uses
+            # (action_toggle_task -> gauth.set_task_status) — a subtask is
+            # still just `tasks().patch` by id under the hood, so no new
+            # helper is needed here.
+            gauth.set_task_status(self.svc, self.task_data["_list"], subtask_id, done)
+        except Exception as e:
+            self.app.call_from_thread(self.notify, f"Subtask update failed: {e}", severity="error")
+            return
+        self._reload_subtasks()
+
+    # ---- delete ----
+    def _delete_highlighted_subtask(self) -> None:
+        if not self.app._require_online():
+            return
+        s = self._highlighted_subtask()
+        if not s:
+            return
+        # No confirm dialog for a subtask delete — consistent with this
+        # app's existing no-confirm precedent (AGENTS.md §7) and low stakes
+        # (one small item, trivially re-added). See _confirm_delete_task
+        # below for why the top-level task DOES get a confirm.
+        self.run_worker(lambda: self._delete_subtask_thread(s["id"]),
+                         thread=True, exclusive=True, group="task-subtask")
+
+    def _delete_subtask_thread(self, subtask_id: str) -> None:
+        try:
+            gauth.delete_task(self.svc, self.task_data["_list"], subtask_id)
+        except Exception as e:
+            self.app.call_from_thread(self.notify, f"Delete subtask failed: {e}", severity="error")
+            return
+        self._reload_subtasks()
+
+    def _confirm_delete_task(self) -> None:
+        if not self.app._require_online():
+            return
+        # Unlike a subtask, deleting the TOP-LEVEL task also cascades to
+        # every subtask under it server-side and closes this whole modal —
+        # a lightweight confirm here is worth the one extra keypress even
+        # though nothing else in this app confirms before a mutation.
+        n = len(self.subtasks)
+        msg = "Delete this task"
+        msg += f" and its {n} subtask{'s' if n != 1 else ''}?" if n else "?"
+        self.app.push_screen(ConfirmModal(msg), self._on_delete_task_confirm)
+
+    def _on_delete_task_confirm(self, confirmed: bool | None) -> None:
+        if not confirmed:
+            return
+        self.call_after_refresh(self._start_delete_task)
+
+    def _start_delete_task(self) -> None:
+        self.run_worker(self._delete_task_thread, thread=True, exclusive=True, group="task-subtask")
+
+    def _delete_task_thread(self) -> None:
+        try:
+            gauth.delete_task(self.svc, self.task_data["_list"], self.task_data["id"])
+        except Exception as e:
+            self.app.call_from_thread(self.notify, f"Delete task failed: {e}", severity="error")
+            return
+        self._mutated = True
+        # dismiss(True) here — NOT a direct self.app._refresh_all_thread()
+        # call — is what lets the pusher's _on_task_modal_result do the
+        # Tasks-pane refresh only after this modal is actually gone; see the
+        # class docstring for why refreshing while still on top raises
+        # NoMatches.
+        self.app.call_from_thread(self.dismiss, True)
+
+    # ---- shared reload ----
+    def _reload_subtasks(self) -> None:
+        # Runs on the worker thread the caller already started — re-fetch
+        # this tasklist so self.subtasks reflects the mutation and hand the
+        # render back to the main thread. Does NOT touch the app's Tasks
+        # pane itself (see class docstring); that happens once this modal
+        # dismisses, via self._mutated + _on_task_modal_result.
+        try:
+            fresh = gauth.list_tasks(self.svc, self.task_data["_list"])
+        except Exception as e:
+            self.app.call_from_thread(self.notify, f"Refresh failed: {e}", severity="error")
+            return
+        for t in fresh:
+            t["_list"] = self.task_data["_list"]
+        self.subtasks = _child_tasks(self.task_data, fresh)
+        self._mutated = True
+        self.app.call_from_thread(self._render_subtasks)
 
 
 class ContactModal(ModalScreen):

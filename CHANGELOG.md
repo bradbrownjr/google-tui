@@ -3,6 +3,98 @@
 Format: keep newest at top. One entry per meaningful change. Reference files
 touched and any breaking notes.
 
+## [2026-07-15] — Task subtasks: add/toggle/delete in TaskModal
+
+### Added
+Closes the ROADMAP P2 item "Task subtasks + add/delete." `TaskModal`
+(ROADMAP called it `TaskDetailModal` — that name doesn't exist; the real
+class is `TaskModal` in `main.py`) previously showed only title/status/due/
+notes and had NO subtask UI at all — the ROADMAP's "shows subtasks
+read-only" claim was stale/inaccurate; subtasks weren't shown anywhere in
+the modal.
+
+**API shape, verified before writing helpers (diverges from the literal
+ROADMAP wording):**
+- `gauth.create_task(svc, tasklist_id, title, parent=None, notes=None)` —
+  Google models a subtask as an ordinary task whose `parent` field points at
+  another task's id in the same tasklist; `tasks().insert` accepts `parent`
+  as a query param that makes the new task a child of it. One helper covers
+  both "add a top-level task" and "add a subtask" — no separate subtask
+  endpoint exists.
+- `gauth.delete_task(svc, tasklist_id, task_id)` — `tasks().delete`; works
+  for a subtask OR a parent (Google cascades to children server-side).
+- **No `patch_subtask` was added.** Toggling a subtask's completion is
+  exactly `gauth.set_task_status` — already used by the Tasks pane's
+  Space-to-toggle — since a subtask is still just `tasks().patch` by id
+  under the hood. A separate wrapper would have been a no-op pass-through.
+- `list_tasks` already returns every task flat, tagged with `_list` and
+  (when present) `parent` — finding a task's children needs no extra API
+  call, just a client-side filter (new module-level `_child_tasks` helper
+  in `main.py`). Google's `tasks().move()` (real re-parenting/reordering
+  endpoint) was considered and NOT used — nothing here needs to convert an
+  existing task into another task's child, only create new subtasks and
+  delete existing ones.
+
+**`main.py`**: `TaskModal` gained a subtask `ListView` (Space toggles
+complete, Delete removes, both mirroring the Tasks pane's own bindings —
+necessary because Textual truncates the App-level binding walk at a
+`ModalScreen` boundary, same reason `ThreadModal` needed its own `r`/`a`/`f`
+bindings), an `Input` + "Add Subtask" button (same small-form pattern as
+Settings' feed-add row), and a "Delete Task" button. Every gauth call runs
+via `self.run_worker(..., thread=True)` per AGENTS.md §2.
+
+**Confirm-before-delete: subtask no, top-level task yes.** A subtask delete
+has no confirm dialog — consistent with this app's existing no-confirm
+precedent (AGENTS.md §7) and low stakes (one small item, trivially
+re-added). Deleting the TOP-LEVEL task reuses the existing `ConfirmModal`
+first, because it also cascades to every subtask under it server-side and
+closes the whole modal — judged worth the one extra keypress even though
+nothing else in this app confirms before a mutation.
+
+**Refresh-after-mutation had to be modal-aware.** The natural approach —
+call `self.app._refresh_all_thread()` (the same call
+`action_toggle_task`'s existing toggle makes) right after each mutation —
+raised `NoMatches("#task-list")` intermittently: `_refresh_all_thread` ends
+up doing `self.query_one("#task-list")`, and `App.query_one` resolves
+against `self.screen`, the CURRENTLY ACTIVE screen (AGENTS.md's existing
+NOTE on this), which is `TaskModal` while it's still open, not the base
+screen `#task-list` lives on. Fixed by tracking `self._mutated: bool` on
+the modal, `dismiss(self._mutated)` on close/Escape/after a task delete,
+and a new `_on_task_modal_result` callback (mirrors the existing
+`_on_compose_result`'s `if result == "sent": run_worker(...)` shape) that
+only runs `_refresh_all_thread()` once the modal has actually dismissed.
+
+**Bonus fix, found while touching this code: `TaskModal` could not open at
+all.** `Screen.task` is a read-only property in this Textual version (the
+screen's own asyncio `Task`); the old `TaskModal.__init__`'s `self.task =
+task` therefore raised `AttributeError: property 'task' of 'TaskModal'
+object has no setter` on EVERY construction — confirmed by instantiating
+the pre-change class directly. This means pressing `Enter` on any task in
+the Tasks pane has been silently crashing (worker exception, caught by
+`_handle_exception`, logged, no visible detail popup) since this modal was
+written, independent of subtasks. Fixed by renaming the attribute to
+`self.task_data` throughout the class.
+
+### Verified
+Scratch pilot tests (`run_test`, `size=(140, 44)`), every `gauth` call
+mocked including `create_task`/`delete_task` (deleted after use, per
+AGENTS.md §6 — no `tests/` convention yet): opening `TaskModal` on a
+fabricated task with fabricated subtasks shows both; pressing `Space` on a
+highlighted subtask calls `gauth.set_task_status` with the right
+`(tasklist_id, task_id, done)`; typing a title and pressing `Enter` calls
+`gauth.create_task(..., parent=<parent task id>)` and the modal's list grows
+to include it; pressing `Delete` on a highlighted subtask calls
+`gauth.delete_task` and the row disappears. Also caught and fixed the
+`ListView.clear()` AwaitRemove race from AGENTS.md's existing NOTE
+(`_render_subtasks` now `await`s `clear()` instead of firing it and
+`extend()`-ing immediately) — reproduced as an intermittent `DuplicateIds`
+during this same verification pass.
+
+### Files touched
+`google_tui/gauth.py` (`create_task`, `delete_task`), `google_tui/main.py`
+(`TaskModal` rewrite, `_child_tasks`, `_on_task_modal_result`, the
+`TaskModal` push-site in `on_list_view_selected`), `ROADMAP.md`.
+
 ## [2026-07-15] — Narrow-terminal (80x25) responsive layout
 
 ### Added

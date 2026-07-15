@@ -7,9 +7,6 @@ just checking it off here, so ROADMAP.md only ever shows what's still open.
 
 ## P2 — UX polish
 
-- [ ] **Task subtasks + add/delete.** `TaskDetailModal` shows subtasks
-  read-only. Add create/check/delete for tasks and subtasks (need
-  `gauth.create_task` / `delete_task` / `patch_subtask`).
 - [ ] **Calendar create event** from a modal (date/time/title) →
   `gauth.create_event`. Currently read-only.
 - [ ] **Email viewer (`ThreadModal`): help bar and remaining actions.**
