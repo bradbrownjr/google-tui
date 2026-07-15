@@ -95,6 +95,9 @@ _DRIVE_PREVIEW_DEBOUNCE = 0.25
 _CONTACTS_SEARCH_DEBOUNCE = 0.15
 _EMAIL_SEARCH_DEBOUNCE = 0.15
 _TASKS_SEARCH_DEBOUNCE = 0.15
+_EVENTS_SEARCH_DEBOUNCE = 0.15
+_DRIVE_SEARCH_DEBOUNCE = 0.15
+_NEWS_SEARCH_DEBOUNCE = 0.15
 
 _PREVIEWABLE_PREFIXES = (
     "text/",
@@ -356,6 +359,81 @@ def _fuzzy_filter_tasks(tasks: list[dict], query: str, limit: int | None = None,
     return result[:limit] if limit else result
 
 
+def _fuzzy_filter_events(events: list[dict], query: str, limit: int | None = None,
+                         threshold: int = 75) -> list[dict]:
+    """Client-side live filter backing the Events pane's search box
+    (`Input#events-search`). Filters the already-fetched `self._events_cache`
+    list — never re-queries Calendar per keystroke — matching each event's
+    "summary description" text against `query` (see _fuzzy_score for the
+    matching rule). Empty query returns the input list unchanged (optionally
+    truncated)."""
+    query = query.strip()
+    if not query:
+        return events[:limit] if limit else list(events)
+    query_lower = query.lower()
+    scored = []
+    for e in events:
+        target = f"{e.get('summary','')} {e.get('description','')}".strip()
+        if not target:
+            continue
+        score = _fuzzy_score(query_lower, target.lower(), threshold)
+        if score is not None:
+            scored.append((score, e))
+    scored.sort(key=lambda pair: -pair[0])
+    result = [e for _, e in scored]
+    return result[:limit] if limit else result
+
+
+def _fuzzy_filter_drive_files(files: list[dict], query: str, limit: int | None = None,
+                              threshold: int = 75) -> list[dict]:
+    """Client-side live filter backing the Drive tab's search box
+    (`Input#drive-search`). Filters `self._drive_files` — the CURRENT
+    folder's listing only, not the whole Drive tree, and never re-queries
+    Drive per keystroke — matching each file's name against `query` (see
+    _fuzzy_score for the matching rule). Empty query returns the input list
+    unchanged (optionally truncated)."""
+    query = query.strip()
+    if not query:
+        return files[:limit] if limit else list(files)
+    query_lower = query.lower()
+    scored = []
+    for f in files:
+        target = (f.get("name") or "").strip()
+        if not target:
+            continue
+        score = _fuzzy_score(query_lower, target.lower(), threshold)
+        if score is not None:
+            scored.append((score, f))
+    scored.sort(key=lambda pair: -pair[0])
+    result = [f for _, f in scored]
+    return result[:limit] if limit else result
+
+
+def _fuzzy_filter_news_entries(entries: list[dict], query: str, limit: int | None = None,
+                               threshold: int = 75) -> list[dict]:
+    """Client-side live filter backing the News tab's search box
+    (`Input#news-search`). Filters the already-fetched combined-feed entry
+    list — never re-fetches any feed per keystroke — matching each entry's
+    "title summary" text against `query` (see _fuzzy_score for the matching
+    rule). Empty query returns the input list unchanged (optionally
+    truncated)."""
+    query = query.strip()
+    if not query:
+        return entries[:limit] if limit else list(entries)
+    query_lower = query.lower()
+    scored = []
+    for e in entries:
+        target = f"{e.get('title','')} {e.get('summary','')}".strip()
+        if not target:
+            continue
+        score = _fuzzy_score(query_lower, target.lower(), threshold)
+        if score is not None:
+            scored.append((score, e))
+    scored.sort(key=lambda pair: -pair[0])
+    result = [e for _, e in scored]
+    return result[:limit] if limit else result
+
+
 def _tab_label(text: str, num: int) -> str:
     return f"{text} [dim]{_SUPERSCRIPT[num]}[/dim]"
 
@@ -442,6 +520,33 @@ def _append_task_items(task_list, tasks) -> None:
             id=_mk_id("k", f"{t['_list']}-{t['id']}"))
         for t in tasks
     )
+
+
+def _append_event_items(event_list, events) -> None:
+    # Same extend()-once rationale as _append_email_items/_append_task_items
+    # above.
+    event_list.extend(
+        ListItem(
+            Label(f"{_fmt_date(e.get('start', {}).get('dateTime') or e.get('start', {}).get('date', ''))}"
+                  f"  {e.get('summary','')[:40]}"),
+            id=_mk_id("e", e["id"]))
+        for e in events
+    )
+
+
+def _append_drive_items(drive_list, files, path: str) -> None:
+    # Same extend()-once rationale as _append_email_items/_append_task_items/
+    # _append_event_items above. The "up" row is NOT part of the filterable
+    # file list — it's chrome, always present (except at "/") regardless of
+    # what #drive-search's current query is, same as it always was before
+    # search existed.
+    items = []
+    if path != "/":
+        items.append(ListItem(Label("📂 .. (up)"), id="d-up"))
+    for f in files:
+        icon = "📁" if f["mimeType"] == "application/vnd.google-apps.folder" else "📄"
+        items.append(ListItem(Label(f"{icon} {f['name'][:50]}"), id=_mk_id("d", f["id"])))
+    drive_list.extend(items)
 
 
 def _event_day(e: dict) -> int | None:
@@ -585,7 +690,7 @@ class GoogleTUI(App):
     .pane-title-text { text-style: bold; color: $accent; width: 1fr; }
     .pane-title-num { color: $text-muted; width: auto; }
     #email-label-select { height: 3; }
-    #email-search, #tasks-search { width: 1fr; }
+    #email-search, #tasks-search, #events-search { width: 1fr; }
     #email-list { height: 1fr; }
     #event-list, #task-list { height: 1fr; }
     #hermes-log { height: 1fr; border: round $panel-darken-1; }
@@ -600,6 +705,7 @@ class GoogleTUI(App):
     #drive-preview-col { width: 1fr; border: round $panel-darken-1; padding: 0 1; }
     #drive-preview-meta { height: auto; border-bottom: solid $panel-darken-2; padding-bottom: 1; }
     #drive-preview-text { height: 1fr; }
+    #drive-search { width: 1fr; }
     #browser-bar { height: 3; align: left middle; }
     #browser-mode { width: 10; color: $accent; text-style: bold; content-align: center middle; }
     #browser-url { width: 1fr; }
@@ -607,6 +713,7 @@ class GoogleTUI(App):
     #browser-bookmarks { height: 3; align: left middle; }
     #browser-bookmarks Button { min-width: 3; width: auto; height: 3; margin-right: 1; }
     #browser-doc { height: 1fr; border: round $panel-darken-1; padding: 0 1; }
+    #news-search { width: 1fr; }
     #news-list { height: 1fr; }
     #nav-origin, #nav-destination { width: 1fr; margin-right: 1; }
     #nav-summary { color: $accent; text-style: bold; height: 1; margin: 1 0; }
@@ -676,6 +783,10 @@ class GoogleTUI(App):
         self._drive_apply_gen = 0
         self._news_apply_gen = 0
         self._news_by_cid: dict[str, dict] = {}
+        # Full combined-feed entry list from the last _apply_news_data call —
+        # backs the News tab's search filter (Input#news-search) the same
+        # way self._threads_cache/self._tasks_cache back Email/Tasks search.
+        self._news_entries_cache: list[dict] = []
         self._browser_history: list[BrowserHistoryEntry] = []
         self._browser_hist_pos: int = -1
         self._browser_tofu: fetchers.GeminiTofuStore | None = None
@@ -710,6 +821,12 @@ class GoogleTUI(App):
         self._email_search_timer = None
         self._tasks_search_timer = None
         self._tasks_apply_gen = 0
+        self._events_search_timer = None
+        self._events_apply_gen = 0
+        self._drive_search_timer = None
+        self._drive_search_apply_gen = 0
+        self._news_search_timer = None
+        self._news_search_apply_gen = 0
         # F2 hands the mouse back to the terminal so its native click-drag
         # selection works (see action_toggle_mouse).
         self._mouse_released = False
@@ -831,6 +948,9 @@ class GoogleTUI(App):
                     with Vertical(id="right"):
                         with Container(id="events", classes="pane"):
                             yield self._pane_title_row("EVENTS  (upcoming)", 2)
+                            with Horizontal(id="events-bar", classes="btnrow"):
+                                yield Input(placeholder="Search events (summary/description)… (/)",
+                                            id="events-search")
                             yield ListView(id="event-list")
                         with Container(id="tasks", classes="pane"):
                             yield self._pane_title_row("TASKS  (space=done, enter=detail)", 3)
@@ -852,6 +972,8 @@ class GoogleTUI(App):
             with TabPane(_tab_label("Drive", 3), id="tab-drive"):
                 with Container(id="drive-section", classes="section"):
                     yield Label("/", id="drive-path", classes="muted")
+                    with Horizontal(id="drive-search-bar", classes="btnrow"):
+                        yield Input(placeholder="Search this folder (name)… (/)", id="drive-search")
                     with Horizontal(id="drive-body"):
                         with Vertical(id="drive-list-col"):
                             yield ListView(id="drive-list")
@@ -872,6 +994,8 @@ class GoogleTUI(App):
             with TabPane(_tab_label("News", 5), id="tab-news"):
                 with Container(id="news-section", classes="section"):
                     yield Label("NEWS  (all subscribed feeds, newest first)", classes="pane-title-text")
+                    with Horizontal(id="news-search-bar", classes="btnrow"):
+                        yield Input(placeholder="Search entries (title/summary)… (/)", id="news-search")
                     yield ListView(id="news-list")
             with TabPane(_tab_label("Navigation", 6), id="tab-navigation"):
                 with Container(id="navigation-section", classes="section"):
@@ -1392,13 +1516,13 @@ class GoogleTUI(App):
         visible_threads = _fuzzy_filter_threads(threads, email_query) if email_query.strip() else threads
         _append_email_items(self.query_one("#email-list"), visible_threads, self.settings.show_sender_address)
 
-        self.query_one("#event-list").extend(
-            ListItem(
-                Label(f"{_fmt_date(e.get('start', {}).get('dateTime') or e.get('start', {}).get('date', ''))}"
-                      f"  {e.get('summary','')[:40]}"),
-                id=_mk_id("e", e["id"]))
-            for e in events
-        )
+        self._events_cache = events
+        try:
+            events_query = self.query_one("#events-search", Input).value
+        except Exception:
+            events_query = ""
+        visible_events = _fuzzy_filter_events(events, events_query) if events_query.strip() else events
+        _append_event_items(self.query_one("#event-list"), visible_events)
 
         self._tasks_cache = tasks
         try:
@@ -1407,8 +1531,6 @@ class GoogleTUI(App):
             tasks_query = ""
         visible_tasks = _fuzzy_filter_tasks(tasks, tasks_query) if tasks_query.strip() else tasks
         _append_task_items(self.query_one("#task-list"), visible_tasks)
-
-        self._events_cache = events
 
     def _refresh_all_thread(self) -> None:
         """Post-write refresh (task toggled, mail sent) — MUST run with
@@ -1668,13 +1790,32 @@ class GoogleTUI(App):
             pass
 
     def action_focus_search(self) -> None:
-        if self._main_tabs().active != "tab-mail":
-            return
-        pane = PANE_IDS[self.active]
-        if pane == "email":
-            self.query_one("#email-search", Input).focus()
-        elif pane == "tasks":
-            self.query_one("#tasks-search", Input).focus()
+        # Dispatched per active TAB, then (for Mail) per active PANE — see
+        # AGENTS.md §2 for the tab/pane distinction. Calendar is deliberately
+        # a no-op here: its search UX is a "jump to next match on the date
+        # grid" design question, not just wiring a text Input onto an
+        # existing ListView the way the four panes/tabs below were — see
+        # ROADMAP.
+        tab = self._main_tabs().active
+        if tab == "tab-mail":
+            pane = PANE_IDS[self.active]
+            if pane == "email":
+                self.query_one("#email-search", Input).focus()
+            elif pane == "tasks":
+                self.query_one("#tasks-search", Input).focus()
+            elif pane == "events":
+                self.query_one("#events-search", Input).focus()
+        elif tab == "tab-drive":
+            self.query_one("#drive-search", Input).focus()
+        elif tab == "tab-news":
+            self.query_one("#news-search", Input).focus()
+        elif tab == "tab-contacts":
+            # Contacts already has its own live fuzzy search
+            # (_fuzzy_filter_contacts) auto-focused on tab activation
+            # (on_tabbed_content_tab_activated) — this just makes it
+            # reachable via "/" too, e.g. after Tab/arrow-keying focus away
+            # to #contacts-list.
+            self.query_one("#contacts-search", Input).focus()
 
     def _require_online(self) -> bool:
         if not self._online:
@@ -1813,6 +1954,28 @@ class GoogleTUI(App):
         self._refresh_all_thread()
 
     # ---- events ----
+    def _refresh_event_list(self) -> None:
+        # Debounced keystroke path for #events-search — near-copy of
+        # _refresh_task_list above (own exclusive group + own generation
+        # counter, same reason: _apply_mail_data_async rebuilds email+event+
+        # task together, and sharing its group would let a keystroke here
+        # cancel an in-flight full apply mid-rebuild).
+        self._events_apply_gen += 1
+        gen = self._events_apply_gen
+        self.run_worker(self._apply_event_list_async(gen, getattr(self, "_events_cache", [])),
+                        exclusive=True, group="event-search-apply")
+
+    async def _apply_event_list_async(self, gen: int, events: list[dict]) -> None:
+        await self.query_one("#event-list").clear()
+        if gen != self._events_apply_gen:
+            return  # superseded by a newer apply call
+        try:
+            query = self.query_one("#events-search", Input).value
+        except Exception:
+            query = ""
+        visible = _fuzzy_filter_events(events, query) if query.strip() else events
+        _append_event_items(self.query_one("#event-list"), visible)
+
     def _highlighted_event_id(self) -> str | None:
         el = self.query_one("#event-list")
         if el.highlighted_child is None:
@@ -1939,6 +2102,21 @@ class GoogleTUI(App):
                 self._tasks_search_timer.stop()
             self._tasks_search_timer = self.set_timer(
                 _TASKS_SEARCH_DEBOUNCE, self._refresh_task_list)
+        elif event.input.id == "events-search":
+            if self._events_search_timer is not None:
+                self._events_search_timer.stop()
+            self._events_search_timer = self.set_timer(
+                _EVENTS_SEARCH_DEBOUNCE, self._refresh_event_list)
+        elif event.input.id == "drive-search":
+            if self._drive_search_timer is not None:
+                self._drive_search_timer.stop()
+            self._drive_search_timer = self.set_timer(
+                _DRIVE_SEARCH_DEBOUNCE, self._refresh_drive_list)
+        elif event.input.id == "news-search":
+            if self._news_search_timer is not None:
+                self._news_search_timer.stop()
+            self._news_search_timer = self.set_timer(
+                _NEWS_SEARCH_DEBOUNCE, self._refresh_news_list)
 
     def _hermes_submit(self, event: Input.Submitted) -> None:
         q = event.value.strip()
@@ -2372,14 +2550,12 @@ class GoogleTUI(App):
         await self.query_one("#drive-list").clear()
         if gen != self._drive_apply_gen:
             return  # superseded by a newer _apply_drive_files call
-        lst = self.query_one("#drive-list")
-        items = []
-        if path != "/":
-            items.append(ListItem(Label("📂 .. (up)"), id="d-up"))
-        for f in files:
-            icon = "📁" if f["mimeType"] == "application/vnd.google-apps.folder" else "📄"
-            items.append(ListItem(Label(f"{icon} {f['name'][:50]}"), id=_mk_id("d", f["id"])))
-        lst.extend(items)
+        try:
+            query = self.query_one("#drive-search", Input).value
+        except Exception:
+            query = ""
+        visible = _fuzzy_filter_drive_files(files, query) if query.strip() else files
+        _append_drive_items(self.query_one("#drive-list"), visible, path)
 
     def _drive_load(self, folder_id: str = "root", path: str = "/") -> None:
         try:
@@ -2388,6 +2564,31 @@ class GoogleTUI(App):
             self.notify(f"Drive error: {ex}", severity="error")
             files = []
         self._apply_drive_files(files, folder_id, path)
+
+    def _refresh_drive_list(self) -> None:
+        # Debounced keystroke path for #drive-search — filters
+        # self._drive_files, the CURRENT folder's listing only (never the
+        # whole Drive tree, never a fresh Drive call per keystroke). Own
+        # exclusive group + own generation counter, same reason as
+        # _refresh_task_list/_refresh_event_list above: sharing "drive-apply"
+        # would let a keystroke here cancel an in-flight folder navigation
+        # (_apply_drive_files_async) mid-rebuild.
+        self._drive_search_apply_gen += 1
+        gen = self._drive_search_apply_gen
+        self.run_worker(
+            self._apply_drive_search_async(gen, self._drive_files, self._drive_path),
+            exclusive=True, group="drive-search-apply")
+
+    async def _apply_drive_search_async(self, gen: int, files: list[dict], path: str) -> None:
+        await self.query_one("#drive-list").clear()
+        if gen != self._drive_search_apply_gen:
+            return  # superseded by a newer apply call
+        try:
+            query = self.query_one("#drive-search", Input).value
+        except Exception:
+            query = ""
+        visible = _fuzzy_filter_drive_files(files, query) if query.strip() else files
+        _append_drive_items(self.query_one("#drive-list"), visible, path)
 
     def _drive_open_selected(self) -> None:
         lst = self.query_one("#drive-list")
@@ -2583,6 +2784,18 @@ class GoogleTUI(App):
         await self.query_one("#news-list").clear()
         if gen != self._news_apply_gen:
             return  # superseded by a newer _apply_news_data call
+        # Backs the News tab's search filter (Input#news-search) — same role
+        # as self._threads_cache/self._tasks_cache for Email/Tasks search,
+        # see the module-level NOTE by its declaration in __init__.
+        self._news_entries_cache = entries
+        try:
+            query = self.query_one("#news-search", Input).value
+        except Exception:
+            query = ""
+        visible = _fuzzy_filter_news_entries(entries, query) if query.strip() else entries
+        self._populate_news_list(visible)
+
+    def _populate_news_list(self, entries: list[dict]) -> None:
         lst = self.query_one("#news-list")
         self._news_by_cid = {}
         items = []
@@ -2601,6 +2814,31 @@ class GoogleTUI(App):
             line = f"{date}  [{feed_title}] {title}"
             items.append(ListItem(Label(line, markup=False), id=cid))
         lst.extend(items)
+
+    def _refresh_news_list(self) -> None:
+        # Debounced keystroke path for #news-search — filters the already-
+        # fetched self._news_entries_cache, never re-fetches any feed per
+        # keystroke. Own exclusive group + own generation counter, same
+        # reason as _refresh_task_list/_refresh_event_list/_refresh_drive_list
+        # above: sharing "news-apply" would let a keystroke here cancel an
+        # in-flight full news apply (cache load / live refresh / feed
+        # add-remove) mid-rebuild.
+        self._news_search_apply_gen += 1
+        gen = self._news_search_apply_gen
+        self.run_worker(
+            self._apply_news_search_async(gen, self._news_entries_cache),
+            exclusive=True, group="news-search-apply")
+
+    async def _apply_news_search_async(self, gen: int, entries: list[dict]) -> None:
+        await self.query_one("#news-list").clear()
+        if gen != self._news_search_apply_gen:
+            return  # superseded by a newer apply call
+        try:
+            query = self.query_one("#news-search", Input).value
+        except Exception:
+            query = ""
+        visible = _fuzzy_filter_news_entries(entries, query) if query.strip() else entries
+        self._populate_news_list(visible)
 
     def _fetch_and_merge_one_feed(self, url: str) -> None:
         """Background fetch for a single newly-added feed (Settings tab),

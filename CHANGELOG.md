@@ -3,6 +3,57 @@
 Format: keep newest at top. One entry per meaningful change. Reference files
 touched and any breaking notes.
 
+## [2026-07-15] — Extend `/` live search to Events, Drive, News, and Contacts
+
+### Added
+`action_focus_search` (`main.py`) previously early-returned for every tab
+except Mail's Email/Tasks panes (see the `[2026-07-15]` "Live search within
+the Email and Tasks panes" entry below). It now also covers:
+- **Events pane** (Mail tab): new `Input#events-search`, near-copy of the
+  Tasks wiring — `_fuzzy_filter_events` (filters `self._events_cache` on
+  summary/description) + `_refresh_event_list`/`_apply_event_list_async` in
+  their own exclusive worker group (`"event-search-apply"`), same reasoning
+  as Tasks' own group: sharing `"mail-apply"` would let a keystroke cancel
+  an in-flight full mail-data rebuild mid-repopulate. `_append_event_items`
+  extracted from `_apply_mail_data_async`'s inline event-row building so
+  both paths share it.
+- **Drive tab**: new `Input#drive-search`, filters `self._drive_files` by
+  name — scoped to the CURRENT folder's listing only, never the whole Drive
+  tree, never a re-fetch per keystroke (`_fuzzy_filter_drive_files`,
+  `_refresh_drive_list`/`_apply_drive_search_async`, own
+  `"drive-search-apply"` group so a keystroke can't cancel an in-flight
+  folder navigation). The "up" row stays unfiltered chrome.
+- **News tab**: new `Input#news-search`, filters the combined-feed entry
+  list by title/summary (`_fuzzy_filter_news_entries`). New
+  `self._news_entries_cache` holds the last full entry set so the filter
+  survives repeated `_apply_news_data` calls (cache load, live refresh,
+  feed add/remove); own `"news-search-apply"` worker group, same
+  don't-cancel-the-full-rebuild reasoning as Events/Drive.
+- **Contacts tab**: no new filtering logic — `_fuzzy_filter_contacts` already
+  existed and worked, it just wasn't reachable via `/` (only auto-focused on
+  tab activation). `action_focus_search` now focuses `#contacts-search` for
+  this tab too, so `/` works after focus has moved elsewhere (e.g. to
+  `#contacts-list`).
+
+All four reuse `_fuzzy_score()` (the `_FUZZY_MIN_QUERY_LEN`/threshold-75 fix
+from the Email/Tasks search entry below) rather than reintroducing the
+short-query false-positive bug it fixed.
+
+Calendar is unchanged — still an explicit no-op, now with its own ROADMAP
+item (`/` jump-to-next-match on the date grid) instead of being folded into
+the generic "extend search" item, since it needs a different interaction,
+not just another `ListView` filter.
+
+### Verified
+Throwaway `run_test` + pilot script (fabricated events/drive-files/news-
+entries/contacts dataset, every `gauth` call mocked, no real network) —
+confirmed for each of Events/Drive/News/Contacts: `/` focuses the right
+search input, a short (3-char) non-substring query that would false-
+positive under raw `rapidfuzz.fuzz.partial_ratio` (e.g. `"den"` scoring 80
+against `"Entertainment center setup"`) correctly shows zero results, a real
+query filters correctly, and clearing the box restores the full list. Also
+confirmed Calendar's `/` remains a no-op (regression check).
+
 ## [2026-07-15] — Browser tab: Alt+H home, real fix for Alt+Left/Right/Up/Down, instant Page Up/Down/Home/End
 
 ### Added

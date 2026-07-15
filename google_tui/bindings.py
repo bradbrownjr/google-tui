@@ -140,17 +140,17 @@ HELP_GLOBAL_TEXT = (
 # matches GoogleTUI._context_help_text's former if/elif exactly.
 CONTEXT_HELP: dict[str, str] = {
     "pane:email": "Enter Open   c Compose   r Reply   a Reply All   f Forward   Space Expand   l Folder   / Search",
-    "pane:events": "Enter/Space Detail",
+    "pane:events": "Enter/Space Detail   / Search",
     "pane:tasks": "Space Toggle Complete   Enter Detail   / Search",
     "pane:hermes": "Enter Ask",
     "tab:tab-calendar": "[ / ] Prev/Next Month or Week   Enter Day Detail",
-    "tab:tab-drive": "Enter Open Folder / Reload Preview",
+    "tab:tab-drive": "Enter Open Folder / Reload Preview   / Search (this folder)",
     "tab:tab-browser": "Enter Load/Search   Alt+←/→ Back/Forward   Alt+H Home   Tab Toggle Focus   0-9+Enter Link",
-    "tab:tab-news": "Enter/Space Open Entry",
+    "tab:tab-news": "Enter/Space Open Entry   / Search",
     "tab:tab-navigation": "Enter/Go Compute Route   Export Save Itinerary To File",
     "tab:tab-settings": "Alt+←/→ Switch Section   Toggle encryption   Choose key method   Clear local cache   "
                          "Manage feeds   Search provider   Routes API key",
-    "tab:tab-contacts": "Type to search   Enter/Space Detail (compose to contact)   Refresh",
+    "tab:tab-contacts": "Type to search (or / from elsewhere in the tab)   Enter/Space Detail (compose to contact)   Refresh",
 }
 
 # Transcribed verbatim from the former module-level HELP_TEXT constant.
@@ -177,7 +177,8 @@ MAIL TAB
   Email pane:   Enter open thread, Space expand/collapse (shows snippet),
                 l open folder picker, c Compose new, r Reply, a Reply All,
                 f Forward, / search (live filter over subject/from/snippet)
-  Events pane:  Enter/Space open event detail
+  Events pane:  Enter/Space open event detail, / search (live filter over
+                summary/description)
   Tasks pane:   Space toggle complete, Enter open detail, / search (live
                 filter over title/notes)
   Hermes pane:  type a question, Enter to ask
@@ -193,6 +194,8 @@ CALENDAR TAB
 DRIVE TAB
   Up/Down       Move selection — preview pane updates live
   Enter/click   Open a folder, or re-load a file's preview
+  / search      Live filter by name over the CURRENT folder's file list
+                (not the whole Drive tree)
 
 BROWSER TAB
   Enter (address bar)    Load URL, or run a search (bare text w/ no scheme searches)
@@ -207,6 +210,7 @@ BROWSER TAB
 
 NEWS TAB
   Enter/Space   Open the selected entry (rendered via the shared Document view)
+  / search      Live filter by title/summary over the combined entry list
   Entries from every subscribed feed are combined, newest first. Manage
   subscriptions (add/remove feed URLs) from the Settings tab.
 
@@ -237,7 +241,10 @@ SETTINGS TAB
 
 CONTACTS TAB
   Type to search    Live fuzzy filter (name or email) over your fetched
-                    Google Contacts — no re-query as you type
+                    Google Contacts — no re-query as you type. Auto-focused
+                    on tab activation; press / from anywhere in this tab
+                    (e.g. after moving focus to the contact list) to jump
+                    back to it.
   Enter/Space       Open the highlighted contact's detail (name/email/phone),
                     with a "Compose Email" button to start a new message to them
   Refresh           Re-fetch contacts from Google now
