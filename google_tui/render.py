@@ -1172,3 +1172,34 @@ class DocumentView(VerticalScroll):
             if link.number == number:
                 self.post_message(self.LinkActivated(link))
                 return
+
+    # -- instant paging (see ROADMAP/CHANGELOG for the perf investigation) -
+
+    # Textual's default Widget.action_page_up/down/scroll_home/scroll_end
+    # animate the scroll (see widget.py's scroll_page_up/down: default
+    # speed=50 "lines per second" when neither speed nor duration is given;
+    # scroll_home/scroll_end instead default to a flat 1.0s duration
+    # regardless of distance). Profiled with a fabricated ~2000-block
+    # document: PageDown consistently cost ~0.68s per press (every single
+    # press, not just the first) and Home/End cost ~1.0s each, REGARDLESS
+    # of total document size (300 vs. 2000 vs. 5000 blocks all measured the
+    # same ~0.68s/~1.0s) -- exactly what you'd expect from a fixed scroll
+    # SPEED over a roughly-constant per-page distance (viewport height), not
+    # a cost proportional to content length. The actual block-rendering work
+    # (_render_blocks) is cheap even at 5000 blocks (~40ms, done once when
+    # .document is set, not per scroll). Overriding these four actions to
+    # scroll instantly restores the "jump immediately" behaviour expected of
+    # a pager/document reader instead of Textual's default smooth-glide,
+    # which is a fine default for small on-screen nudges but reads as "hung"
+    # for a multi-second jump to the end of a long page.
+    def action_page_up(self) -> None:
+        self.scroll_page_up(animate=False)
+
+    def action_page_down(self) -> None:
+        self.scroll_page_down(animate=False)
+
+    def action_scroll_home(self) -> None:
+        self.scroll_home(animate=False)
+
+    def action_scroll_end(self) -> None:
+        self.scroll_end(animate=False)

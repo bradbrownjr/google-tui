@@ -22,6 +22,7 @@ from pathlib import Path
 
 import platformdirs
 from rapidfuzz import fuzz
+from textual import events
 from textual.app import App, ComposeResult
 from textual.containers import Container, Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
@@ -539,6 +540,34 @@ def _label_select_options(labels: list[dict]) -> list[tuple[str, str]]:
     return options
 
 
+# Some terminals encode Alt+Arrow as a literal double-ESC sequence
+# (``ESC ESC [ A/B/C/D``) instead of the CSI-with-modifier-parameter form
+# (``ESC [ 1;3 A/B/C/D``). Confirmed by feeding both forms directly through
+# Textual 8.2.8's XTermParser: the CSI-1;3 form correctly yields a single
+# ``Key(key='alt+left', ...)`` event, but the double-ESC form hits a
+# hardcoded ``process_alt=False`` in ``_xterm_parser.py`` (triggered when a
+# second ESC interrupts the still-unresolved first escape sequence) and
+# instead yields two INDEPENDENT bare events: ``Key('escape', ...)`` then
+# ``Key('left', ...)``. The stray arrow half then either moves the address
+# bar's text cursor (``Input`` binds bare left/right to cursor movement) or
+# is silently dropped (``DocumentView`` has no bare-arrow binding) — this,
+# not "focus swallowing the whole combo", is why Alt+Left/Right/Up/Down were
+# reported as dead from some terminals. See ``GoogleTUI.on_key`` below for
+# the compensation and CHANGELOG.md for the repro that found this.
+_ESCAPE_ALT_ARROW_ACTIONS = {
+    "left": "action_switch_left",
+    "right": "action_switch_right",
+    "up": "action_switch_up",
+    "down": "action_switch_down",
+}
+# The two halves of one real escape sequence land in the same feed() call —
+# effectively 0 elapsed wall-clock time — while two genuinely separate human
+# keypresses (e.g. Escape to close a modal, then later an unrelated Left
+# arrow) are always much further apart than this. 50ms comfortably separates
+# the two cases without misfiring on real sequential keypresses.
+_ESCAPE_ALT_ARROW_WINDOW = 0.05
+
+
 class GoogleTUI(App):
     CSS = """
     Screen { layout: vertical; }
@@ -651,6 +680,11 @@ class GoogleTUI(App):
         self._browser_hist_pos: int = -1
         self._browser_tofu: fetchers.GeminiTofuStore | None = None
         self._browser_started: bool = False
+        # See _ESCAPE_ALT_ARROW_ACTIONS above / on_key below: timestamp of the
+        # most recent bare "escape" Key event, used to detect the terminals
+        # that encode Alt+Arrow as a double-ESC sequence Textual's parser
+        # can't combine into a single "alt+<dir>" event on its own.
+        self._pending_escape_time: float | None = None
         # Email pane's Space-to-expand (inline snippet preview, not the full
         # ThreadModal — see AGENTS.md's Email-pane NOTE). Naturally resets on
         # every list repopulate (refresh/label change); no persistence needed.
@@ -888,6 +922,13 @@ class GoogleTUI(App):
                                     "have uncommitted changes. Also skippable with --no-update.",
                                     id="settings-update-note", classes="muted",
                                 )
+                                yield Label("Browser", classes="pane-title-text")
+                                with Horizontal(classes="settings-row"):
+                                    yield Label("Home page (Alt+H)")
+                                    yield Input(value=self.settings.browser_home_url,
+                                                placeholder="https://www.google.com",
+                                                id="settings-browser-home-url")
+                                    yield Button("Save", id="settings-save-browser-home")
                                 with Horizontal(classes="settings-row"):
                                     yield Label("Encrypt local cache at rest")
                                     yield Switch(value=self.settings.encrypt_at_rest, id="settings-encrypt-switch")
@@ -1485,6 +1526,44 @@ class GoogleTUI(App):
 
     def action_switch_up(self):    self._adjacent("up")
     def action_switch_down(self):  self._adjacent("down")
+
+    def action_browser_home(self) -> None:
+        """Alt+H: jump the Browser tab to the configured home URL.
+
+        Browser-tab-only, like ``[``/``]`` on the Calendar tab — a no-op
+        everywhere else.
+        """
+        if self._main_tabs().active != "tab-browser":
+            return
+        url = self.settings.browser_home_url or "https://www.google.com"
+        try:
+            self.query_one("#browser-url", Input).value = url
+        except Exception:
+            pass
+        self._browser_navigate(url, push_history=True)
+
+    def on_key(self, event: events.Key) -> None:
+        """Compensate for a terminal-encoding gap that swallows Alt+Arrow.
+
+        See ``_ESCAPE_ALT_ARROW_ACTIONS``'s comment above for the confirmed
+        root cause. ``GoogleTUI`` is earlier in the MRO than ``App``, so this
+        runs before ``App._on_key`` (its ``_check_bindings`` walk is what
+        would otherwise run e.g. the address bar's own bare-"left" cursor
+        move) — ``event.prevent_default()`` stops that base handler from
+        running at all, the same pattern as ``GtHeader._on_click`` (AGENTS.md
+        §2's MRO-dispatch NOTE).
+        """
+        if event.key == "escape":
+            self._pending_escape_time = event.time
+            return
+        pending = self._pending_escape_time
+        self._pending_escape_time = None
+        action_name = _ESCAPE_ALT_ARROW_ACTIONS.get(event.key)
+        if (action_name is not None and pending is not None
+                and (event.time - pending) <= _ESCAPE_ALT_ARROW_WINDOW):
+            event.stop()
+            event.prevent_default()
+            getattr(self, action_name)()
 
     def action_cycle(self):
         tab = self._main_tabs().active
@@ -2977,6 +3056,11 @@ class GoogleTUI(App):
             self.settings.nous_api_key = key or None
             save_settings(self.settings)
             self.notify("Nous API key saved.")
+        elif event.button.id == "settings-save-browser-home":
+            url = self.query_one("#settings-browser-home-url", Input).value.strip()
+            self.settings.browser_home_url = url or "https://www.google.com"
+            save_settings(self.settings)
+            self.notify("Browser home page saved.")
         elif event.button.id == "browser-go":
             raw = self.query_one("#browser-url", Input).value.strip()
             if raw:

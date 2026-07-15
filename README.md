@@ -57,8 +57,9 @@ toggling a task) are disabled with a warning instead of failing silently.
   disappears for the rest of the session. Numbered `[N]` links in the
   page — like every Gopher/Gemini menu and every search result — jump
   with digits + `Enter`. `Alt+Left/Right` are Back/Forward through this
-  session's history (no re-fetching); `Tab` toggles focus between the
-  address bar and the page.
+  session's history (no re-fetching); `Alt+H` jumps to a configurable home
+  page (Settings → General); `Tab` toggles focus between the address bar
+  and the page.
 - **News tab:** an RSS/Atom reader — entries from every feed you subscribe
   to (managed in Settings), combined into one lightbar list, newest first.
   `Enter`/`Space` opens an entry, rendered through the same shared
@@ -78,9 +79,9 @@ toggling a task) are disabled with a warning instead of failing silently.
   a place to paste back what you get; works with no browser and no display
   on the machine running google-tui, use it whenever a tab shows an auth
   error or roughly weekly since Google expires test-app tokens after 7
-  days, see [SETUP.md](SETUP.md) §4 and §7; encrypt-at-rest for the local
-  cache, off by default; choose how the encryption key is handled; clear
-  the local cache), **AI Provider** (pick
+  days, see [SETUP.md](SETUP.md) §4 and §7; set the Browser tab's `Alt+H`
+  home page; encrypt-at-rest for the local cache, off by default; choose
+  how the encryption key is handled; clear the local cache), **AI Provider** (pick
   your AI provider, set a Nous API key), **News Feeds** (manage your
   News-tab feed subscriptions — add/remove URLs), **Search** (pick the
   Browser tab's search provider — Google/DuckDuckGo/SearXNG — and set the
@@ -121,6 +122,7 @@ full Google Cloud Console walkthrough.
 | `Ctrl+Left/Right` | cycle tabs — use this if `Ctrl+1..8` doesn't reach the app (common in browser-based terminals, which reserve `Ctrl+1..8` for switching *their own* tabs) |
 | `Alt+1..4` | jump to Mail pane (Email / Events / Tasks / Hermes) |
 | `Alt+Left/Right/Up/Down` | move to the adjacent Mail pane; on the Browser tab, back/forward through history; on the Settings tab, cycle General/AI Provider/News Feeds/Search/Navigation |
+| `Alt+H` | Browser tab: go to your configured home page (Settings → General) |
 | `Tab` / `Shift+Tab` | cycle Mail panes |
 | `l` | open the folder/label picker (Email pane) |
 | `r` `a` `f` | reply / reply-all / forward (Email pane, disabled while offline) |

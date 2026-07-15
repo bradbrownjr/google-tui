@@ -151,8 +151,18 @@ Other tabs:
   `list[BrowserHistoryEntry]` (already-fetched `Document`s, not just URLs —
   Back/Forward never re-fetches) — session-lifetime only, no SQLite cache
   category for page content. `Alt+Left/Right` are back/forward (not `[`/`]`)
-  when the Browser tab is active; `Tab`/`Shift+Tab` toggle focus between the
-  address bar and the page. Gemini's TOFU cert pinning uses a new `Cache`
+  when the Browser tab is active; `Alt+H` (P2, 2026-07-15) jumps to
+  `Settings.browser_home_url` (default `https://www.google.com`, editable in
+  Settings → General) the same way clicking a bookmark button does; `Tab`/
+  `Shift+Tab` toggle focus between the address bar and the page. `Page Up/
+  Down/Home/End` inside `DocumentView` scroll instantly — see `render.py`'s
+  `action_page_up`/`action_page_down`/`action_scroll_home`/`action_scroll_end`
+  overrides (2026-07-15): Textual's stock versions of these actions animate
+  the scroll (`speed=50` lines/sec for Page Up/Down, a flat `duration=1.0`
+  for Home/End), which read as multi-second hangs on a document reader;
+  `_render_blocks` itself was never the bottleneck (profiled at ~40ms even
+  for 5000 blocks, and done once at `.document =` time, not per scroll — see
+  CHANGELOG). Gemini's TOFU cert pinning uses a new `Cache`
   category (`"gemini_cert"`, key `f"{host}:{port}"`) via
   `fetchers.GeminiTofuStore`; Gemini status 1x (input) and cross-host 3x
   (redirect) responses raise
@@ -261,7 +271,11 @@ Other tabs:
   scrolling per section, not one giant outer scroll around the whole
   `TabbedContent`):
   - `TabPane#settings-tab-general`: `Button#settings-reauth-google` (in-app
-    Google OAuth re-authorization — see below) + `Switch#settings-encrypt-switch`
+    Google OAuth re-authorization — see below) + `Input#settings-browser-home-url`
+    / `Button#settings-save-browser-home` (Browser tab's `Alt+H` home URL,
+    P2, 2026-07-15 — backs `Settings.browser_home_url`, same
+    Input+save-button pattern as the Nous/Routes API key rows) +
+    `Switch#settings-encrypt-switch`
     (encrypt-at-rest on/off) + `RadioSet#settings-key-method` (passphrase
     vs. keyfile, hidden via `.hidden` CSS class when encryption is off) + a
     "Clear local cache now" button + a `Static` showing the cache file's
@@ -443,6 +457,7 @@ App-level `r`/`a`/`f` bindings never reached it.
 | `Ctrl+Left/Right` | cycle tabs — the reliable fallback for `Ctrl+1..8` (see caveat below) |
 | `Alt+1..4` | jump to a Mail **pane** (Email / Events / Tasks / Hermes); switches to the Mail tab first if needed |
 | `Alt+Left/Right/Up/Down` | move to the adjacent Mail pane (see `PANE_ADJACENCY` below) on the Mail tab; back/forward through session history on the Browser tab; cycle Settings sub-tabs (General/AI Provider/News Feeds/Search/Navigation) on the Settings tab (`Alt+Up/Down` still only does Mail-pane adjacency — no vertical cycling defined for Settings) |
+| `Alt+H` | Browser tab: jump to the configured home URL (`Settings.browser_home_url`, Settings → General) — no-op elsewhere |
 | `Tab` / `Shift+Tab` | cycle Mail panes (no-op outside the Mail tab) |
 | `l` | focus + open `Select#email-label-select`'s dropdown (Email pane only — no-op elsewhere) |
 | `c` | compose new (Email pane only — no-op elsewhere; blank `ComposeModal(mode="new")`, same as the old `contacts-compose-new` button, which moved here) |
@@ -476,6 +491,34 @@ is universally well-supported and is the reliable path — `Ctrl+1..8` is kept
 for terminals that do support it, but don't assume it works everywhere, and
 don't "fix" it by touching the bindings — there's nothing to fix in this
 app's code; it's what the terminal transmits.
+
+**`Alt+Left/Right/Up/Down` terminal caveat, and how it's actually fixed
+(2026-07-15):** unlike the `Ctrl+1..8` caveat above, this one WAS fixable in
+app code. Some terminals encode Alt+Arrow as a literal double-ESC sequence
+(`ESC ESC [ A/B/C/D`) instead of the CSI-with-modifier-parameter form
+(`ESC [ 1;3 A/B/C/D`). Confirmed by feeding both forms directly through
+Textual 8.2.8's `XTermParser` (`google_tui/main.py`'s repro comment above
+`_ESCAPE_ALT_ARROW_ACTIONS` has the full story): the CSI-1;3 form correctly
+yields one `Key(key='alt+left', ...)`, but the double-ESC form hits a
+hardcoded `process_alt=False` in `_xterm_parser.py` (triggered when a second
+ESC interrupts the still-unresolved first escape sequence) and instead
+yields TWO independent bare events — `Key('escape', ...)` then
+`Key('left', ...)`. `pilot.press("alt+left")` cannot reproduce this class of
+bug at all: it posts a pre-parsed combined key directly, bypassing
+`XTermParser` entirely — reproduce terminal-encoding bugs like this by
+feeding raw bytes through `textual._xterm_parser.XTermParser` directly, or
+by posting the two `events.Key` objects it actually emits back-to-back (see
+CHANGELOG `[2026-07-15]`'s Verified section). Fixed with `GoogleTUI.on_key`:
+it tracks the timestamp of a lone `escape` event, and if the very next event
+is a bare `left`/`right`/`up`/`down` within 50ms, treats it as the intended
+`alt+<direction>` and calls `event.prevent_default()` to suppress
+`App._on_key`'s own binding walk (which would otherwise run whatever bare
+`left`/`right` binding the focused widget has, e.g. `Input`'s cursor move) —
+same runs-before-base-class-and-can-suppress-it mechanism as
+`GtHeader._on_click` below. This is NOT Browser-tab-specific — it
+transparently fixes the same dead-Alt-arrow symptom for Mail-pane
+navigation and Settings sub-tab cycling too, on any terminal using the
+double-ESC encoding.
 
 **`PANE_ADJACENCY`** (replaces an older `active ± 1` / `active ± 2`
 arithmetic scheme that assumed a symmetric 2x2 grid): Email spans the full

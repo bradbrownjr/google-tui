@@ -3,6 +3,105 @@
 Format: keep newest at top. One entry per meaningful change. Reference files
 touched and any breaking notes.
 
+## [2026-07-15] — Browser tab: Alt+H home, real fix for Alt+Left/Right/Up/Down, instant Page Up/Down/Home/End
+
+### Added
+Alt+H now jumps the Browser tab to a configurable home URL — new
+`Settings.browser_home_url` (default `https://www.google.com`), editable
+via a new "Browser" row (`Input#settings-browser-home-url` +
+`Button#settings-save-browser-home`) in Settings → General, right next to
+the existing update-check switch. `action_browser_home` (`main.py`,
+`bindings.py`'s new `browser_home`/`alt+h` `ActionSpec`) mirrors the
+existing bookmark-click flow: it's a no-op off the Browser tab, same as
+`[`/`]` on the Calendar tab.
+
+### Fixed
+**Alt+Left "not going back"** — reproduced with a raw-byte test against
+Textual 8.2.8's `XTermParser` (not just `pilot.press`, which posts a
+pre-parsed `Key("alt+left", ...)` directly and therefore can't see this
+class of bug at all): feeding `"\x1b[1;3D"` (the CSI-with-modifier-3 form
+of Alt+Left) through the parser correctly yields a single
+`Key(key='alt+left', ...)`, but feeding `"\x1b\x1b[D"` (the "double-ESC"
+form several common terminals send instead for Alt+Arrow — a literal ESC
+prefixing the plain, unmodified arrow-key sequence) yields TWO
+independent events: `Key('escape', ...)` then `Key('left', ...)`.
+`_xterm_parser.py` hits a hardcoded `process_alt=False` when a second ESC
+interrupts the still-unresolved first escape sequence, so it never
+synthesizes a combined `alt+left`. Depending on what's focused, the stray
+`left` half then either moved the address bar's text cursor (`Input`
+binds bare `left`/`right` to cursor movement) or was silently dropped
+(`DocumentView` has no bare-arrow binding) — so "focus swallowing the
+combo" was directionally right, but the actual mechanism was this
+upstream parser gap, not anything in this app's own focus handling.
+Fixed with a small compensating `GoogleTUI.on_key` override: it tracks
+the timestamp of a lone `escape` Key event, and if the *very next* event
+is a bare `left`/`right`/`up`/`down` within 50ms (the two halves of one
+real escape sequence land in the same `feed()` call — effectively zero
+elapsed time — while two genuinely separate human keypresses are always
+much further apart than that), it runs the same action the real
+`alt+<direction>` binding would and calls `event.prevent_default()` to
+suppress the base `App._on_key`'s own binding walk (which is what would
+otherwise run the address bar's cursor move) — the same
+runs-before-base-class-and-can-suppress-it pattern already documented for
+`GtHeader._on_click` in AGENTS.md §2. Since the underlying gap is
+terminal-encoding-dependent, not Browser-tab-specific, this transparently
+fixes the same dead-Alt-arrow symptom for Mail-pane navigation and
+Settings sub-tab cycling too, on any terminal that uses the double-ESC
+encoding; terminals that already send the combined form are unaffected
+(the compensation only ever triggers on a lone `escape` immediately
+followed by a bare arrow, which never happens for them).
+
+**Page Up/Down/Home/End "very slow" in `DocumentView`** — profiled with a
+fabricated ~2000-paragraph-block document and `time.perf_counter()`
+around individual keypresses in a `run_test` pilot. `_render_blocks`
+itself (the actual markup/link-styling work) was never the problem — 5000
+blocks render in ~40ms, done once when `.document` is set, not on every
+scroll. The real cost: `DocumentView` never overrode Textual's default
+scroll actions, so Page Up/Down/Home/End used Textual's stock *animated*
+scroll — `scroll_page_up`/`scroll_page_down` default to `speed=50`
+"lines per second" (so a ~30-line viewport page took ~0.6s to glide,
+confirmed: ~0.68s measured per Page Down keypress, flat regardless of
+document size, matching a fixed-speed animation rather than a
+size-proportional render cost) and `scroll_home`/`scroll_end` default to
+a flat `duration=1.0` regardless of distance (confirmed: ~1.08s per
+Home/End keypress, again flat across document sizes). `DocumentView` now
+overrides `action_page_up`/`action_page_down`/`action_scroll_home`/
+`action_scroll_end` to scroll with `animate=False`. Re-measured after the
+fix: Page Down/Up/Home/End all dropped to ~0.09-0.1s (down from
+~0.68-1.09s), which is now just ordinary keypress/repaint overhead, not
+an animation duration — confirmed flat from 1 block up to 5000. (Aside,
+not fixed here since it's outside what was reported slow: the *initial*
+`.document =` assignment for a very large document — e.g. ~8s for 5000
+blocks in the pilot harness — does scale with size; that's Textual laying
+out one big `height: auto` `Static`, a separate concern from the
+scroll-animation bug above.)
+
+### Files
+`google_tui/bindings.py` (`browser_home`/`alt+h` `ActionSpec`, `CONTEXT_HELP`/
+`HELP_TEXT` updated), `google_tui/settings.py` (`Settings.browser_home_url`),
+`google_tui/main.py` (`action_browser_home`, `GoogleTUI.on_key` +
+`_ESCAPE_ALT_ARROW_ACTIONS`/`_ESCAPE_ALT_ARROW_WINDOW`, `self._pending_escape_time`,
+new Settings → General "Browser" row + its `on_button_pressed` branch),
+`google_tui/render.py` (`DocumentView.action_page_up`/`action_page_down`/
+`action_scroll_home`/`action_scroll_end`).
+
+### Verified
+No automated test suite exists yet (ROADMAP P4). Verified with throwaway
+`run_test`-pilot scripts (fabricated data, every `gauth`/`fetchers` call
+mocked, deleted after use — not committed): Alt+H navigates to the
+configured home URL from the Browser tab and is a no-op elsewhere;
+Alt+Left correctly goes back after a couple of navigations when the
+double-ESC sequence's two halves (`Key('escape', ...)` then
+`Key('left', ...)`, posted back-to-back with no artificial delay, the way
+the real parser emits them) are delivered with focus on either the
+address bar or the document view; a real combined `alt+left` (the form
+terminals that already work correctly send) still works, unchanged; a
+standalone `escape` (no follow-up arrow) and a genuine bare `left`
+keypress with no preceding `escape` both behave exactly as before (no
+false-positive back/forward); and a before/after timing comparison on a
+fabricated large document confirmed the Page Up/Down/Home/End fix (see
+above).
+
 ## [2026-07-15] — Numbered inline links now work in ThreadModal/NewsEntryModal, and look like links
 
 ### Added

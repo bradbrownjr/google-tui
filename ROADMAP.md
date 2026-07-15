@@ -12,14 +12,6 @@ just checking it off here, so ROADMAP.md only ever shows what's still open.
   `gauth.create_task` / `delete_task` / `patch_subtask`).
 - [ ] **Calendar create event** from a modal (date/time/title) →
   `gauth.create_event`. Currently read-only.
-- [ ] **Web browser: Alt+H home, fix Alt+Left history, slow Page Up/Down/End.**
-  Add a home shortcut (Alt+H) to a configurable start URL. `action_switch_left`
-  already calls `_browser_back()` when `tab-browser` is active
-  (`main.py:1435-1437`), but Alt+Left is reported as not going back — likely
-  swallowed by focus on `#browser-url`/`DocumentView` in some states; needs
-  repro + fix. Separately, Page Up/Down/End inside `DocumentView` are reported
-  as very slow on large pages — profile the scroll/render path.
-  *(Suggested model: Sonnet.)*
 - [ ] **Email viewer (`ThreadModal`): help bar and remaining actions.**
   `R`/`A`/`F` key shortcuts (matching the Reply/Reply All/Forward buttons,
   which now show their shortcut in-label) now work — done in the

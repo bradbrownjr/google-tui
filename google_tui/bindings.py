@@ -64,6 +64,7 @@ GLOBAL_ACTIONS: list[ActionSpec] = [
     ActionSpec("focus_label_select", "l", "Folder"),
     ActionSpec("focus_search", "/", "Search"),
     ActionSpec("context_space", "space", "Context"),
+    ActionSpec("browser_home", "alt+h", "Home"),
     ActionSpec("cal_prev", "[", "Prev"),
     ActionSpec("cal_next", "]", "Next"),
     ActionSpec("refresh", "ctrl+r", "Refresh"),
@@ -144,7 +145,7 @@ CONTEXT_HELP: dict[str, str] = {
     "pane:hermes": "Enter Ask",
     "tab:tab-calendar": "[ / ] Prev/Next Month or Week   Enter Day Detail",
     "tab:tab-drive": "Enter Open Folder / Reload Preview",
-    "tab:tab-browser": "Enter Load/Search   Alt+←/→ Back/Forward   Tab Toggle Focus   0-9+Enter Link",
+    "tab:tab-browser": "Enter Load/Search   Alt+←/→ Back/Forward   Alt+H Home   Tab Toggle Focus   0-9+Enter Link",
     "tab:tab-news": "Enter/Space Open Entry",
     "tab:tab-navigation": "Enter/Go Compute Route   Export Save Itinerary To File",
     "tab:tab-settings": "Alt+←/→ Switch Section   Toggle encryption   Choose key method   Clear local cache   "
@@ -199,6 +200,7 @@ BROWSER TAB
                          Gemini Protocol) shown until you navigate anywhere,
                          then hidden for the rest of the session
   Alt+Left / Alt+Right   Back / forward through this session's history
+  Alt+H                  Go to your configured home page (Settings -> General)
   Tab                    Toggle focus: address bar <-> page content
   0-9 then Enter (page)  Jump to numbered link
   Esc (page)             Cancel a pending number entry
