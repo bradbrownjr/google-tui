@@ -725,6 +725,23 @@ _ESCAPE_ALT_ARROW_ACTIONS = {
 # the two cases without misfiring on real sequential keypresses.
 _ESCAPE_ALT_ARROW_WINDOW = 0.05
 
+# "/" (action_focus_search) reveals these pane/tab search bars on demand;
+# Esc clears + re-hides them and hands focus back to the list/grid they
+# filter — same "hidden until summoned" pattern as ThreadModal's
+# #thread-search (see ThreadModal.action_focus_search/_hide_search). Keyed
+# by the Input's id; value is (wrapping Horizontal's id, id of the widget to
+# refocus on hide). cal-search's refocus target depends on which of the two
+# Month/Week grids is active, so it's resolved in _hide_pane_search instead
+# of hardcoded here.
+_PANE_SEARCH_BARS: dict[str, tuple[str, str | None]] = {
+    "email-search": ("email-bar", "email-list"),
+    "tasks-search": ("tasks-bar", "task-list"),
+    "events-search": ("events-bar", "event-list"),
+    "cal-search": ("cal-search-bar", None),
+    "drive-search": ("drive-search-bar", "drive-list"),
+    "news-search": ("news-search-bar", "news-list"),
+}
+
 
 class GoogleTUI(App):
     CSS = """
@@ -1177,20 +1194,20 @@ class GoogleTUI(App):
                                 if self.settings.default_label_id in ("ALL", "INBOX") else "INBOX",
                                 allow_blank=False, id="email-label-select",
                             )
-                            with Horizontal(id="email-bar", classes="btnrow"):
+                            with Horizontal(id="email-bar", classes="btnrow hidden"):
                                 yield Input(placeholder="Search email (subject/from/snippet)… (/)",
                                             id="email-search")
                             yield ListView(id="email-list")
                     with Vertical(id="right"):
                         with Container(id="events", classes="pane"):
                             yield self._pane_title_row("EVENTS  (upcoming)", 2)
-                            with Horizontal(id="events-bar", classes="btnrow"):
+                            with Horizontal(id="events-bar", classes="btnrow hidden"):
                                 yield Input(placeholder="Search events (summary/description)… (/)",
                                             id="events-search")
                             yield ListView(id="event-list")
                         with Container(id="tasks", classes="pane"):
                             yield self._pane_title_row("TASKS  (space=done, enter=detail)", 3)
-                            with Horizontal(id="tasks-bar", classes="btnrow"):
+                            with Horizontal(id="tasks-bar", classes="btnrow hidden"):
                                 yield Input(placeholder="Search tasks (title/notes)… (/)", id="tasks-search")
                             yield ListView(id="task-list")
                         with Container(id="hermes", classes="pane"):
@@ -1200,7 +1217,7 @@ class GoogleTUI(App):
             with TabPane(_tab_label("Calendar", 2, self.settings.ascii_mode), id="tab-calendar"):
                 with Container(id="calendar-section", classes="section"):
                     yield Label("CALENDAR", classes="pane-title-text")
-                    with Horizontal(id="cal-search-bar", classes="btnrow"):
+                    with Horizontal(id="cal-search-bar", classes="btnrow hidden"):
                         yield Input(placeholder="Jump to event (summary/description), Enter for next… (/)",
                                     id="cal-search")
                     with TabbedContent(id="cal-tabs"):
@@ -1211,7 +1228,7 @@ class GoogleTUI(App):
             with TabPane(_tab_label("Drive", 3, self.settings.ascii_mode), id="tab-drive"):
                 with Container(id="drive-section", classes="section"):
                     yield Label("/", id="drive-path", classes="muted")
-                    with Horizontal(id="drive-search-bar", classes="btnrow"):
+                    with Horizontal(id="drive-search-bar", classes="btnrow hidden"):
                         yield Input(placeholder="Search this folder (name)… (/)", id="drive-search")
                     with Horizontal(id="drive-body"):
                         with Vertical(id="drive-list-col"):
@@ -1233,7 +1250,7 @@ class GoogleTUI(App):
             with TabPane(_tab_label("News", 5, self.settings.ascii_mode), id="tab-news"):
                 with Container(id="news-section", classes="section"):
                     yield Label("NEWS  (all subscribed feeds, newest first)", classes="pane-title-text")
-                    with Horizontal(id="news-search-bar", classes="btnrow"):
+                    with Horizontal(id="news-search-bar", classes="btnrow hidden"):
                         yield Input(placeholder="Search entries (title/summary)… (/)", id="news-search")
                     yield ListView(id="news-list")
             with TabPane(_tab_label("Navigation", 6, self.settings.ascii_mode), id="tab-navigation"):
@@ -1934,6 +1951,12 @@ class GoogleTUI(App):
         §2's MRO-dispatch NOTE).
         """
         if event.key == "escape":
+            focused = self.focused
+            if isinstance(focused, Input) and focused.id in _PANE_SEARCH_BARS:
+                self._hide_pane_search(focused.id)
+                event.stop()
+                event.prevent_default()
+                return
             self._pending_escape_time = event.time
             return
         pending = self._pending_escape_time
@@ -2099,24 +2122,61 @@ class GoogleTUI(App):
         if tab == "tab-mail":
             pane = PANE_IDS[self.active]
             if pane == "email":
-                self.query_one("#email-search", Input).focus()
+                self._show_pane_search("email-search")
             elif pane == "tasks":
-                self.query_one("#tasks-search", Input).focus()
+                self._show_pane_search("tasks-search")
             elif pane == "events":
-                self.query_one("#events-search", Input).focus()
+                self._show_pane_search("events-search")
         elif tab == "tab-calendar":
-            self.query_one("#cal-search", Input).focus()
+            self._show_pane_search("cal-search")
         elif tab == "tab-drive":
-            self.query_one("#drive-search", Input).focus()
+            self._show_pane_search("drive-search")
         elif tab == "tab-news":
-            self.query_one("#news-search", Input).focus()
+            self._show_pane_search("news-search")
         elif tab == "tab-contacts":
             # Contacts already has its own live fuzzy search
             # (_fuzzy_filter_contacts) auto-focused on tab activation
             # (on_tabbed_content_tab_activated) — this just makes it
             # reachable via "/" too, e.g. after Tab/arrow-keying focus away
-            # to #contacts-list.
+            # to #contacts-list. Unlike the bars above, Contacts' search box
+            # is never hidden — it's the tab's primary control, not a
+            # summon-on-demand filter.
             self.query_one("#contacts-search", Input).focus()
+
+    def _show_pane_search(self, search_id: str) -> None:
+        """Reveal one of _PANE_SEARCH_BARS's hidden-by-default search bars
+        and focus its Input. Paired with _hide_pane_search (Esc)."""
+        bar_id, _ = _PANE_SEARCH_BARS[search_id]
+        self.query_one(f"#{bar_id}").remove_class("hidden")
+        self.query_one(f"#{search_id}", Input).focus()
+
+    def _hide_pane_search(self, search_id: str) -> None:
+        """Esc counterpart to _show_pane_search: clears the query (which
+        re-runs the Input.Changed live-filter handlers back to the
+        unfiltered list, same as backspacing to empty), re-hides the bar,
+        and hands focus back to the list/grid it was filtering — mirrors
+        ThreadModal._hide_search's find-in-thread pattern."""
+        spec = _PANE_SEARCH_BARS.get(search_id)
+        if spec is None:
+            return
+        bar_id, refocus_id = spec
+        try:
+            search = self.query_one(f"#{search_id}", Input)
+        except Exception:
+            return
+        search.value = ""
+        try:
+            self.query_one(f"#{bar_id}").add_class("hidden")
+        except Exception:
+            pass
+        if search_id == "cal-search":
+            week = self.query_one("#cal-tabs", TabbedContent).active == "cal-tab-week"
+            refocus_id = "cal-week-grid" if week else "cal-grid"
+        if refocus_id:
+            try:
+                self.query_one(f"#{refocus_id}").focus()
+            except Exception:
+                pass
 
     def _require_online(self) -> bool:
         if not self._online:
