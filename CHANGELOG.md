@@ -3,6 +3,25 @@
 Format: keep newest at top. One entry per meaningful change. Reference files
 touched and any breaking notes.
 
+## [2026-07-15] — Updater: lock concurrent-instance updates, log crashed relaunches
+
+Two google-tui instances launched moments apart could both detect the same
+pending update and run `git merge --ff-only` (plus its synchronous
+`pip install -e .` post-merge hook) against the shared checkout/venv at the
+same time, corrupting either relaunch — matches a report of an update
+printing the wrong version/sha pairing and then dropping straight back to
+the shell instead of launching. `check_for_update` (`updater.py`) now takes
+a non-blocking `flock` around the merge (`_LOCK_FILE`, in the platformdirs
+cache dir); a sibling instance that already holds it just skips the check
+for that run rather than waiting or double-merging. The lock is deliberately
+left open on success — Python fds are close-on-exec by default (PEP 446), so
+`restart()`'s `os.execv` releases it automatically at exactly the safe
+moment. Separately, `main()` (`main.py`) now logs the full traceback via
+`_logger.exception` for both a failed update check and a crash during
+`GoogleTUI().run()` itself — previously only the update-check path printed
+`str(e)` with no log entry, and a crash from `.run()` before Textual's
+`_handle_exception` hook is installed propagated completely unlogged.
+
 ## [2026-07-15] — Email pane: hide the labels filter until `l` is pressed
 
 `#email-label-select` (the All Mail/Inbox `Select`) was always visible above

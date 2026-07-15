@@ -5429,8 +5429,20 @@ def main():
         except Exception as e:
             # A broken update check must never be the reason you can't read your
             # mail. Report it and carry on into the app regardless.
+            _logger.exception("Update check failed")
             print(f"Can't reach update server, skipping update check. ({e})", flush=True)
-    GoogleTUI().run()
+    try:
+        GoogleTUI().run()
+    except Exception:
+        # GoogleTUI._handle_exception only sees crashes from message handlers
+        # and workers, once Textual's event loop is already pumping. A crash
+        # earlier than that -- e.g. hitting a half-settled editable-install
+        # right after a relaunch (see updater.restart) -- propagates straight
+        # out here uncaught, and previously just dumped a bare traceback to a
+        # terminal that may already be mid alt-screen-teardown and vanished,
+        # leaving zero record of what happened. Log it before it's gone.
+        _logger.exception("App failed to start")
+        raise
 
 
 def _update_check_enabled() -> bool:

@@ -22,10 +22,13 @@ Safety rules, in order of importance:
 """
 from __future__ import annotations
 
+import fcntl
 import os
 import subprocess
 import sys
 from pathlib import Path
+
+import platformdirs
 
 # Bound every git call: a hung network (or a git that decides to prompt for
 # credentials) must never wedge startup. Fetch gets the longer budget since
@@ -45,6 +48,15 @@ from pathlib import Path
 _GIT_TIMEOUT = 10
 _FETCH_TIMEOUT = 20
 _MERGE_TIMEOUT = 90
+
+# Guards the merge (and the synchronous `pip install -e .` inside its
+# post-merge hook, see _MERGE_TIMEOUT) against two google-tui instances
+# launched moments apart both updating the same checkout at once. Two
+# concurrent `git merge --ff-only` + `pip install -e .` runs against the same
+# working tree/venv can interleave -- e.g. one instance's freshly-execv'd
+# interpreter importing mid another's editable-install rewrite -- which is
+# exactly the kind of corrupted relaunch this module exists to prevent.
+_LOCK_FILE = Path(platformdirs.user_cache_dir("google-tui")) / "update.lock"
 
 
 def _repo_root() -> Path | None:
@@ -182,12 +194,30 @@ def check_for_update(quiet: bool = False) -> bool:
         say("Local branch has diverged from origin, skipping update check.")
         return False
 
+    # Non-blocking: if a sibling instance launched moments ago already holds
+    # this, it's already doing the exact same merge, so we just sit this
+    # round out rather than wait (never block startup) or double it up.
+    # Deliberately left open and unlocked on the success path -- Python fds
+    # are non-inheritable by default (PEP 446), so the OS closes it, and with
+    # it releases the lock, at the os.execv() in restart(), exactly when a
+    # sibling waiting on the next launch is safe to proceed.
+    _LOCK_FILE.parent.mkdir(parents=True, exist_ok=True)
+    lock_fd = os.open(_LOCK_FILE, os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        os.close(lock_fd)
+        say("No update found, loading application")
+        return False
+
     # One line, completed in place: "Downloading update... updated to v1.2.3".
     print("Downloading update...", end="", flush=True)
     rc, _ = _git(root, "merge", "--ff-only", f"origin/{branch}", timeout=_MERGE_TIMEOUT)
     if rc != 0:
         print()  # close the dangling line before reporting the failure
         say("Can't reach update server, skipping update check.")
+        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        os.close(lock_fd)
         return False
     print(f" updated to {describe(root)}", flush=True)
     return True
