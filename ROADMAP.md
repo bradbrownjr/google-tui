@@ -51,6 +51,33 @@ just checking it off here, so ROADMAP.md only ever shows what's still open.
     thread unread again from the list.
   *(Suggested model: Opus — touches `gauth` for delete/archive/labels, and
   the shared help-bar/search patterns.)*
+- [ ] **Extend `/` live search beyond the Email/Tasks panes.** The
+  `[2026-07-15]` pass added `/`-focused live filtering to the Email and
+  Tasks panes only (`action_focus_search`, `main.py:1591-1598`) — it
+  early-returns for every other tab, and there's no search box to focus
+  even if it didn't. Candidates, roughly easiest to hardest:
+  - **Events pane.** Same shape as Tasks (a fetched `ListView` over
+    `self._events_cache`) — should be a near-copy of the Tasks wiring
+    (`_fuzzy_filter_tasks`/`_apply_task_list_async` pattern) filtering on
+    summary/description.
+  - **Drive tab.** Filter the current folder's file list by name — same
+    pattern again, but scoped to `self._drive_files` for the current
+    folder rather than the whole tree.
+  - **News tab.** Filter combined feed entries by title/summary.
+  - **Contacts tab.** Already has its own live fuzzy search
+    (`#contacts-search`, `_fuzzy_filter_contacts`) — just not reachable via
+    `/`, it only auto-focuses on tab-activation. Wiring `action_focus_search`
+    to it would make the shortcut consistent app-wide with near-zero new code.
+  - **Calendar tab.** The hard one — Month/Week views are a date grid, not a
+    fetched list, so there's no `ListView` to filter. Would need a different
+    interaction (e.g. `/` highlights/jumps to the next day containing a
+    match, rather than hiding non-matching rows) — a real design decision,
+    not just a copy-paste of the Tasks wiring.
+  Use `_fuzzy_score()` (`main.py`, the `_FUZZY_MIN_QUERY_LEN`/threshold-75
+  fix from `[2026-07-15]`) for any of these rather than reintroducing the
+  short-query false-positive bug it fixed.
+  *(Suggested model: Sonnet for Events/Drive/News/Contacts; Opus if
+  Calendar's jump-to-match interaction is included.)*
 - [ ] **ASCII-fallback rendering mode.** The UI is Unicode-first by design
   today (round box-drawing borders throughout `main.py`'s CSS, superscript
   tab numbers `_SUPERSCRIPT`, arrow glyphs in help text, curly quotes/dashes/
