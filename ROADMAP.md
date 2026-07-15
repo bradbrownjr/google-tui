@@ -7,8 +7,6 @@ just checking it off here, so ROADMAP.md only ever shows what's still open.
 
 ## P2 — UX polish
 
-- [ ] **Calendar create event** from a modal (date/time/title) →
-  `gauth.create_event`. Currently read-only.
 - [ ] **Email viewer (`ThreadModal`): help bar and remaining actions.**
   `R`/`A`/`F` key shortcuts (matching the Reply/Reply All/Forward buttons,
   which now show their shortcut in-label) now work — done in the

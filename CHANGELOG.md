@@ -3,6 +3,90 @@
 Format: keep newest at top. One entry per meaningful change. Reference files
 touched and any breaking notes.
 
+## [2026-07-15] — Calendar create event (`n`, Calendar tab + Mail's Events pane)
+
+### Added
+Closes the ROADMAP P2 item "Calendar create event." The Calendar tab (and
+the Mail tab's Events pane) were read-only before this.
+
+- `gauth.create_event(svc, summary, start, end, all_day=False,
+  description="", location="")` — thin wrapper over
+  `events().insert(calendarId="primary", ...)`, following `list_events`/
+  `events_between`/`month_events`'s existing style. Returns the raw
+  created-event dict `insert` hands back, the same shape those three
+  already return, so a new event merges straight into the existing
+  Month/Week grids and the Mail tab's Events pane with no special case.
+  `start`/`end` are `datetime.date` for an all-day event (Calendar's API
+  distinguishes `{'date': ...}` from `{'dateTime': ..., 'timeZone': ...}`)
+  or a tz-aware `datetime.datetime` for a timed one — the caller attaches
+  a timezone; `create_event` deliberately omits an explicit `timeZone`
+  field since the offset embedded in `dateTime` is sufficient for a
+  non-recurring event. No `attendees` are ever set — this app has no
+  Contacts-based invite flow for events, out of scope here.
+
+- **`main.py`: a NEW `CreateEventModal`, not an `EventModal` "create
+  mode."** `ComposeModal` gained `mode == "new"` (P1 M5) cheaply because
+  its reply/reply_all/forward/new modes all share the exact same three
+  widgets (`#c-to`/`#c-subject`/`#c-body`) and only change what pre-fills
+  them. `EventModal`'s view is a single read-only `Static` detail block
+  with no input widgets at all — reusing it for creation would mean
+  composing every one of the create form's Input/Switch widgets even for
+  the ordinary view path and hiding them with CSS, just to share a "Close"
+  button. Not worth it; `CreateEventModal` is its own small `.pane`-
+  Container modal (title `Input`, an all-day `Switch`, date/start/end
+  `Input`s, Create/Cancel buttons) — same minimal shape as `ContactModal`/
+  `NewsEntryModal`.
+
+- **Date/time input is plain-text `Input`s** (`YYYY-MM-DD` / `HH:MM`,
+  24-hour), the same "no native date-picker widget" precedent as the
+  Navigation tab's origin/destination address inputs — Textual has no
+  built-in date picker and this app isn't building one from scratch for a
+  single form. The all-day `Switch` *disables* (not hides) the two time
+  inputs, so toggling it doesn't discard whatever the user already typed.
+
+- **Defaults, deliberately conservative** (this is Brad's real, live
+  calendar — see AGENTS.md's caution at the top of this file's own repo
+  instructions): no attendees ever, a plausible 9:00–10:00 default time
+  block (easy to change, better starting point than a zeroed field), and
+  the date field seeds from what the Calendar tab already has in view —
+  today if today falls inside the currently-viewed month/week, else the
+  1st of the viewed month or that week's Monday (`_cal_default_day`).
+  There's no "currently highlighted day" concept in either grid outside of
+  actually clicking a populated cell (which opens `DayEventsModal`/
+  `EventModal`, not this one), so this is the practical stand-in for that.
+
+- **Binding: `n`** (new `ActionSpec` in `bindings.py`, scope `global` —
+  same "bind globally, no-op unless the right tab/pane is active" pattern
+  as `c`/compose). Active on the Calendar tab (both Month and Week
+  sub-tabs) and the Mail tab's Events pane, since both show events. `c`
+  was already taken by Email's Compose; `n` was free.
+
+- **Refresh wiring reuses existing paths, doesn't invent a new one.**
+  `CreateEventModal` dismisses `True` on a successful create (mirrors
+  `TaskModal`'s `self._mutated` dismiss-timing pattern — the callback
+  fires *before* the modal is actually popped, so touching base-screen
+  widgets has to wait). `GoogleTUI._on_create_event_result` then runs one
+  worker-thread call (`_after_create_event_thread`) that (1) calls the
+  existing `_refresh_all_thread()` — the same refresh `action_toggle_task`
+  and a sent message already trigger — to update the Mail tab's Events
+  pane (`self._events_cache`), and (2) rebuilds whichever Calendar grid is
+  currently active via the existing `_fetch_cal_month`/`_apply_cal_month`
+  or `_fetch_cal_week`/`_apply_cal_week` fetch/apply pair. No new cache
+  category, no new apply path.
+
+### Verified
+Throwaway `run_test` + pilot scripts (`size=(140, 44)`, every `gauth` call
+mocked including the new `create_event`, per AGENTS.md §6 — this is
+Brad's real calendar) covering, each in its own process: a timed event
+created from the Calendar tab's Month view (right args to `create_event`,
+tz-aware start/end, modal dismisses, event shows up in both
+`_events_cache` and `_cal_by_day` afterward without restarting the app);
+an all-day event (Switch disables the time inputs, `end` is `start + 1
+day` since Calendar's all-day end date is exclusive); the same flow
+triggered from the Mail tab's Events pane instead of the Calendar tab; and
+a Week-view create confirming `_cal_week_cells` gets rebuilt too, not just
+the Month grid.
+
 ## [2026-07-15] — Task subtasks: add/toggle/delete in TaskModal
 
 ### Added

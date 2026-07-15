@@ -2776,6 +2776,75 @@ class GoogleTUI(App):
             day = (self._cal_week_start + dt.timedelta(days=col)).day
             self.push_screen(DayEventsModal(day, self._cal_week_start.month, self._cal_week_start.year, evs))
 
+    # ---- new event (Calendar tab, and the Mail tab's Events pane) ----
+    def action_new_event(self) -> None:
+        tab = self._main_tabs().active
+        if tab == "tab-calendar":
+            default_date = self._cal_default_day()
+        elif tab == "tab-mail" and PANE_IDS[self.active] == "events":
+            default_date = dt.date.today()
+        else:
+            return
+        if not self._require_online():
+            return
+        self.push_screen(CreateEventModal(self.svc, default_date), self._on_create_event_result)
+
+    def _cal_default_day(self) -> dt.date:
+        """Seed the create-event form's date field from what the Calendar
+        tab currently has in view -- today if today falls inside the
+        viewed month/week, else the first of the viewed month (Month) or
+        that week's Monday (Week). There's no "currently highlighted day"
+        concept in either grid outside of actually clicking a populated
+        cell (which opens DayEventsModal/EventModal instead, not this
+        modal), so this is the practical stand-in for DayEventsModal's
+        "which day's events to show" — a day the grid is already showing,
+        not an arbitrary one.
+        """
+        today = dt.date.today()
+        if self.query_one("#cal-tabs", TabbedContent).active == "cal-tab-week":
+            week_end = self._cal_week_start + dt.timedelta(days=6)
+            if self._cal_week_start <= today <= week_end:
+                return today
+            return self._cal_week_start
+        if self._cal_year == today.year and self._cal_month == today.month:
+            return today
+        return dt.date(self._cal_year, self._cal_month, 1)
+
+    def _on_create_event_result(self, created) -> None:
+        # Mirrors _on_task_modal_result's timing: CreateEventModal dismisses
+        # with whether it actually created something; only then is it safe
+        # to touch base-screen widgets (see AGENTS.md's push_screen callback-
+        # timing NOTE and the query_one/screens NOTE -- this callback fires
+        # before the modal is actually popped).
+        if not created:
+            return
+        try:
+            cal_active_week = self.query_one("#cal-tabs", TabbedContent).active == "cal-tab-week"
+        except Exception:
+            cal_active_week = False
+        self.run_worker(lambda: self._after_create_event_thread(cal_active_week),
+                         thread=True, exclusive=True)
+
+    def _after_create_event_thread(self, cal_active_week: bool) -> None:
+        """Runs on its own worker thread (see AGENTS.md's fetch/apply-split
+        NOTE) -- refreshes both places a newly-created event needs to show
+        up: the Mail tab's Events pane (via the same _refresh_all_thread
+        path a task toggle or a sent message already uses) and the
+        Calendar tab's currently-active grid (Month or Week), rebuilt via
+        the existing _fetch_cal_month/_fetch_cal_week + _apply_cal_month/
+        _apply_cal_week fetch/apply pair rather than a new refresh path.
+        """
+        self._refresh_all_thread()
+        try:
+            if cal_active_week:
+                events = self._fetch_cal_week()
+                self.call_from_thread(self._apply_cal_week, events)
+            else:
+                events = self._fetch_cal_month()
+                self.call_from_thread(self._apply_cal_month, events)
+        except Exception as e:
+            self.call_from_thread(self.notify, f"Calendar refresh error: {e}", severity="error")
+
     # ---- drive tab ----
     def _fetch_drive_files(self, folder_id: str) -> list[dict]:
         return gauth.list_drive(self.svc, folder_id)
@@ -4279,6 +4348,144 @@ class EventModal(ModalScreen):
     def on_button_pressed(self, e):
         self.dismiss(None)
     def on_key(self, e):
+        if e.key == "escape":
+            self.dismiss(None)
+
+
+class CreateEventModal(ModalScreen):
+    """New-event creation form (P2, 2026-07-15 — Calendar was read-only
+    before this).
+
+    A NEW modal, not an EventModal "create mode" the way ComposeModal
+    gained `mode == "new"` (P1 M5): ComposeModal's reply/reply_all/
+    forward/new modes all share the exact same three widgets (`#c-to`,
+    `#c-subject`, `#c-body`) and only change what pre-fills them, so
+    folding "new" into the existing class cost nothing. EventModal's VIEW
+    is a single read-only `Static` detail block with no input widgets at
+    all — reusing it for creation would mean composing every one of this
+    form's Input/Switch widgets even for the common view path and hiding
+    them with CSS, just to share a "Close" button. Not worth it; a
+    separate class with its own compose() is simpler and matches this
+    app's other minimal `.pane`-Container modals (ContactModal,
+    NewsEntryModal).
+
+    Date/time input is plain-text `Input`s (`YYYY-MM-DD` / `HH:MM`, 24h),
+    same "no native picker widget" precedent as the Navigation tab's
+    origin/destination address inputs — Textual has no built-in date
+    picker, and this app doesn't add one from scratch for a single form.
+    An all-day `Switch` disables the two time inputs rather than hiding
+    them, so a mis-tap doesn't lose already-typed times.
+    """
+
+    def __init__(self, svc, default_date: dt.date):
+        super().__init__()
+        self.svc = svc
+        self.default_date = default_date
+        self._submitting = False
+
+    def compose(self) -> ComposeResult:
+        with Container(id="ce-box", classes="pane"):
+            yield Label("NEW EVENT", classes="pane-title-text")
+            yield Input(placeholder="Title", id="ce-title")
+            with Horizontal(classes="btnrow"):
+                yield Label("All-day")
+                yield Switch(id="ce-allday")
+            yield Input(placeholder="Date (YYYY-MM-DD)", id="ce-date")
+            with Horizontal(classes="btnrow"):
+                yield Input(placeholder="Start (HH:MM, 24h)", id="ce-start-time")
+                yield Input(placeholder="End (HH:MM, 24h)", id="ce-end-time")
+            with Horizontal(classes="btnrow"):
+                yield Button("Create", id="ce-create")
+                yield Button("Cancel", id="cancel")
+
+    def on_mount(self) -> None:
+        self.query_one("#ce-date", Input).value = self.default_date.isoformat()
+        # 9-10am is just a sensible default block, not tied to "now" — the
+        # user is very likely to change it, but an empty/zeroed field would
+        # be a worse starting point than a plausible one-hour meeting.
+        self.query_one("#ce-start-time", Input).value = "09:00"
+        self.query_one("#ce-end-time", Input).value = "10:00"
+        self.query_one("#ce-title", Input).focus()
+
+    def on_switch_changed(self, event: Switch.Changed) -> None:
+        if event.switch.id == "ce-allday":
+            self.query_one("#ce-start-time", Input).disabled = event.value
+            self.query_one("#ce-end-time", Input).disabled = event.value
+
+    def on_button_pressed(self, e: Button.Pressed) -> None:
+        if e.button.id == "cancel":
+            self.dismiss(None)
+        elif e.button.id == "ce-create":
+            self._try_create()
+
+    def on_input_submitted(self, e: Input.Submitted) -> None:
+        self._try_create()
+
+    def _try_create(self) -> None:
+        if self._submitting:
+            return  # a create is already in flight -- avoid a double-tap
+                     # firing two real inserts against Brad's live calendar
+        title = self.query_one("#ce-title", Input).value.strip()
+        if not title:
+            self.notify("Title is required", severity="warning")
+            return
+        date_str = self.query_one("#ce-date", Input).value.strip()
+        try:
+            day = dt.date.fromisoformat(date_str)
+        except ValueError:
+            self.notify("Date must be YYYY-MM-DD", severity="warning")
+            return
+        all_day = self.query_one("#ce-allday", Switch).value
+        if all_day:
+            start: object = day
+            # Calendar's all-day `end.date` is EXCLUSIVE (a one-day event
+            # spans [date, date+1)), unlike a timed event's end -- without
+            # +1 here, a "today, all day" event would show as zero-length.
+            end: object = day + dt.timedelta(days=1)
+        else:
+            start_str = self.query_one("#ce-start-time", Input).value.strip()
+            end_str = self.query_one("#ce-end-time", Input).value.strip()
+            try:
+                start_time = dt.datetime.strptime(start_str, "%H:%M").time()
+            except ValueError:
+                self.notify("Start time must be HH:MM", severity="warning")
+                return
+            end_time = None
+            if end_str:
+                try:
+                    end_time = dt.datetime.strptime(end_str, "%H:%M").time()
+                except ValueError:
+                    self.notify("End time must be HH:MM", severity="warning")
+                    return
+            # Attach the system's local timezone -- the user typed a
+            # wall-clock time meaning "local time here", and Calendar's API
+            # needs a UTC-offset-bearing dateTime (or an explicit timeZone
+            # field, which create_event() deliberately omits) to place the
+            # event correctly rather than silently treating it as UTC.
+            local_tz = dt.datetime.now().astimezone().tzinfo
+            start = dt.datetime.combine(day, start_time, tzinfo=local_tz)
+            end = (dt.datetime.combine(day, end_time, tzinfo=local_tz)
+                   if end_time is not None else start + dt.timedelta(hours=1))
+            if end <= start:
+                self.notify("End time must be after start time", severity="warning")
+                return
+        self._submitting = True
+        self.run_worker(lambda: self._create_thread(title, start, end, all_day),
+                         thread=True, exclusive=True, group="event-create")
+
+    def _create_thread(self, title: str, start, end, all_day: bool) -> None:
+        try:
+            gauth.create_event(self.svc, title, start, end, all_day=all_day)
+        except Exception as ex:
+            self.app.call_from_thread(self._create_failed, f"Create event failed: {ex}")
+            return
+        self.app.call_from_thread(self.dismiss, True)
+
+    def _create_failed(self, msg: str) -> None:
+        self._submitting = False
+        self.notify(msg, severity="error")
+
+    def on_key(self, e) -> None:
         if e.key == "escape":
             self.dismiss(None)
 

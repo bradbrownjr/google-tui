@@ -67,6 +67,7 @@ GLOBAL_ACTIONS: list[ActionSpec] = [
     ActionSpec("browser_home", "alt+h", "Home"),
     ActionSpec("cal_prev", "[", "Prev"),
     ActionSpec("cal_next", "]", "Next"),
+    ActionSpec("new_event", "n", "New Event"),
     ActionSpec("refresh", "ctrl+r", "Refresh"),
     ActionSpec("help", "ctrl+h", "Help"),
     ActionSpec("toggle_mouse", "f2", "Mouse"),
@@ -158,10 +159,10 @@ HELP_GLOBAL_TEXT = (
 # matches GoogleTUI._context_help_text's former if/elif exactly.
 CONTEXT_HELP: dict[str, str] = {
     "pane:email": "Enter Open   c Compose   r Reply   a Reply All   f Forward   Space Expand   l Folder   / Search",
-    "pane:events": "Enter/Space Detail   / Search",
+    "pane:events": "Enter/Space Detail   n New Event   / Search",
     "pane:tasks": "Space Toggle Complete   Enter Detail   / Search",
     "pane:hermes": "Enter Ask",
-    "tab:tab-calendar": "[ / ] Prev/Next Month or Week   Enter Day Detail",
+    "tab:tab-calendar": "[ / ] Prev/Next Month or Week   Enter Day Detail   n New Event",
     "tab:tab-drive": "Enter Open Folder / Reload Preview   / Search (this folder)",
     "tab:tab-browser": "Enter Load/Search   Alt+←/→ Back/Forward   Alt+H Home   Tab Toggle Focus   0-9+Enter Link",
     "tab:tab-news": "Enter/Space Open Entry   / Search",
@@ -195,8 +196,8 @@ MAIL TAB
   Email pane:   Enter open thread, Space expand/collapse (shows snippet),
                 l open folder picker, c Compose new, r Reply, a Reply All,
                 f Forward, / search (live filter over subject/from/snippet)
-  Events pane:  Enter/Space open event detail, / search (live filter over
-                summary/description)
+  Events pane:  Enter/Space open event detail, n new event, / search (live
+                filter over summary/description)
   Tasks pane:   Space toggle complete, Enter open detail, / search (live
                 filter over title/notes)
   Hermes pane:  type a question, Enter to ask
@@ -208,6 +209,8 @@ CALENDAR TAB
   [ / ]         Previous / next month (or week, in Week view)
   Enter/click   Open a day's full event list (Month view)
                 Open an event, or a chooser if several share an hour (Week view)
+  n             New event (also works from the Mail tab's Events pane) —
+                title + date + start/end time, or an all-day toggle
 
 DRIVE TAB
   Up/Down       Move selection — preview pane updates live

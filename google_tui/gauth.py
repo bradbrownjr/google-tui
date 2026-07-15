@@ -459,6 +459,45 @@ def month_events(svc, year: int, month: int) -> list[dict]:
     return events_between(svc, start, end)
 
 
+def create_event(svc, summary: str, start, end, all_day: bool = False,
+                  description: str = "", location: str = "") -> dict:
+    """Create a Calendar event via `events().insert`.
+
+    Returns the raw created-event dict `events().insert` hands back, the
+    same shape `list_events`/`events_between`/`month_events` already
+    return (a plain Calendar API event resource) — so a freshly created
+    event merges straight into the Month/Week grids and the Mail tab's
+    Events pane with no special case.
+
+    `start`/`end` are `datetime.date` for an all-day event (`all_day=True`
+    — Calendar's API distinguishes `{'date': 'YYYY-MM-DD'}` from
+    `{'dateTime': ..., 'timeZone': ...}`) or a tz-AWARE `datetime.datetime`
+    for a timed event. The caller (`CreateEventModal` in main.py) is
+    responsible for attaching a timezone before calling this: a naive
+    datetime's `.isoformat()` carries no UTC offset, and Calendar's API
+    needs one (or an explicit `timeZone` field, which this omits — the
+    offset embedded in `dateTime` is sufficient for a non-recurring event)
+    to place the event at the intended wall-clock time rather than UTC.
+
+    No `attendees` field is ever set — this app has no Contacts-based
+    invite flow for events (out of scope; see ROADMAP history for the
+    "Calendar create event" item this implements).
+    """
+    cal = svc["calendar"]
+    if all_day:
+        start_body = {"date": start.isoformat()}
+        end_body = {"date": end.isoformat()}
+    else:
+        start_body = {"dateTime": start.isoformat()}
+        end_body = {"dateTime": end.isoformat()}
+    body: dict = {"summary": summary, "start": start_body, "end": end_body}
+    if description:
+        body["description"] = description
+    if location:
+        body["location"] = location
+    return cal.events().insert(calendarId="primary", body=body).execute()
+
+
 def _event_start(e: dict) -> datetime:
     s = e.get("start", {})
     if "dateTime" in s:
