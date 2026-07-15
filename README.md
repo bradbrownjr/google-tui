@@ -80,8 +80,11 @@ toggling a task) are disabled with a warning instead of failing silently.
   on the machine running google-tui, use it whenever a tab shows an auth
   error or roughly weekly since Google expires test-app tokens after 7
   days, see [SETUP.md](SETUP.md) §4 and §7; set the Browser tab's `Alt+H`
-  home page; encrypt-at-rest for the local cache, off by default; choose
-  how the encryption key is handled; clear the local cache), **AI Provider** (pick
+  home page; ASCII-safe mode for terminals that mangle Unicode (swaps round
+  borders/superscript tab numbers/arrow glyphs/curly quotes for plain-ASCII
+  equivalents, takes effect immediately); encrypt-at-rest for the local
+  cache, off by default; choose how the encryption key is handled; clear
+  the local cache), **AI Provider** (pick
   your AI provider, set a Nous API key), **News Feeds** (manage your
   News-tab feed subscriptions — add/remove URLs), **Search** (pick the
   Browser tab's search provider — Google/DuckDuckGo/SearXNG — and set the

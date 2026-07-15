@@ -131,6 +131,24 @@ def hinted_label(scope: str, action_id: str) -> str:
     return f"{spec.label} ({_key_glyph(spec.keys)})"
 
 
+# Settings -> General -> "ASCII-safe mode" swaps these for the plain-ASCII
+# equivalents on the right, applied by ``ascii_safe()`` below. Kept as a
+# find/replace over the normal (Unicode) strings below rather than a second
+# hand-maintained copy of every help string, so there's exactly one place to
+# edit when help text changes.
+_ARROW_ASCII = {"←": "<-", "→": "->", "↑": "^", "↓": "v"}
+
+
+def ascii_safe(text: str) -> str:
+    """Swap arrow glyphs for ASCII-safe equivalents. Callers (help bar,
+    HelpModal) decide whether to apply this based on ``Settings.ascii_mode``
+    — this module stays a dumb string transform, no Settings import here.
+    """
+    for glyph, repl in _ARROW_ASCII.items():
+        text = text.replace(glyph, repl)
+    return text
+
+
 HELP_GLOBAL_TEXT = (
     "Ctrl+# / Ctrl+←→ Tab   Alt+# Pane   Alt+←→↑↓ Move Pane   "
     "Ctrl+P Commands   F2 Mouse   Ctrl+H Help   Ctrl+Q Quit"

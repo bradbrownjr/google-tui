@@ -111,7 +111,7 @@ def _looks_like_html(text: str) -> bool:
     return "<html" in head or "<!doctype html" in head
 
 
-def fetch_http(url: str, timeout: int = 20) -> render.Document:
+def fetch_http(url: str, timeout: int = 20, ascii_mode: bool = False) -> render.Document:
     try:
         resp = requests.get(
             url, timeout=timeout,
@@ -128,7 +128,7 @@ def fetch_http(url: str, timeout: int = 20) -> render.Document:
     mime = content_type.split(";")[0].strip().lower()
 
     if mime == "text/html" or (not mime and _looks_like_html(resp.text)):
-        return render.parse_html(resp.text, base_url=resp.url)
+        return render.parse_html(resp.text, base_url=resp.url, ascii_mode=ascii_mode)
     if mime.startswith("text/") or not mime:
         blocks = [render.Block(kind="paragraph", text=line)
                   for line in resp.text.split("\n") if line.strip()]
@@ -395,8 +395,8 @@ _DDG_SNIPPET_RE = re.compile(
 _HREF_RE = re.compile(r'href="([^"]*)"')
 
 
-def _strip_tags(html: str) -> str:
-    return render.decode_html_entities(_TAG_RE.sub("", html)).strip()
+def _strip_tags(html: str, ascii_mode: bool = False) -> str:
+    return render.decode_html_entities(_TAG_RE.sub("", html), ascii_mode).strip()
 
 
 def _unwrap_ddg_redirect(href: str) -> str:
@@ -457,7 +457,7 @@ def search_google_cse(query: str, api_key: str, cse_id: str, timeout: int = 15) 
     return _search_results_to_document(query, results)
 
 
-def search_duckduckgo(query: str, timeout: int = 15) -> render.Document:
+def search_duckduckgo(query: str, timeout: int = 15, ascii_mode: bool = False) -> render.Document:
     """DuckDuckGo's non-JS HTML results page. No API key needed — this is
     the no-config-needed baseline every other search path falls back to.
     """
@@ -476,11 +476,11 @@ def search_duckduckgo(query: str, timeout: int = 15) -> render.Document:
     for attrs, inner in _DDG_A_RE.findall(resp.text):
         href_m = _HREF_RE.search(attrs)
         href = _unwrap_ddg_redirect(href_m.group(1)) if href_m else ""
-        title = _strip_tags(inner)
+        title = _strip_tags(inner, ascii_mode)
         if href:
             titles_urls.append((title, href))
 
-    snippets = [_strip_tags(s) for s in _DDG_SNIPPET_RE.findall(resp.text)]
+    snippets = [_strip_tags(s, ascii_mode) for s in _DDG_SNIPPET_RE.findall(resp.text)]
 
     results = []
     for i, (title, url) in enumerate(titles_urls):
@@ -490,7 +490,7 @@ def search_duckduckgo(query: str, timeout: int = 15) -> render.Document:
     return _search_results_to_document(query, results)
 
 
-def search_searxng(query: str, base_url: str, timeout: int = 15) -> render.Document:
+def search_searxng(query: str, base_url: str, timeout: int = 15, ascii_mode: bool = False) -> render.Document:
     """SearXNG instance search. Tries JSON output first (most instances
     support ``format=json``); some public instances disable it, in which
     case this falls back to fetching the plain HTML results page and
@@ -514,7 +514,7 @@ def search_searxng(query: str, base_url: str, timeout: int = 15) -> render.Docum
             headers={"User-Agent": DEFAULT_USER_AGENT}, timeout=timeout,
         )
         resp.raise_for_status()
-        return render.parse_html(resp.text, base_url=resp.url)
+        return render.parse_html(resp.text, base_url=resp.url, ascii_mode=ascii_mode)
 
 
 def run_search(query: str, settings, timeout: int = 15) -> render.Document:
@@ -522,8 +522,14 @@ def run_search(query: str, settings, timeout: int = 15) -> render.Document:
     reliable no-config-needed fallback for every path — see AGENTS.md /
     the task brief for the exact fallback chain. This is what replaces the
     old, now-broken ``hermes web search`` shell-out.
+
+    Reads ``settings.ascii_mode`` (P2, 2026-07-15 "ASCII-safe mode") itself
+    and threads it into every backend, rather than the caller passing it
+    separately — every other knob this function reads (provider, API keys)
+    already comes off the same ``settings`` object.
     """
     provider = settings.search_provider
+    ascii_mode = getattr(settings, "ascii_mode", False)
 
     if provider == "google":
         if settings.google_cse_api_key and settings.google_cse_id:
@@ -531,18 +537,18 @@ def run_search(query: str, settings, timeout: int = 15) -> render.Document:
                 return search_google_cse(query, settings.google_cse_api_key,
                                           settings.google_cse_id, timeout=timeout)
             except Exception:
-                return search_duckduckgo(query, timeout=timeout)
-        return search_duckduckgo(query, timeout=timeout)
+                return search_duckduckgo(query, timeout=timeout, ascii_mode=ascii_mode)
+        return search_duckduckgo(query, timeout=timeout, ascii_mode=ascii_mode)
 
     if provider == "searxng":
         if settings.searxng_url:
             try:
-                return search_searxng(query, settings.searxng_url, timeout=timeout)
+                return search_searxng(query, settings.searxng_url, timeout=timeout, ascii_mode=ascii_mode)
             except Exception:
-                return search_duckduckgo(query, timeout=timeout)
-        return search_duckduckgo(query, timeout=timeout)
+                return search_duckduckgo(query, timeout=timeout, ascii_mode=ascii_mode)
+        return search_duckduckgo(query, timeout=timeout, ascii_mode=ascii_mode)
 
-    return search_duckduckgo(query, timeout=timeout)
+    return search_duckduckgo(query, timeout=timeout, ascii_mode=ascii_mode)
 
 
 # ---------------------------------------------------------------------------
@@ -583,7 +589,7 @@ class RouteResult:
 
 
 def compute_route(origin: str, destination: str, api_key: str,
-                   units: str = "IMPERIAL", timeout: int = 15) -> RouteResult:
+                   units: str = "IMPERIAL", timeout: int = 15, ascii_mode: bool = False) -> RouteResult:
     """POST to the Routes API's computeRoutes endpoint and return a flat,
     already-parsed ``RouteResult``. Returns a plain dataclass, not a
     ``render.Document`` — there's nothing to hyperlink-navigate in a step
@@ -635,7 +641,7 @@ def compute_route(origin: str, destination: str, api_key: str,
     for leg in route.get("legs", []):
         for step in leg.get("steps", []):
             instr = step.get("navigationInstruction", {}).get("instructions", "")
-            instr = render.decode_html_entities(instr)
+            instr = render.decode_html_entities(instr, ascii_mode)
             lv = step.get("localizedValues", {})
             steps.append(RouteStep(
                 instruction=instr,

@@ -25,6 +25,17 @@ three deliberate departures from the source material:
 The BBS-era print()/input() pagination loop, the `__EXIT__`/`__MAIN__`
 sentinel strings, and the self-update mechanism are intentionally NOT
 ported: ``DocumentView`` below owns real scrolling instead.
+
+Settings -> General -> "ASCII-safe mode" (P2, 2026-07-15) partially reverses
+departure #1 above, but only for the specific curly-quote/dash/ellipsis/
+bullet/guillemet punctuation ``decode_html_entities`` itself introduces —
+real content Unicode (accented names, non-Latin scripts, etc.) is left
+alone; this is a punctuation fallback for mangling terminals, not the old
+strip-everything-above-ASCII-126 behavior. Threaded through as a plain
+``ascii_mode: bool`` parameter on every function in this module that
+(transitively) calls ``decode_html_entities`` — this module stays I/O-free
+and knows nothing about ``Settings``; callers (``main.py``, ``fetchers.py``)
+read ``Settings.ascii_mode`` and pass the bool in.
 """
 from __future__ import annotations
 
@@ -165,14 +176,35 @@ _ENTITY_MAP = {
 _NUMERIC_ENTITY_RE = re.compile(r"&#(\d+);")
 _HEX_ENTITY_RE = re.compile(r"&#x([0-9a-fA-F]+);")
 
+# Settings -> General -> "ASCII-safe mode": plain-ASCII equivalents for the
+# punctuation this module otherwise decodes to real Unicode (fix #1's whole
+# point, normally) — applied as a second pass, after the real character has
+# already been produced, so this stays a pure substitution table rather than
+# a second _ENTITY_MAP to keep in sync.
+_ASCII_PUNCTUATION = {
+    "‘": "'", "’": "'",   # ‘ ’
+    "“": '"', "”": '"',   # “ ”
+    "—": "-", "–": "-",   # — –
+    "…": "...",                # …
+    "•": "*", "·": "*",   # • ·
+    "«": '"', "»": '"',   # « »
+}
 
-def decode_html_entities(text: str) -> str:
+
+def decode_html_entities(text: str, ascii_mode: bool = False) -> str:
     """Decode HTML entities to proper Unicode text.
 
     Ported from ``htmlview.py``'s ``decode_html_entities`` (named-entity
     table + numeric/hex entity decoding), minus the ASCII-only stripping
     pass that made sense on a packet-radio terminal but has no place here
     (fix #1 — see module docstring).
+
+    ``ascii_mode=True`` (Settings -> General -> "ASCII-safe mode") re-adds a
+    narrow, deliberate version of that stripping: only the specific curly-
+    quote/dash/ellipsis/bullet/guillemet punctuation this function itself
+    introduces gets swapped for plain ASCII, everything else stays real
+    Unicode. This module stays I/O-free/protocol-agnostic — the caller
+    passes a plain bool, not a ``Settings`` object (see AGENTS.md).
     """
     for entity, replacement in _ENTITY_MAP.items():
         text = text.replace(entity, replacement)
@@ -194,6 +226,9 @@ def decode_html_entities(text: str) -> str:
     # Safety net for named entities outside the explicit table above
     # (there are hundreds in the HTML spec; this catches the long tail).
     text = _html_stdlib.unescape(text)
+    if ascii_mode:
+        for glyph, repl in _ASCII_PUNCTUATION.items():
+            text = text.replace(glyph, repl)
     return text
 
 
@@ -514,7 +549,7 @@ _PAGINATION_TEXT_RE = re.compile(
 _NAV_LINK_CAP = 75
 
 
-def _extract_nav_links(nav_html: str, base_url: str, start_number: int) -> list[Link]:
+def _extract_nav_links(nav_html: str, base_url: str, start_number: int, ascii_mode: bool = False) -> list[Link]:
     """Extract, dedup, and number links from a nav section.
 
     Ported from ``htmlview.py``'s ``HTMLParser._extract_nav_links``
@@ -534,7 +569,7 @@ def _extract_nav_links(nav_html: str, base_url: str, start_number: int) -> list[
         if not href or href.startswith("#") or href.startswith("javascript:"):
             continue
 
-        text = decode_html_entities(text)
+        text = decode_html_entities(text, ascii_mode)
         text = re.sub(r"\s+", " ", text).strip()
 
         if _SOCIAL_TEXT_RE.match(text):
@@ -559,7 +594,7 @@ def _extract_nav_links(nav_html: str, base_url: str, start_number: int) -> list[
 # --------------------------------------------------------------------------
 
 
-def _extract_title(html: str) -> str | None:
+def _extract_title(html: str, ascii_mode: bool = False) -> str | None:
     """Extract a page title: ``<title>`` first, falling back to the first
     ``<h1>``/``<h2>``/``<h3>``.
 
@@ -571,7 +606,7 @@ def _extract_title(html: str) -> str | None:
     match = re.search(r"<title[^>]*>(.*?)</title>", html, flags=re.DOTALL | re.IGNORECASE)
     if match:
         title = re.sub(r"<[^>]+>", "", match.group(1)).strip()
-        title = decode_html_entities(title)
+        title = decode_html_entities(title, ascii_mode)
         title = re.sub(r"\s+", " ", title).strip()
         if title:
             return title
@@ -580,7 +615,7 @@ def _extract_title(html: str) -> str | None:
         match = re.search(rf"<{tag}[^>]*>(.*?)</{tag}>", html, flags=re.DOTALL | re.IGNORECASE)
         if match:
             title = re.sub(r"<[^>]+>", "", match.group(1)).strip()
-            title = decode_html_entities(title)
+            title = decode_html_entities(title, ascii_mode)
             title = re.sub(r"\s+", " ", title).strip()
             if title and len(title) < 100:
                 return title
@@ -604,7 +639,7 @@ _JUNK_LINK_TEXT_RES = (
 _TOKEN_RE = re.compile(r"\x00(PRE|H|Q|LI)(\d+)\x00")
 
 
-def _html_to_blocks(content_html: str, base_url: str, start_number: int) -> tuple[list[Block], list[Link]]:
+def _html_to_blocks(content_html: str, base_url: str, start_number: int, ascii_mode: bool = False) -> tuple[list[Block], list[Link]]:
     """Convert content HTML into ``(blocks, links)``.
 
     Functional re-implementation of ``htmlview.py``'s
@@ -628,7 +663,7 @@ def _html_to_blocks(content_html: str, base_url: str, start_number: int) -> tupl
 
     def _stash_pre(match: re.Match) -> str:
         inner = re.sub(r"<[^>]+>", "", match.group(1))
-        inner = decode_html_entities(inner)
+        inner = decode_html_entities(inner, ascii_mode)
         pre_store.append(inner)
         return f"\x00PRE{len(pre_store) - 1}\x00"
 
@@ -643,7 +678,7 @@ def _html_to_blocks(content_html: str, base_url: str, start_number: int) -> tupl
         if not href or href.startswith("#") or href.startswith("javascript:"):
             return text
 
-        text = decode_html_entities(text)
+        text = decode_html_entities(text, ascii_mode)
         text = re.sub(r"\s+", " ", text).strip()
         if not text:
             return ""
@@ -730,7 +765,7 @@ def _html_to_blocks(content_html: str, base_url: str, start_number: int) -> tupl
     parts = _TOKEN_RE.split(content_html)
 
     def _flush_paragraphs(text: str) -> None:
-        text = decode_html_entities(text)
+        text = decode_html_entities(text, ascii_mode)
         for para in re.split(r"\n\s*\n", text):
             collapsed = re.sub(r"\s+", " ", para).strip()
             if collapsed:
@@ -749,16 +784,16 @@ def _html_to_blocks(content_html: str, base_url: str, start_number: int) -> tupl
             blocks.append(Block(kind="preformatted", text=pre_store[idx]))
         elif kind == "H":
             level, htext = heading_store[idx]
-            htext = re.sub(r"\s+", " ", decode_html_entities(htext)).strip()
+            htext = re.sub(r"\s+", " ", decode_html_entities(htext, ascii_mode)).strip()
             if htext:
                 blocks.append(Block(kind="heading", text=htext, level=level))
         elif kind == "Q":
-            qtext = re.sub(r"\s+", " ", decode_html_entities(quote_store[idx])).strip()
+            qtext = re.sub(r"\s+", " ", decode_html_entities(quote_store[idx], ascii_mode)).strip()
             if qtext:
                 blocks.append(Block(kind="quote", text=qtext))
         elif kind == "LI":
             litext, ordered = li_store[idx]
-            litext = re.sub(r"\s+", " ", decode_html_entities(litext)).strip()
+            litext = re.sub(r"\s+", " ", decode_html_entities(litext, ascii_mode)).strip()
             if litext:
                 blocks.append(Block(kind="list_item", text=litext, ordered=ordered))
 
@@ -770,13 +805,18 @@ def _html_to_blocks(content_html: str, base_url: str, start_number: int) -> tupl
 # --------------------------------------------------------------------------
 
 
-def parse_html(html: str, base_url: str = "") -> Document:
-    """Parse an HTML page into a protocol-agnostic ``Document``."""
-    title = _extract_title(html)
+def parse_html(html: str, base_url: str = "", ascii_mode: bool = False) -> Document:
+    """Parse an HTML page into a protocol-agnostic ``Document``.
+
+    ``ascii_mode`` (Settings -> General -> "ASCII-safe mode") is threaded
+    straight through to every ``decode_html_entities`` call underneath this
+    (title, nav links, body blocks) — see that function's docstring.
+    """
+    title = _extract_title(html, ascii_mode)
     stripped = _strip_noise(html)
     content_html, nav_html = _separate_nav_content(stripped, base_url)
-    blocks, content_links = _html_to_blocks(content_html, base_url, start_number=1)
-    nav_links = _extract_nav_links(nav_html, base_url, start_number=len(content_links) + 1)
+    blocks, content_links = _html_to_blocks(content_html, base_url, start_number=1, ascii_mode=ascii_mode)
+    nav_links = _extract_nav_links(nav_html, base_url, start_number=len(content_links) + 1, ascii_mode=ascii_mode)
     return Document(title=title, blocks=blocks, links=content_links + nav_links, source_url=base_url)
 
 
@@ -950,7 +990,7 @@ def parse_gemtext(content: str, base_url: str = "", title: str | None = None) ->
 _HTML_TAG_RE = re.compile(r"<[a-zA-Z][^>]*>")
 
 
-def parse_feed_entry(title: str, html_or_text: str, base_url: str = "") -> Document:
+def parse_feed_entry(title: str, html_or_text: str, base_url: str = "", ascii_mode: bool = False) -> Document:
     """Parse a single RSS/Atom entry body into a ``Document``.
 
     Sniffs for HTML tags; if any are found, routes through ``parse_html``.
@@ -959,7 +999,7 @@ def parse_feed_entry(title: str, html_or_text: str, base_url: str = "") -> Docum
     M3's job; this only handles a single entry's already-extracted body.
     """
     if _HTML_TAG_RE.search(html_or_text):
-        doc = parse_html(html_or_text, base_url=base_url)
+        doc = parse_html(html_or_text, base_url=base_url, ascii_mode=ascii_mode)
         doc.title = title or doc.title
         return doc
 

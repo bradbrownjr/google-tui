@@ -30,6 +30,7 @@ class Settings:
     routes_api_key: str | None = None  # Google Routes API key (Navigation tab, M6)
     browser_home_url: str = "https://www.google.com"  # Browser tab's Alt+H home destination
     check_for_updates: bool = True  # fast-forward the git checkout on launch (see updater.py)
+    ascii_mode: bool = False  # ASCII-safe rendering (plain borders/digits/arrows/punctuation) for terminals that mangle Unicode
     # Cache limits (Outlook-style). Both are opt-in; 0 == no limit. Enforced on
     # launch and on demand from Settings -> General; see Cache.prune(). Nothing
     # in the cache is irreplaceable — everything is refetchable and revalidated

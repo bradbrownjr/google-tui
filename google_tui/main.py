@@ -434,8 +434,25 @@ def _fuzzy_filter_news_entries(entries: list[dict], query: str, limit: int | Non
     return result[:limit] if limit else result
 
 
-def _tab_label(text: str, num: int) -> str:
-    return f"{text} [dim]{_SUPERSCRIPT[num]}[/dim]"
+def _tab_label(text: str, num: int, ascii_mode: bool = False) -> str:
+    digit = str(num) if ascii_mode else _SUPERSCRIPT[num]
+    return f"{text} [dim]{digit}[/dim]"
+
+
+# (tab_id, title text, tab number) — the source of truth _apply_ascii_mode()
+# walks to relabel every main-tab's Tab widget live when the setting flips,
+# and compose() below uses to build each TabPane's initial title. Keep in
+# sync with the TabPane ids/order in compose() if a tab is ever added/reordered.
+TAB_LABEL_SPECS: list[tuple[str, str, int]] = [
+    ("tab-mail", "Mail", 1),
+    ("tab-calendar", "Calendar", 2),
+    ("tab-drive", "Drive", 3),
+    ("tab-browser", "Browser", 4),
+    ("tab-news", "News", 5),
+    ("tab-navigation", "Navigation", 6),
+    ("tab-contacts", "Contacts", 7),
+    ("tab-settings", "Settings", 8),
+]
 
 
 def _slugify(s: str) -> str:
@@ -748,6 +765,25 @@ class GoogleTUI(App):
     #reauth-copy-help { height: auto; margin-bottom: 1; }
     #onboarding-scroll { height: 1fr; }
     #unlock-error { height: 1; }
+
+    /* Settings -> General -> "ASCII-safe mode" (P2, 2026-07-15): _apply_ascii_mode()
+       toggles the "ascii-border" class on these same containers rather than
+       recompiling CSS at runtime — a plain class flip works fine here, and
+       these rules' extra class in the selector gives them the specificity
+       to override the round/solid declarations above regardless of
+       declaration order (the .pane/.pane-active order still matters
+       between these two rules, for the same reason it does above). */
+    .pane.ascii-border, .section.ascii-border { border: ascii $panel-darken-2; }
+    .pane-active.ascii-border { border: ascii $accent; }
+    #hermes-log.ascii-border { border: ascii $panel-darken-1; }
+    #drive-list-col.ascii-border { border: ascii $panel-darken-1; }
+    #drive-preview-col.ascii-border { border: ascii $panel-darken-1; }
+    #browser-doc.ascii-border { border: ascii $panel-darken-1; }
+    #nav-log.ascii-border { border: ascii $panel-darken-1; }
+    #settings-feed-list.ascii-border { border: ascii $panel-darken-1; }
+    #c-to-suggestions.ascii-border { border: ascii $panel-darken-1; }
+    #drive-preview-meta.ascii-border { border-bottom: ascii $panel-darken-2; }
+    .thread-msg-header.ascii-border { border-bottom: ascii $panel-darken-2; }
     """
 
     # Generated from google_tui/bindings.py — the single source of truth for
@@ -917,8 +953,10 @@ class GoogleTUI(App):
     def _context_help_text(self) -> str:
         tab = self._main_tabs().active
         if tab == "tab-mail":
-            return bindings.CONTEXT_HELP.get(f"pane:{PANE_IDS[self.active]}", "")
-        return bindings.CONTEXT_HELP.get(f"tab:{tab}", "")
+            text = bindings.CONTEXT_HELP.get(f"pane:{PANE_IDS[self.active]}", "")
+        else:
+            text = bindings.CONTEXT_HELP.get(f"tab:{tab}", "")
+        return bindings.ascii_safe(text) if self.settings.ascii_mode else text
 
     def _update_help_bar(self) -> None:
         try:
@@ -926,11 +964,54 @@ class GoogleTUI(App):
         except Exception:
             pass
 
+    # ---- ASCII-safe mode (Settings -> General, P2 2026-07-15) ----
+    # Selectors for every container this app gives a "round" (or, for the
+    # two border-bottom-only rules, "solid") box-drawing border — see the
+    # CSS block above. Toggling the "ascii-border" class on each live-swaps
+    # them to the plain +/-/| "ascii" Textual border style via the paired
+    # CSS rules below (".pane.ascii-border" etc.), instead of walking
+    # widgets and poking `.styles.border` directly — this way Textual's own
+    # cascade/specificity resolves the swap, and it's just as live.
+    _ASCII_BORDER_SELECTORS = (
+        ".pane", ".pane-active", ".section", "#hermes-log", "#drive-list-col",
+        "#drive-preview-col", "#browser-doc", "#nav-log", "#settings-feed-list",
+        "#c-to-suggestions", "#drive-preview-meta", ".thread-msg-header",
+    )
+
+    def _apply_ascii_mode(self) -> None:
+        """Apply (or revert) Settings.ascii_mode to every surface it
+        touches: tab-number glyphs, box-drawing borders, and the two
+        persistent help-bar Statics (per-tab/pane context help is rebuilt
+        fresh on every tab/pane switch via _update_help_bar, so it doesn't
+        need a separate refresh here). Safe to call at any time — startup
+        (to apply whatever was loaded from settings.json) and live from the
+        Settings switch.
+        """
+        ascii_mode = self.settings.ascii_mode
+        try:
+            main_tabs = self._main_tabs()
+            for tab_id, text, num in TAB_LABEL_SPECS:
+                try:
+                    main_tabs.get_tab(tab_id).label = _tab_label(text, num, ascii_mode)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        for selector in self._ASCII_BORDER_SELECTORS:
+            for widget in self.query(selector):
+                widget.set_class(ascii_mode, "ascii-border")
+        try:
+            help_global = bindings.ascii_safe(HELP_GLOBAL) if ascii_mode else HELP_GLOBAL
+            self.query_one("#help-global", Static).update(help_global)
+        except Exception:
+            pass
+        self._update_help_bar()
+
     # ---- compose ----
     def compose(self) -> ComposeResult:
         yield GtHeader()
         with TabbedContent(id="main-tabs", initial="tab-mail"):
-            with TabPane(_tab_label("Mail", 1), id="tab-mail"):
+            with TabPane(_tab_label("Mail", 1, self.settings.ascii_mode), id="tab-mail"):
                 with Horizontal(id="body"):
                     with Vertical(id="left"):
                         with Container(id="email", classes="pane"):
@@ -961,7 +1042,7 @@ class GoogleTUI(App):
                             yield self._pane_title_row("HERMES ASK  (type a question, Enter)", 4)
                             yield RichLog(id="hermes-log", markup=False, wrap=True)
                             yield Input(placeholder="Ask Hermes about your Google stuff…", id="hermes-input")
-            with TabPane(_tab_label("Calendar", 2), id="tab-calendar"):
+            with TabPane(_tab_label("Calendar", 2, self.settings.ascii_mode), id="tab-calendar"):
                 with Container(id="calendar-section", classes="section"):
                     yield Label("CALENDAR", classes="pane-title-text")
                     with TabbedContent(id="cal-tabs"):
@@ -969,7 +1050,7 @@ class GoogleTUI(App):
                             yield DataTable(id="cal-grid")
                         with TabPane("Week", id="cal-tab-week"):
                             yield DataTable(id="cal-week-grid")
-            with TabPane(_tab_label("Drive", 3), id="tab-drive"):
+            with TabPane(_tab_label("Drive", 3, self.settings.ascii_mode), id="tab-drive"):
                 with Container(id="drive-section", classes="section"):
                     yield Label("/", id="drive-path", classes="muted")
                     with Horizontal(id="drive-search-bar", classes="btnrow"):
@@ -980,7 +1061,7 @@ class GoogleTUI(App):
                         with VerticalScroll(id="drive-preview-col"):
                             yield Static(id="drive-preview-meta")
                             yield RichLog(id="drive-preview-text", markup=False, wrap=True)
-            with TabPane(_tab_label("Browser", 4), id="tab-browser"):
+            with TabPane(_tab_label("Browser", 4, self.settings.ascii_mode), id="tab-browser"):
                 with Container(id="browser-section", classes="section"):
                     with Horizontal(id="browser-bar"):
                         yield Static("WEB", id="browser-mode")
@@ -991,13 +1072,13 @@ class GoogleTUI(App):
                         for i, (label, _url) in enumerate(_BROWSER_BOOKMARKS):
                             yield Button(label, id=f"browser-bookmark-{i}")
                     yield DocumentView(id="browser-doc")
-            with TabPane(_tab_label("News", 5), id="tab-news"):
+            with TabPane(_tab_label("News", 5, self.settings.ascii_mode), id="tab-news"):
                 with Container(id="news-section", classes="section"):
                     yield Label("NEWS  (all subscribed feeds, newest first)", classes="pane-title-text")
                     with Horizontal(id="news-search-bar", classes="btnrow"):
                         yield Input(placeholder="Search entries (title/summary)… (/)", id="news-search")
                     yield ListView(id="news-list")
-            with TabPane(_tab_label("Navigation", 6), id="tab-navigation"):
+            with TabPane(_tab_label("Navigation", 6, self.settings.ascii_mode), id="tab-navigation"):
                 with Container(id="navigation-section", classes="section"):
                     yield Label("NAVIGATION  (origin -> destination, turn-by-turn)", classes="pane-title-text")
                     with Horizontal(id="nav-bar", classes="btnrow"):
@@ -1009,14 +1090,14 @@ class GoogleTUI(App):
                     yield RichLog(id="nav-log", markup=False, wrap=True)
                     with Horizontal(id="nav-actions", classes="btnrow"):
                         yield Button("Export itinerary to file", id="nav-export")
-            with TabPane(_tab_label("Contacts", 7), id="tab-contacts"):
+            with TabPane(_tab_label("Contacts", 7, self.settings.ascii_mode), id="tab-contacts"):
                 with Container(id="contacts-section", classes="section"):
                     yield Label("CONTACTS", classes="pane-title-text")
                     with Horizontal(id="contacts-bar", classes="btnrow"):
                         yield Input(placeholder="Search contacts (name or email)…", id="contacts-search")
                         yield Button("Refresh", id="contacts-refresh")
                     yield ListView(id="contacts-list")
-            with TabPane(_tab_label("Settings", 8), id="tab-settings"):
+            with TabPane(_tab_label("Settings", 8, self.settings.ascii_mode), id="tab-settings"):
                 with Container(id="settings-section", classes="section"):
                     yield Label("SETTINGS", classes="pane-title-text")
                     with TabbedContent(id="settings-tabs"):
@@ -1045,6 +1126,18 @@ class GoogleTUI(App):
                                     "this checkout to origin and restarts. Skipped automatically if you "
                                     "have uncommitted changes. Also skippable with --no-update.",
                                     id="settings-update-note", classes="muted",
+                                )
+                                yield Label("Display", classes="pane-title-text")
+                                with Horizontal(classes="settings-row"):
+                                    yield Label("ASCII-safe mode (for limited terminals)")
+                                    yield Switch(value=self.settings.ascii_mode,
+                                                 id="settings-ascii-mode-switch")
+                                yield Static(
+                                    "Swaps round box borders, superscript tab numbers, arrow glyphs, "
+                                    "and curly quotes/dashes/bullets for plain-ASCII equivalents — for "
+                                    "plain vt100 terminals or older SSH clients that mangle Unicode. "
+                                    "Takes effect immediately.",
+                                    id="settings-ascii-mode-note", classes="muted",
                                 )
                                 yield Label("Browser", classes="pane-title-text")
                                 with Horizontal(classes="settings-row"):
@@ -1181,7 +1274,7 @@ class GoogleTUI(App):
     def on_mount(self) -> None:
         _logger.info("google-tui %s starting", updater.describe())
         self._focus_pane(0)
-        self._update_help_bar()
+        self._apply_ascii_mode()  # applies whatever Settings.ascii_mode loaded from disk; also updates the help bar
         problems = self._diagnose_setup()
         if problems:
             self.push_screen(OnboardingWizardModal(self, problems), self._on_onboarding_result)
@@ -2242,7 +2335,7 @@ class GoogleTUI(App):
 
     def _browser_fetch_dispatch(self, mode: str, target: str) -> render.Document:
         if mode == "http":
-            return fetchers.fetch_http(target)
+            return fetchers.fetch_http(target, ascii_mode=self.settings.ascii_mode)
         if mode == "gopher":
             return fetchers.fetch_gopher(target)
         if mode == "gemini":
@@ -3020,7 +3113,8 @@ class GoogleTUI(App):
 
     def _nav_fetch_thread(self, origin: str, destination: str) -> None:
         try:
-            result = fetchers.compute_route(origin, destination, self.settings.routes_api_key)
+            result = fetchers.compute_route(origin, destination, self.settings.routes_api_key,
+                                             ascii_mode=self.settings.ascii_mode)
         except fetchers.BrowserFetchError as e:
             self.call_from_thread(self._nav_apply_error, str(e))
             return
@@ -3188,6 +3282,17 @@ class GoogleTUI(App):
         if event.switch.id == "settings-update-check-switch":
             self.settings.check_for_updates = event.value
             save_settings(self.settings)
+            return
+        if event.switch.id == "settings-ascii-mode-switch":
+            # Live, not restart-required — same precedent as
+            # settings-show-sender-address-switch above: this only changes
+            # how already-loaded data/UI chrome is rendered, no cache/key
+            # implications like encrypt-at-rest below, so there's no reason
+            # to make the user restart for it.
+            self.settings.ascii_mode = event.value
+            save_settings(self.settings)
+            self._apply_ascii_mode()
+            self.notify(f"ASCII-safe mode {'on' if event.value else 'off'}.")
             return
         if event.switch.id != "settings-encrypt-switch":
             return
@@ -3772,7 +3877,8 @@ class ThreadModal(ModalScreen):
             html_body = (m.get("html_body") or "").strip()
             text_body = m.get("body") or ""
             source = html_body if html_body else text_body
-            doc = render.parse_feed_entry(m.get("subject", ""), source, base_url="")
+            doc = render.parse_feed_entry(m.get("subject", ""), source, base_url="",
+                                           ascii_mode=self.app.settings.ascii_mode)
             dv = DocumentView(classes="thread-msg-doc")
             new_widgets.append(dv)
             pending.append((dv, doc))
@@ -4120,7 +4226,8 @@ class NewsEntryModal(ModalScreen):
         self.query_one("#news-entry-meta", Static).update(f"{feed_title}   {published}".strip())
         title = e.get("title") or "(untitled)"
         body = e.get("summary") or ""
-        doc = render.parse_feed_entry(title, body, base_url=e.get("link", ""))
+        doc = render.parse_feed_entry(title, body, base_url=e.get("link", ""),
+                                       ascii_mode=self.app.settings.ascii_mode)
         self.query_one("#news-entry-doc", DocumentView).document = doc
 
     def on_button_pressed(self, e: Button.Pressed) -> None:
@@ -4170,7 +4277,13 @@ class HelpModal(ModalScreen):
     def compose(self) -> ComposeResult:
         with Container(id="help-modal-box", classes="pane"):
             yield Label("KEYBOARD REFERENCE", classes="pane-title-text")
-            yield Static(HELP_TEXT, id="help-modal-text")
+            # A fresh HelpModal is composed every time Ctrl+H is pressed (it's
+            # never kept around and reused), so it always picks up the
+            # CURRENT Settings.ascii_mode here — no live-refresh needed the
+            # way the persistent #help-context/#help-global Statics need
+            # _apply_ascii_mode() for.
+            text = bindings.ascii_safe(HELP_TEXT) if self.app.settings.ascii_mode else HELP_TEXT
+            yield Static(text, id="help-modal-text")
         yield Button("Close", id="close")
 
     def on_button_pressed(self, e):

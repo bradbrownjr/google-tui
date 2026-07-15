@@ -41,16 +41,6 @@ just checking it off here, so ROADMAP.md only ever shows what's still open.
   match rather than hiding non-matching rows). A real design decision, not
   a copy-paste of the `ListView`-filter wiring used everywhere else.
   *(Suggested model: Opus — new interaction design, not just plumbing.)*
-- [ ] **ASCII-fallback rendering mode.** The UI is Unicode-first by design
-  today (round box-drawing borders throughout `main.py`'s CSS, superscript
-  tab numbers `_SUPERSCRIPT`, arrow glyphs in help text, curly quotes/dashes/
-  bullets via `render.decode_html_entities`) with no fallback for terminals
-  that mangle non-ASCII (plain vt100, some serial consoles/older SSH
-  clients). Add a Settings toggle that swaps to ASCII-safe equivalents
-  (`solid`/`ascii` CSS border style, `1..8` instead of superscripts, `<-`/`->`
-  instead of arrows, plain quotes/dashes). Auto-detecting terminal Unicode
-  support isn't reliable enough to gate this automatically — an explicit,
-  user-flippable setting is the right default, not detection.
 - [ ] **Narrow-terminal (80x25) responsive layout.** Layout today is
   fixed-percentage CSS only (e.g. `#left { width: 65%; }`, `#drive-list-col
   { width: 40%; }`) with no breakpoints — untested below the screenshot

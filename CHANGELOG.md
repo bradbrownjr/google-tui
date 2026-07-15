@@ -3,6 +3,103 @@
 Format: keep newest at top. One entry per meaningful change. Reference files
 touched and any breaking notes.
 
+## [2026-07-15] — ASCII-safe mode (Settings toggle) for terminals that mangle Unicode
+
+### Added
+New `Settings.ascii_mode: bool` (default `False`, `settings.py`), a Switch
+in Settings → General → "Display" (`#settings-ascii-mode-switch`) labeled
+"ASCII-safe mode (for limited terminals)". Applied **live**, the same way
+`show_sender_address` already is — not restart-required like the
+encrypt-at-rest switch. Rationale: encrypt-at-rest needs a restart because
+switching it clears/re-derives the on-disk cache's encryption key, a real
+data/security boundary; ASCII mode only changes how already-loaded data and
+UI chrome are *rendered*, nothing about cache contents or keys, so there's
+no reason to make the user restart for a cosmetic toggle.
+
+Covers every surface the ROADMAP item named:
+- **Tab-number glyphs**: `_tab_label()` (`main.py`) now takes an
+  `ascii_mode` bool and emits a plain `1`..`8` instead of the `_SUPERSCRIPT`
+  digit when set. New `TAB_LABEL_SPECS` (tab id/text/number triples) lets
+  `_apply_ascii_mode()` relabel every mounted `Tab` live via
+  `TabbedContent.get_tab(id).label = ...` (confirmed this re-renders
+  immediately — `Tab.label`'s setter calls `self.update()`).
+- **CSS borders**: rather than recompiling CSS or walking widgets to poke
+  `.styles.border` directly, added a parallel `.ascii-border`-suffixed CSS
+  rule for every container that had a `round` (or, for two border-bottom-
+  only rules, `solid`) border — `.pane`/`.pane-active`/`.section`,
+  `#hermes-log`, `#drive-list-col`, `#drive-preview-col`, `#browser-doc`,
+  `#nav-log`, `#settings-feed-list`, `#c-to-suggestions`,
+  `#drive-preview-meta`, `.thread-msg-header` — using Textual's built-in
+  `ascii` border style (`+`/`-`/`|`, confirmed via
+  `textual._border.BORDER_CHARS["ascii"]`). `_apply_ascii_mode()` just
+  toggles the `ascii-border` class on the matching widgets
+  (`widget.set_class(ascii_mode, "ascii-border")`); Textual's normal CSS
+  specificity/cascade does the rest, live, no runtime style mutation code
+  needed. The extra class in each selector (e.g. `.pane.ascii-border`) is
+  what gives it enough specificity to win over the base `.pane` rule
+  regardless of declaration order; `.pane-active.ascii-border` is still
+  declared after `.pane.ascii-border` to preserve the same override
+  ordering the two non-ascii rules already had.
+- **Arrow glyphs in help text**: new `bindings.ascii_safe()` — a small
+  `←/→/↑/↓` → `<-`/`->`/`^`/`v` substitution table, applied to
+  `HELP_GLOBAL`/`_context_help_text()`'s output (both refreshed by
+  `_apply_ascii_mode()`/`_update_help_bar()`) and to `HelpModal`'s
+  `HELP_TEXT` (read fresh from `self.app.settings.ascii_mode` every time
+  `Ctrl+H` recomposes the modal — no live-refresh needed since it's never
+  kept mounted). Kept as a find/replace over the existing hand-curated
+  strings rather than a second copy of every help string.
+- **Curly quotes/dashes/bullets**: `render.decode_html_entities()` gained
+  an `ascii_mode: bool = False` parameter (default off, so every existing
+  caller is unaffected) — a second substitution pass, applied *after* the
+  real Unicode character has been produced, covering only the punctuation
+  this function itself introduces (curly quotes, em/en dash, ellipsis,
+  bullet, middot, guillemets). `render.py` stays I/O-free and knows
+  nothing about `Settings` — every function on the call path
+  (`_extract_title`, `_html_to_blocks`, `_extract_nav_links`, `parse_html`,
+  `parse_feed_entry`) now threads the same plain bool through, and
+  `main.py`/`fetchers.py` are the only places that read
+  `Settings.ascii_mode` and pass it in — at every real call site:
+  `fetchers.fetch_http`, `fetchers._strip_tags`/`search_duckduckgo`/
+  `search_searxng` (via `fetchers.run_search`, which now reads
+  `settings.ascii_mode` itself alongside the provider/API-key fields it
+  already read off the same `Settings` object), `fetchers.compute_route`
+  (Navigation tab's turn-by-turn instructions), and `main.py`'s two
+  `ThreadModal`/`NewsEntryModal` → `render.parse_feed_entry()` call sites.
+
+### Left as Unicode (honest gaps, not silently skipped)
+- `parse_gopher_menu`/`parse_gemtext` never call `decode_html_entities` at
+  all (gopher/gemtext have no HTML-entity concept), so `ascii_mode` has no
+  effect on Gopher/Gemini page content — nothing to wire up there.
+- The Email pane's unread-thread bullet (`"•" if th["unread"] else " "` in
+  `_email_collapsed_line`, `main.py`) and the `"…"` ellipsis used all over
+  `main.py` for truncated placeholders/snippets/"Loading…"/"Connecting…"
+  status text are genuine non-ASCII glyphs this pass did NOT convert — they
+  weren't inside `decode_html_entities`'s scope (they're hardcoded directly
+  in `main.py`, not decoded from HTML entities) and converting every one of
+  them was judged a much larger, lower-value diff than the four surfaces
+  the ROADMAP item actually named. Flagging honestly rather than silently
+  leaving it out of this note: a genuinely complete ASCII-safe mode would
+  still mangle on a terminal that can't render `•`/`…`.
+
+### Verified
+Throwaway `run_test` + pilot script (`size=(140, 44)`, every `gauth` call
+mocked): (1) `render.decode_html_entities(text, ascii_mode=True)` turns
+`“Hello” — a • point… «quote»` into `"Hello" - a * point... "quote"` (pure
+ASCII, confirmed via `ord(c) < 128` on every character) while
+`ascii_mode=False` is byte-for-byte unchanged from before this change; (2)
+`Settings(ascii_mode=True)` → `save_settings` → `load_settings()` round-
+trips `True`, and same for `False`; (3) toggling
+`#settings-ascii-mode-switch` live in a mounted app changes the Mail tab's
+label from `"Mail ¹"` to `"Mail 1"` and `#email`'s `styles.border_top`
+style from `"round"` to `"ascii"` (color unchanged, confirming the
+`.pane-active` accent-color rule still won), and toggling back reverts
+both cleanly.
+
+### Files touched
+`google_tui/settings.py`, `google_tui/main.py`, `google_tui/bindings.py`,
+`google_tui/render.py`, `google_tui/fetchers.py`, `README.md`,
+`ROADMAP.md`.
+
 ## [2026-07-15] — Extend `/` live search to Events, Drive, News, and Contacts
 
 ### Added
