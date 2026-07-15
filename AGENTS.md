@@ -985,6 +985,34 @@ alone was enough to make one vanish with no trace at all, exit code 0).
 
 ## 6. Testing without a TTY
 
+> **⚠️ Isolate config/cache paths before mounting `GoogleTUI` in ANY headless
+> test/script, no exceptions.** `settings.py`/`cache.py` compute
+> `SETTINGS_PATH`/`CACHE_DB_PATH`/`KEY_FILE_PATH` as module-level constants
+> from `platformdirs.user_config_dir("google-tui")`/`user_cache_dir(
+> "google-tui")` at import time — the SAME "google-tui" app name the real
+> installed app uses. On a dev machine those resolve to the developer's
+> actual `~/.config/google-tui`/`~/.cache/google-tui`. An earlier version of
+> `scripts/generate_screenshot.py` called `shutil.rmtree()` on exactly those
+> paths "to guarantee a clean slate," and a headless verification script
+> copied that same pattern — between the two, a real user's settings.json
+> and cache.db got wiped **twice**. There is no `ignore_errors=True` or
+> "just don't rmtree the real one" fix that's actually safe, because the
+> path being real in the first place is the bug. The only reliable fix:
+> monkeypatch the `platformdirs` functions themselves to an isolated temp
+> dir **before** importing anything from `google_tui` (module constants are
+> computed once, at import time, so patching after the fact is too late):
+> ```python
+> import tempfile
+> from pathlib import Path
+> import platformdirs
+> _ISOLATED_HOME = Path(tempfile.mkdtemp(prefix="google-tui-test-"))
+> platformdirs.user_config_dir = lambda *a, **k: str(_ISOLATED_HOME / "config")
+> platformdirs.user_cache_dir = lambda *a, **k: str(_ISOLATED_HOME / "cache")
+> # only NOW import google_tui.settings / google_tui.cache / google_tui.main
+> ```
+> `scripts/generate_screenshot.py` does this — copy it, don't reinvent it.
+> Never `shutil.rmtree()` a `platformdirs.user_*_dir()` result directly, ever.
+
 Textual needs a real terminal, so headless tests use Textual's `run_test`
 driver with a `pilot`. Pattern that works:
 

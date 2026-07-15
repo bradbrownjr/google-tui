@@ -21,7 +21,6 @@ Writes assets/screenshot.png directly; review the result before committing
 could still "succeed" while looking wrong.
 """
 import asyncio
-import shutil
 import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -32,10 +31,22 @@ import platformdirs
 REPO_ROOT = Path(__file__).resolve().parent.parent
 OUTPUT_PNG = REPO_ROOT / "assets" / "screenshot.png"
 
-# Wipe any local cache/settings before mounting the app so this run never
-# picks up real cached data alongside the fabricated dataset below.
-shutil.rmtree(platformdirs.user_cache_dir("google-tui"), ignore_errors=True)
-shutil.rmtree(platformdirs.user_config_dir("google-tui"), ignore_errors=True)
+# Redirect platformdirs' config/cache dirs to an isolated temp directory
+# BEFORE importing anything from google_tui — settings.py/cache.py compute
+# SETTINGS_PATH/CACHE_DB_PATH/KEY_FILE_PATH as module-level constants from
+# platformdirs.user_config_dir()/user_cache_dir() at import time, using the
+# SAME "google-tui" app name as the real installed app. On a dev machine
+# that's literally your real ~/.config/google-tui and ~/.cache/google-tui.
+# An earlier version of this script `shutil.rmtree`'d those paths directly
+# to guarantee a clean slate for the fabricated dataset below, and it wiped
+# a real user's settings.json/cache.db (twice — see AGENTS.md §6). Patching
+# the platformdirs functions themselves, instead of clearing whatever path
+# they happen to resolve to, makes this script structurally incapable of
+# touching real user data no matter where/how it's run — there's no path to
+# `rm` in the first place.
+_ISOLATED_HOME = Path(tempfile.mkdtemp(prefix="google-tui-screenshot-"))
+platformdirs.user_config_dir = lambda *a, **k: str(_ISOLATED_HOME / "config")
+platformdirs.user_cache_dir = lambda *a, **k: str(_ISOLATED_HOME / "cache")
 
 from google.oauth2.credentials import Credentials  # noqa: E402
 from google_tui import gauth  # noqa: E402
