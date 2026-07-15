@@ -86,12 +86,14 @@ _log_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message
 _logger.addHandler(_log_handler)
 
 # Seconds the Drive cursor must sit still before we fetch a preview, and the
-# Contacts search box must sit idle before we re-filter. Both handlers fire on
-# every keypress and both used to do their (expensive) work synchronously on
-# each one; long enough to swallow a held-down arrow key or a fast typist,
-# short enough to still feel immediate once you stop.
+# Contacts/Email/Tasks search boxes must sit idle before we re-filter. All of
+# these handlers fire on every keypress and each used to do its (expensive)
+# work synchronously on each one; long enough to swallow a held-down arrow key
+# or a fast typist, short enough to still feel immediate once you stop.
 _DRIVE_PREVIEW_DEBOUNCE = 0.25
 _CONTACTS_SEARCH_DEBOUNCE = 0.15
+_EMAIL_SEARCH_DEBOUNCE = 0.15
+_TASKS_SEARCH_DEBOUNCE = 0.15
 
 _PREVIEWABLE_PREFIXES = (
     "text/",
@@ -278,6 +280,81 @@ def _fuzzy_filter_contacts(contacts: list[dict], query: str, limit: int | None =
     return result[:limit] if limit else result
 
 
+# rapidfuzz.fuzz.partial_ratio scores a short query against a much longer
+# target by finding the single best-aligned window — with only 2-3
+# characters to work with, that window matches unrelated text too easily
+# (e.g. "cat" scores 66.7 against "Pay electric bill", comfortably clearing
+# a threshold of 60). Contacts' target strings (name + email) are short
+# enough that this rarely bites; threads/tasks' targets (subject+from+
+# snippet, or title+notes) are not. Below this length, only an exact
+# substring counts as a match — see _fuzzy_score.
+_FUZZY_MIN_QUERY_LEN = 4
+
+
+def _fuzzy_score(query_lower: str, target_lower: str, threshold: int) -> int | None:
+    """None if `query_lower` doesn't match `target_lower` at all, else a
+    score for ranking (higher = better). An exact substring always matches;
+    below _FUZZY_MIN_QUERY_LEN characters that's the ONLY way to match, to
+    avoid rapidfuzz.fuzz.partial_ratio's short-query false positives (see
+    above)."""
+    if query_lower in target_lower:
+        return 100
+    if len(query_lower) < _FUZZY_MIN_QUERY_LEN:
+        return None
+    score = fuzz.partial_ratio(query_lower, target_lower)
+    return score if score >= threshold else None
+
+
+def _fuzzy_filter_threads(threads: list[dict], query: str, limit: int | None = None,
+                          threshold: int = 75) -> list[dict]:
+    """Client-side live filter backing the Email pane's search box
+    (`Input#email-search`). Filters the already-fetched `threads` list
+    (self._threads_cache) — never re-queries Gmail per keystroke — matching
+    each thread's "subject from snippet" text against `query` (see
+    _fuzzy_score for the matching rule). Empty query returns the input list
+    unchanged (optionally truncated)."""
+    query = query.strip()
+    if not query:
+        return threads[:limit] if limit else list(threads)
+    query_lower = query.lower()
+    scored = []
+    for th in threads:
+        target = f"{th.get('subject','')} {th.get('from','')} {th.get('snippet','')}".strip()
+        if not target:
+            continue
+        score = _fuzzy_score(query_lower, target.lower(), threshold)
+        if score is not None:
+            scored.append((score, th))
+    scored.sort(key=lambda pair: -pair[0])
+    result = [th for _, th in scored]
+    return result[:limit] if limit else result
+
+
+def _fuzzy_filter_tasks(tasks: list[dict], query: str, limit: int | None = None,
+                        threshold: int = 75) -> list[dict]:
+    """Client-side live filter backing the Tasks pane's search box
+    (`Input#tasks-search`). Filters the already-fetched `tasks` list
+    (self._tasks_cache) — never re-queries Google Tasks per keystroke —
+    matching each task's "title notes" text against `query` (see
+    _fuzzy_score for the matching rule). Empty query returns the input list
+    unchanged (optionally truncated)."""
+    query = query.strip()
+    if not query:
+        return tasks[:limit] if limit else list(tasks)
+    query_lower = query.lower()
+    scored = []
+    for t in tasks:
+        target = f"{t.get('title','')} {t.get('notes','')}".strip()
+        if not target:
+            continue
+        score = _fuzzy_score(query_lower, target.lower(), threshold)
+        if score is not None:
+            scored.append((score, t))
+    scored.sort(key=lambda pair: -pair[0])
+    result = [t for _, t in scored]
+    return result[:limit] if limit else result
+
+
 def _tab_label(text: str, num: int) -> str:
     return f"{text} [dim]{_SUPERSCRIPT[num]}[/dim]"
 
@@ -353,6 +430,16 @@ def _append_email_items(email_list, threads, show_sender_address: bool = False) 
         ListItem(Label(_email_collapsed_line(th, show_sender_address)),
                  id=_mk_id("t", th["threadId"]))
         for th in threads
+    )
+
+
+def _append_task_items(task_list, tasks) -> None:
+    # Same extend()-once rationale as _append_email_items above.
+    task_list.extend(
+        ListItem(
+            Label(f"{'[x]' if t.get('status') == 'completed' else '[ ]'} {t.get('title','')[:50]}"),
+            id=_mk_id("k", f"{t['_list']}-{t['id']}"))
+        for t in tasks
     )
 
 
@@ -469,6 +556,7 @@ class GoogleTUI(App):
     .pane-title-text { text-style: bold; color: $accent; width: 1fr; }
     .pane-title-num { color: $text-muted; width: auto; }
     #email-label-select { height: 3; }
+    #email-search, #tasks-search { width: 1fr; }
     #email-list { height: 1fr; }
     #event-list, #task-list { height: 1fr; }
     #hermes-log { height: 1fr; border: round $panel-darken-1; }
@@ -585,6 +673,9 @@ class GoogleTUI(App):
         self._contacts_apply_gen = 0
         self._contacts_fetch_started = False
         self._contacts_search_timer = None
+        self._email_search_timer = None
+        self._tasks_search_timer = None
+        self._tasks_apply_gen = 0
         # F2 hands the mouse back to the terminal so its native click-drag
         # selection works (see action_toggle_mouse).
         self._mouse_released = False
@@ -699,6 +790,9 @@ class GoogleTUI(App):
                                 if self.settings.default_label_id in ("ALL", "INBOX") else "INBOX",
                                 allow_blank=False, id="email-label-select",
                             )
+                            with Horizontal(id="email-bar", classes="btnrow"):
+                                yield Input(placeholder="Search email (subject/from/snippet)… (/)",
+                                            id="email-search")
                             yield ListView(id="email-list")
                     with Vertical(id="right"):
                         with Container(id="events", classes="pane"):
@@ -706,6 +800,8 @@ class GoogleTUI(App):
                             yield ListView(id="event-list")
                         with Container(id="tasks", classes="pane"):
                             yield self._pane_title_row("TASKS  (space=done, enter=detail)", 3)
+                            with Horizontal(id="tasks-bar", classes="btnrow"):
+                                yield Input(placeholder="Search tasks (title/notes)… (/)", id="tasks-search")
                             yield ListView(id="task-list")
                         with Container(id="hermes", classes="pane"):
                             yield self._pane_title_row("HERMES ASK  (type a question, Enter)", 4)
@@ -1215,8 +1311,13 @@ class GoogleTUI(App):
         await self.query_one("#email-list").clear()
         if gen != self._mail_apply_gen:
             return  # superseded by a newer apply call
-        _append_email_items(self.query_one("#email-list"), threads, self.settings.show_sender_address)
         self._threads_cache = {t["threadId"]: t for t in threads}
+        try:
+            query = self.query_one("#email-search", Input).value
+        except Exception:
+            query = ""
+        visible = _fuzzy_filter_threads(threads, query) if query.strip() else threads
+        _append_email_items(self.query_one("#email-list"), visible, self.settings.show_sender_address)
 
     def _apply_mail_data(self, threads, events, tasks, tasklists) -> None:
         self._tasklists = tasklists
@@ -1242,8 +1343,13 @@ class GoogleTUI(App):
         if gen != self._mail_apply_gen:
             return  # superseded by a newer _apply_mail_data call
 
-        _append_email_items(self.query_one("#email-list"), threads, self.settings.show_sender_address)
         self._threads_cache = {t["threadId"]: t for t in threads}
+        try:
+            email_query = self.query_one("#email-search", Input).value
+        except Exception:
+            email_query = ""
+        visible_threads = _fuzzy_filter_threads(threads, email_query) if email_query.strip() else threads
+        _append_email_items(self.query_one("#email-list"), visible_threads, self.settings.show_sender_address)
 
         self.query_one("#event-list").extend(
             ListItem(
@@ -1253,14 +1359,14 @@ class GoogleTUI(App):
             for e in events
         )
 
-        self.query_one("#task-list").extend(
-            ListItem(
-                Label(f"{'[x]' if t.get('status') == 'completed' else '[ ]'} {t.get('title','')[:50]}"),
-                id=_mk_id("k", f"{t['_list']}-{t['id']}"))
-            for t in tasks
-        )
-
         self._tasks_cache = tasks
+        try:
+            tasks_query = self.query_one("#tasks-search", Input).value
+        except Exception:
+            tasks_query = ""
+        visible_tasks = _fuzzy_filter_tasks(tasks, tasks_query) if tasks_query.strip() else tasks
+        _append_task_items(self.query_one("#task-list"), visible_tasks)
+
         self._events_cache = events
 
     def _refresh_all_thread(self) -> None:
@@ -1482,6 +1588,15 @@ class GoogleTUI(App):
         except Exception:
             pass
 
+    def action_focus_search(self) -> None:
+        if self._main_tabs().active != "tab-mail":
+            return
+        pane = PANE_IDS[self.active]
+        if pane == "email":
+            self.query_one("#email-search", Input).focus()
+        elif pane == "tasks":
+            self.query_one("#tasks-search", Input).focus()
+
     def _require_online(self) -> bool:
         if not self._online:
             self.notify("Can't do that while offline", severity="warning")
@@ -1567,6 +1682,33 @@ class GoogleTUI(App):
             if t.get("_list") == lid and t.get("id") == tid:
                 return t
         return None
+
+    def _refresh_task_list(self) -> None:
+        # Debounced keystroke path for #tasks-search — re-renders from the
+        # already-fetched self._tasks_cache, no Google Tasks call per
+        # keystroke. Deliberately its OWN exclusive group, not "mail-apply":
+        # _apply_mail_data_async is a single coroutine that (re)builds
+        # email+event+task lists together, clearing #task-list before it
+        # re-populates it. If this ran in the same group, a keystroke here
+        # could cancel an in-flight _apply_mail_data_async worker AFTER its
+        # clear() but before its email/event repopulate, leaving those
+        # panes blank. Own group + own generation counter keeps this path
+        # from ever superseding that one.
+        self._tasks_apply_gen += 1
+        gen = self._tasks_apply_gen
+        self.run_worker(self._apply_task_list_async(gen, self._tasks_cache),
+                        exclusive=True, group="task-search-apply")
+
+    async def _apply_task_list_async(self, gen: int, tasks: list[dict]) -> None:
+        await self.query_one("#task-list").clear()
+        if gen != self._tasks_apply_gen:
+            return  # superseded by a newer apply call
+        try:
+            query = self.query_one("#tasks-search", Input).value
+        except Exception:
+            query = ""
+        visible = _fuzzy_filter_tasks(tasks, query) if query.strip() else tasks
+        _append_task_items(self.query_one("#task-list"), visible)
 
     def action_toggle_task(self):
         if not self._require_online():
@@ -1701,6 +1843,23 @@ class GoogleTUI(App):
                 self._contacts_search_timer.stop()
             self._contacts_search_timer = self.set_timer(
                 _CONTACTS_SEARCH_DEBOUNCE, self._refresh_contacts_list)
+        elif event.input.id == "email-search":
+            # Same debounce-then-rebuild pattern as contacts, but re-renders
+            # from the already-fetched self._threads_cache — no Gmail call
+            # per keystroke. Goes through _apply_email_list so the existing
+            # ListView.clear()-is-async / generation-counter handling
+            # (AGENTS.md's NOTE) covers this path too, not just refresh/label
+            # switches.
+            if self._email_search_timer is not None:
+                self._email_search_timer.stop()
+            self._email_search_timer = self.set_timer(
+                _EMAIL_SEARCH_DEBOUNCE,
+                lambda: self._apply_email_list(list(self._threads_cache.values())))
+        elif event.input.id == "tasks-search":
+            if self._tasks_search_timer is not None:
+                self._tasks_search_timer.stop()
+            self._tasks_search_timer = self.set_timer(
+                _TASKS_SEARCH_DEBOUNCE, self._refresh_task_list)
 
     def _hermes_submit(self, event: Input.Submitted) -> None:
         q = event.value.strip()

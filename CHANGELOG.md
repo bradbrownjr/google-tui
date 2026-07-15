@@ -3,6 +3,40 @@
 Format: keep newest at top. One entry per meaningful change. Reference files
 touched and any breaking notes.
 
+## [2026-07-15] — Live search within the Email and Tasks panes
+
+### Added
+`/` (new `focus_search` binding, `google_tui/bindings.py`) focuses a new
+search box in the active pane — `Input#email-search` (Email) or
+`Input#tasks-search` (Tasks) — and typing live-filters the list, debounced
+the same way Contacts search already worked (`_EMAIL_SEARCH_DEBOUNCE` /
+`_TASKS_SEARCH_DEBOUNCE`, 0.15s). Filters `self._threads_cache` /
+`self._tasks_cache` client-side — no Gmail/Tasks call per keystroke.
+Clearing the box restores the full list. Closes the ROADMAP P2 "Search
+within panes" item.
+
+### Fixed (before merge, not shipped broken)
+The first implementation reused `_fuzzy_filter_contacts`'s
+`rapidfuzz.fuzz.partial_ratio`-with-threshold-60 approach verbatim. That
+degrades badly once the target text is much longer than the query — e.g.
+`fuzz.partial_ratio("cat", "pay electric bill")` scores 66.7, clearing the
+threshold and putting an unrelated task in the results for a search for
+"cat". `_fuzzy_score()` now requires an exact substring match for queries
+under 4 characters, and only falls back to `partial_ratio` (threshold
+raised to 75) for longer queries where typo tolerance still makes sense
+without the false positives. Caught by a `run_test` pilot against a
+fabricated dataset before merge, not by a user report.
+
+### Notes
+The debounced re-render for Email reuses the existing `_apply_email_list`/
+`"mail-apply"` worker group (same as the Contacts pattern). Tasks required
+a genuinely new render path (`_apply_task_list_async`) in its **own**
+exclusive worker group (`"task-search-apply"`), not `"mail-apply"`:
+`_apply_mail_data_async` rebuilds Email+Events+Tasks together in one
+coroutine, so a search keystroke sharing that group could cancel an
+in-flight full refresh after it clears `#task-list` but before it
+repopulates `#email-list`/`#event-list`, leaving those panes blank.
+
 ## [2026-07-15] — Central keybinding/help-bar registry; ThreadModal r/a/f now work
 
 ### Added

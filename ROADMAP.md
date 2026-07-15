@@ -14,7 +14,6 @@ just checking it off here, so ROADMAP.md only ever shows what's still open.
   `gauth.create_event`. Currently read-only.
 - [ ] **Threading depth.** Show full thread tree (multiple messages) with
   expand/collapse; today each thread shows the latest message only.
-- [ ] **Search within panes** (filter emails/tasks live as you type).
 - [ ] **Web browser: Alt+H home, fix Alt+Left history, slow Page Up/Down/End.**
   Add a home shortcut (Alt+H) to a configurable start URL. `action_switch_left`
   already calls `_browser_back()` when `tab-browser` is active

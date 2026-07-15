@@ -62,6 +62,7 @@ GLOBAL_ACTIONS: list[ActionSpec] = [
     ActionSpec("forward", "f", "Forward"),
     ActionSpec("compose_new", "c", "Compose"),
     ActionSpec("focus_label_select", "l", "Folder"),
+    ActionSpec("focus_search", "/", "Search"),
     ActionSpec("context_space", "space", "Context"),
     ActionSpec("cal_prev", "[", "Prev"),
     ActionSpec("cal_next", "]", "Next"),
@@ -137,9 +138,9 @@ HELP_GLOBAL_TEXT = (
 # Keyed "pane:<id>" for Mail-tab panes, "tab:<id>" for every other tab —
 # matches GoogleTUI._context_help_text's former if/elif exactly.
 CONTEXT_HELP: dict[str, str] = {
-    "pane:email": "Enter Open   c Compose   r Reply   a Reply All   f Forward   Space Expand   l Folder",
+    "pane:email": "Enter Open   c Compose   r Reply   a Reply All   f Forward   Space Expand   l Folder   / Search",
     "pane:events": "Enter/Space Detail",
-    "pane:tasks": "Space Toggle Complete   Enter Detail",
+    "pane:tasks": "Space Toggle Complete   Enter Detail   / Search",
     "pane:hermes": "Enter Ask",
     "tab:tab-calendar": "[ / ] Prev/Next Month or Week   Enter Day Detail",
     "tab:tab-drive": "Enter Open Folder / Reload Preview",
@@ -174,9 +175,10 @@ GLOBAL
 MAIL TAB
   Email pane:   Enter open thread, Space expand/collapse (shows snippet),
                 l open folder picker, c Compose new, r Reply, a Reply All,
-                f Forward
+                f Forward, / search (live filter over subject/from/snippet)
   Events pane:  Enter/Space open event detail
-  Tasks pane:   Space toggle complete, Enter open detail
+  Tasks pane:   Space toggle complete, Enter open detail, / search (live
+                filter over title/notes)
   Hermes pane:  type a question, Enter to ask
 
   Thread view (opened via Enter): R/A/F Reply / Reply All / Forward — same
