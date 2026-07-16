@@ -3,6 +3,70 @@
 Format: keep newest at top. One entry per meaningful change. Reference files
 touched and any breaking notes.
 
+## [2026-07-16] — Offline mutation queue: Mark Unread + Trash/Archive/Labels, plus per-item cancel
+
+Widens the ROADMAP P3 offline mutation queue further (see the same-day
+"Reply/Forward/toggle-task" entry below for the original design): Mark
+Unread (Email pane) and ThreadModal's Trash/Archive/Labels now queue for
+replay on reconnect instead of being blocked by `_require_online()`, and
+`PendingMutationsModal` gained per-item cancel. New Event and TaskModal's
+Add/Delete subtask + Delete task remain out of scope — see the updated
+ROADMAP entry for why (CREATE actions need a temp local id this queue
+doesn't have yet).
+
+All four new types are PATCH-style (no visible-list insert needed), so they
+copy `action_toggle_task`'s existing shape: `if not self._online: enqueue +
+optimistic local mutation + notify + return`. `action_mark_unread`
+(`main.py`) enqueues `{"type": "mark_unread", "thread_id"}` and flips
+`self._threads_cache[tid]["unread"] = True` before re-rendering the Email
+list straight from cache (`_apply_email_list`, the same no-network path the
+debounced search box already used) — no full refetch needed to make the •
+bullet reappear. `ThreadModal.action_trash`/`action_archive`/
+`_on_labels_result` gained a new `_queue_mutation` helper (the offline
+counterpart to the existing `_run_mutation`): trash/archive additionally
+pop the thread out of `self.app._threads_cache` and re-render the Email
+list, since the user just asked for it to leave view — same "it's gone
+now" UX the online path's post-write refresh already gives, just without
+the round trip. Labels have nothing inline to show (the email list doesn't
+render label chips), so `modify_labels` just queues silently and — like
+`_on_labels_result`'s existing `close=False` — leaves the modal open.
+Dismissing with a new `"queued"` sentinel (distinct from `"refresh"`) tells
+`_on_thread_modal_result` not to attempt a network refetch that would just
+fail offline. `action_labels` also dropped its `_require_online()` gate
+entirely (mirroring how compose already allows composing offline) — only
+the actual write in `_on_labels_result` is gated/queued now.
+`gauth.mark_unread`/`trash_thread`/`archive_thread`/`modify_labels` got
+matching `_replay_one_mutation` dispatch arms and `_PENDING_MUTATION_LABELS`
+entries.
+
+`PendingMutationsModal` (Settings → "View queued actions") is no longer
+read-only: it now takes `GoogleTUI._pending_mutations` directly (the SAME
+dict, not a copy passed as `list(...)`), renders it as a `ListView` instead
+of one opaque `Static` block, and Delete cancels the highlighted row via a
+new `GoogleTUI._cancel_mutation(key)` (pops the queue + deletes the cache
+row). Cancelling does NOT undo an already-applied optimistic local update
+(a cancelled Mark-Unread leaves the • bullet showing, a cancelled Trash
+leaves the thread out of the list) — reverting would need remembering
+pre-mutation state, which isn't tracked; see both classes' docstrings.
+Hit one sharp edge building this: naming the modal's list-repaint method
+`_render` silently shadowed `Widget._render()` — Textual's own internal
+method for computing a widget's paint content — and broke the compositor
+with an opaque `AttributeError: 'coroutine' object has no attribute
+'render_strips'` with no indication `_render` was the reserved name.
+Renamed to `_render_queue`; worth remembering `_render`/`_arrange`/other
+single-underscore `Widget`/`DOMNode` method names are Textual-internal and
+not safe to reuse on any widget subclass.
+
+Verified via an isolated `run_test` pilot (same isolation pattern as the
+original queue entry below — `platformdirs` redirected to a temp dir before
+import, `gauth.mark_unread`/`trash_thread`/`archive_thread`/`modify_labels`
+mocked) driving: an offline Mark Unread (optimistic flag + queued), a
+`ThreadModal` offline Trash and Archive (each queues + drops the thread
+from `_threads_cache`), an offline Labels apply (queues, modal stays open,
+thread stays in cache), a `PendingMutationsModal` cancel (queue depth drops
+by exactly one), and replay-on-reconnect (queue drains to empty, each
+mocked `gauth` call fires with the right thread id/args).
+
 ## [2026-07-16] — Live encryption-setting hot-swap: no restart needed
 
 Closes the ROADMAP P3 item "Live encryption-setting hot-swap." Toggling

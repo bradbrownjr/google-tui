@@ -7,15 +7,20 @@ just checking it off here, so ROADMAP.md only ever shows what's still open.
 
 ## P3 — Robustness
 
-- [ ] **Offline mutation queue — widen scope.** Reply/Reply All/Forward/
-  New-compose send and task-toggle (incl. subtasks) now queue for replay
-  on reconnect instead of being blocked (see CHANGELOG `[2026-07-16]`).
-  Mark Unread, New Event, ThreadModal's Trash/Archive/Labels, and
-  TaskModal's Add/Delete subtask + Delete task are still just blocked
-  offline — deliberately left out of the first pass since CREATEs need a
-  temporary local id before they have a real one, and a DELETE's target
-  might itself be a queued CREATE. Also no per-item cancel in
-  `PendingMutationsModal` yet (view-only).
+- [ ] **Offline mutation queue — CREATE-style actions still blocked.**
+  Reply/Reply All/Forward/New-compose send, task-toggle (incl. subtasks),
+  Mark Unread, and ThreadModal's Trash/Archive/Labels all queue for replay
+  on reconnect instead of being blocked, and `PendingMutationsModal` now
+  supports per-item cancel (Delete key) (see CHANGELOG `[2026-07-16]`, two
+  entries). New Event and TaskModal's Add/Delete subtask + Delete task are
+  still just blocked offline — genuinely out of scope for the same queue
+  design: CREATEs (New Event, Add subtask) need a temporary local id before
+  they have a real one so they can show up in their list immediately, which
+  nothing in this codebase does yet (compose/send sidesteps the problem by
+  not showing anything locally, which doesn't work for a visible calendar/
+  subtask list); and a DELETE's target might itself be a queued CREATE,
+  which needs the CREATE-side temp-id work to exist first before it can be
+  designed.
 
 ## P4 — Nice-to-have
 

@@ -289,6 +289,10 @@ _PENDING_MUTATION_LABELS = {
     "forward": "Forward",
     "new": "New message",
     "toggle_task": "Toggle task",
+    "mark_unread": "Mark unread",
+    "trash": "Trash",
+    "archive": "Archive",
+    "modify_labels": "Apply labels",
 }
 
 
@@ -306,6 +310,9 @@ def _pending_mutation_summary(mutation: dict) -> str:
     if mutation["type"] == "toggle_task":
         state = "complete" if mutation.get("done") else "incomplete"
         return f"{label}: mark {state}"
+    if mutation["type"] == "modify_labels":
+        n = len(mutation.get("add", [])) + len(mutation.get("remove", []))
+        return f"{label}: {n} label(s)"
     return label
 
 
@@ -1003,7 +1010,8 @@ class GoogleTUI(App):
         # Ctrl+R debounce state — see REFRESH_COOLDOWN_SECONDS / action_refresh.
         self._last_manual_refresh: float = 0.0
         # Offline mutation queue (Reply/Reply All/Forward/New-compose send,
-        # task-toggle including subtasks): {uuid: mutation_dict}, persisted
+        # task-toggle including subtasks, Mark Unread, Trash/Archive/Labels):
+        # {uuid: mutation_dict}, persisted
         # under Cache category "pending_mutation" so a queue survives an app
         # restart while still offline. Loaded from cache in _load_from_cache;
         # written/removed by _enqueue_mutation / _replay_pending_mutations_thread.
@@ -1848,7 +1856,8 @@ class GoogleTUI(App):
         return f"{n} queued offline action{'s' if n != 1 else ''} — will send/apply once reconnected."
 
     # ---- offline mutation queue (Reply/Reply All/Forward/New-compose send,
-    # task-toggle incl. subtasks) — see self._pending_mutations' __init__ NOTE.
+    # task-toggle incl. subtasks, Mark Unread, Trash/Archive/Labels) — see
+    # self._pending_mutations' __init__ NOTE.
     def _enqueue_mutation(self, mutation: dict) -> str:
         key = str(uuid.uuid4())
         mutation = {**mutation, "created_at": dt.datetime.now(dt.timezone.utc).isoformat()}
@@ -1857,6 +1866,22 @@ class GoogleTUI(App):
             self._cache.put("pending_mutation", key, mutation)
         self._render_sub_title()
         return key
+
+    def _cancel_mutation(self, key: str) -> None:
+        """Drop a queued mutation (PendingMutationsModal's Delete action)
+        without ever sending it. Does NOT undo any optimistic local update
+        the mutation already applied when it was queued — task-toggle's
+        in-place status flip, trash/archive's cache pop, Mark Unread's
+        unread-flag flip — since none of those record the pre-mutation state
+        needed to revert them. Cancelling only stops the eventual real API
+        call; the local view may keep showing the action as "already done"
+        until the next full refresh reconciles it against the server."""
+        mutation = self._pending_mutations.pop(key, None)
+        if mutation is None:
+            return
+        if self._cache:
+            self._cache.delete("pending_mutation", key)
+        self._render_sub_title()
 
     def _replay_one_mutation(self, mutation: dict) -> None:
         t = mutation["type"]
@@ -1872,6 +1897,15 @@ class GoogleTUI(App):
                                body=mutation["body"])
         elif t == "toggle_task":
             gauth.set_task_status(self.svc, mutation["list_id"], mutation["task_id"], mutation["done"])
+        elif t == "mark_unread":
+            gauth.mark_unread(self.svc, mutation["thread_id"])
+        elif t == "trash":
+            gauth.trash_thread(self.svc, mutation["thread_id"])
+        elif t == "archive":
+            gauth.archive_thread(self.svc, mutation["thread_id"])
+        elif t == "modify_labels":
+            gauth.modify_labels(self.svc, mutation["thread_id"],
+                               add=mutation.get("add"), remove=mutation.get("remove"))
 
     def _replay_pending_mutations_thread(self) -> None:
         """Runs after _apply_live_refresh sees a successful reconnect. Oldest
@@ -2435,10 +2469,16 @@ class GoogleTUI(App):
         refreshes so the • unread bullet reappears."""
         if self._main_tabs().active != "tab-mail" or PANE_IDS[self.active] != "email":
             return
-        if not self._require_online():
-            return
         tid = self._selected_thread()
         if not tid:
+            return
+        if not self._online:
+            self._enqueue_mutation({"type": "mark_unread", "thread_id": tid})
+            summary = self._threads_cache.get(tid)
+            if summary is not None:
+                summary["unread"] = True
+            self._apply_email_list(list(self._threads_cache.values()))
+            self.notify("Offline — queued, will apply once reconnected.")
             return
 
         def _work() -> None:
@@ -4273,7 +4313,10 @@ class GoogleTUI(App):
         if event.button.id == "settings-reauth-google":
             self._start_google_reauth()
         elif event.button.id == "settings-view-queue":
-            self.push_screen(PendingMutationsModal(list(self._pending_mutations.values())))
+            # Same dict object, not a copy — cancelling inside the modal
+            # mutates self._pending_mutations directly (see _cancel_mutation),
+            # so the modal's own re-render already sees the removal.
+            self.push_screen(PendingMutationsModal(self._pending_mutations))
         elif event.button.id == "settings-clear-cache":
             if self._cache:
                 self._cache.clear_all()
@@ -4971,20 +5014,25 @@ class ThreadModal(ModalScreen):
 
     # ---- D trash / S archive / L labels (all reversible; see gauth.py) ----
     def action_trash(self) -> None:
-        if not self.app._require_online():
+        if not self.app._online:
+            self._queue_mutation({"type": "trash", "thread_id": self.thread_id},
+                                 "Offline — queued, will move to Trash once reconnected.")
             return
         self._run_mutation(lambda: gauth.trash_thread(self.svc, self.thread_id),
                            "Moved to Trash")
 
     def action_archive(self) -> None:
-        if not self.app._require_online():
+        if not self.app._online:
+            self._queue_mutation({"type": "archive", "thread_id": self.thread_id},
+                                 "Offline — queued, will archive once reconnected.")
             return
         self._run_mutation(lambda: gauth.archive_thread(self.svc, self.thread_id),
                            "Archived (removed from Inbox)")
 
     def action_labels(self) -> None:
-        if not self.app._require_online():
-            return
+        # No online gate here — same reasoning as ComposeModal: picking labels
+        # is harmless offline, only the actual write (_on_labels_result) needs
+        # to be gated/queued.
         labels = getattr(self.app, "_labels_cache", [])
         pickable = [l for l in labels
                     if l.get("type") != "system" and l.get("id") and l.get("name")]
@@ -4996,9 +5044,32 @@ class ThreadModal(ModalScreen):
     def _on_labels_result(self, add_ids) -> None:
         if not add_ids:
             return
+        if not self.app._online:
+            self._queue_mutation(
+                {"type": "modify_labels", "thread_id": self.thread_id, "add": list(add_ids)},
+                f"Offline — queued {len(add_ids)} label(s), will apply once reconnected.",
+                close=False)
+            return
         self._run_mutation(
             lambda: gauth.modify_labels(self.svc, self.thread_id, add=list(add_ids)),
             f"Applied {len(add_ids)} label(s)", close=False)
+
+    def _queue_mutation(self, mutation: dict, msg: str, close: bool = True) -> None:
+        """Offline counterpart to _run_mutation: enqueue for replay instead of
+        calling the API now. Trash/archive optimistically drop the thread from
+        the shared cache — the same "it's gone now" UX the online path's
+        post-write refresh gives — since the user just asked for it to leave
+        the list. Labels have nothing inline to update (the email list doesn't
+        show per-thread label chips), so modify_labels just queues silently.
+        Dismissing with "queued" (not "refresh") tells _on_thread_modal_result
+        not to attempt a network refetch that would just fail offline."""
+        self.app._enqueue_mutation(mutation)
+        if mutation["type"] in ("trash", "archive"):
+            self.app._threads_cache.pop(self.thread_id, None)
+            self.app._apply_email_list(list(self.app._threads_cache.values()))
+        self.app.notify(msg)
+        if close:
+            self.dismiss("queued")
 
     def _run_mutation(self, fn, success_msg: str, close: bool = True) -> None:
         """Run a mutating gauth call on a worker thread (fetch/apply split),
@@ -5715,38 +5786,70 @@ class ContactModal(ModalScreen):
 
 
 class PendingMutationsModal(ModalScreen):
-    """Read-only view of the offline mutation queue (Settings -> General ->
+    """View + cancel the offline mutation queue (Settings -> General ->
     "View queued actions" — see GoogleTUI._enqueue_mutation /
-    _replay_pending_mutations_thread). Deliberately no per-item cancel:
-    the queue is small in practice (Reply/Reply All/Forward/New-compose
-    send + task-toggle only) and self-clears once reconnected — adding
-    individual cancellation would need to also handle "cancel an
-    optimistic local update," which the toggle-task path already applied
-    to self._tasks_cache. Not worth the complexity for a first pass.
+    _replay_pending_mutations_thread / _cancel_mutation). `mutations` is the
+    SAME dict object as GoogleTUI._pending_mutations, not a copy — cancelling
+    an item here pops it from that dict directly (via app._cancel_mutation),
+    so re-rendering afterward just re-reads self.mutations. Cancelling drops
+    the queued item without ever sending it; it does NOT undo any optimistic
+    local update the item already applied (see _cancel_mutation's docstring).
     """
 
-    def __init__(self, mutations: list[dict]):
+    def __init__(self, mutations: dict[str, dict]):
         super().__init__()
         self.mutations = mutations
 
     def compose(self) -> ComposeResult:
         with Container(id="pending-mutations-box", classes="pane"):
             yield Label("QUEUED OFFLINE ACTIONS", classes="pane-title-text")
-            with VerticalScroll(id="pending-mutations-scroll"):
-                yield Static(id="pending-mutations-text", markup=False)
+            yield Label("Delete: cancel selected  ·  Esc/Close: dismiss",
+                       classes="muted")
+            yield ListView(id="pending-mutations-list")
             yield Button("Close", id="close")
 
-    def on_mount(self) -> None:
-        if not self.mutations:
-            text = "Nothing queued."
-        else:
-            items = sorted(self.mutations, key=lambda m: m.get("created_at", ""))
-            lines = [
-                f"{m.get('created_at', '')[:16].replace('T', ' ')}  {_pending_mutation_summary(m)}"
-                for m in items
-            ]
-            text = "\n".join(lines)
-        self.query_one("#pending-mutations-text", Static).update(text)
+    async def on_mount(self) -> None:
+        await self._render_queue()
+
+    def _items(self) -> list[tuple[str, dict]]:
+        return sorted(self.mutations.items(), key=lambda kv: kv[1].get("created_at", ""))
+
+    async def _render_queue(self) -> None:
+        # NOTE: not named `_render` — that shadows Widget._render() (the
+        # internal method Textual's own compositor calls to get this
+        # widget's paint content), which breaks rendering with an opaque
+        # "'coroutine' object has no attribute 'render_strips'" crash.
+        lst = self.query_one("#pending-mutations-list", ListView)
+        await lst.clear()  # AwaitRemove, not synchronous — see AGENTS.md
+        items = self._items()
+        if not items:
+            await lst.append(ListItem(Label("Nothing queued."), id="pm-empty"))
+            return
+        lst.extend(
+            ListItem(
+                Label(f"{m.get('created_at', '')[:16].replace('T', ' ')}  "
+                      f"{_pending_mutation_summary(m)}"),
+                id=_mk_id("pm", key))
+            for key, m in items
+        )
+
+    def _highlighted_key(self) -> str | None:
+        lst = self.query_one("#pending-mutations-list", ListView)
+        if lst.highlighted_child is None:
+            return None
+        cid = lst.highlighted_child.id or ""
+        if not cid.startswith("pm-") or cid == "pm-empty":
+            return None
+        return cid[3:]  # uuid4 keys are hex+dashes only, so _mk_id's
+                        # sanitizing is a lossless round-trip here.
+
+    def _cancel_highlighted(self) -> None:
+        key = self._highlighted_key()
+        if key is None:
+            return
+        self.app._cancel_mutation(key)
+        self.run_worker(self._render_queue(), exclusive=True, group="pending-mutations-render")
+        self.app.notify("Cancelled queued action.")
 
     def on_button_pressed(self, e: Button.Pressed) -> None:
         self.dismiss(None)
@@ -5754,6 +5857,8 @@ class PendingMutationsModal(ModalScreen):
     def on_key(self, e) -> None:
         if e.key == "escape":
             self.dismiss(None)
+        elif e.key == "delete":
+            self._cancel_highlighted()
 
 
 class NewsEntryModal(ModalScreen):
