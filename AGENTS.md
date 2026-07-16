@@ -1237,13 +1237,12 @@ Gotchas that cost time before:
   NOTE in §2 for why (no key-release event in Textual 8.2.8).
 - Offline mode is READ-ONLY browsing of cached data, not a sync engine: no
   queued mutations, no automatic retry beyond `Ctrl+R`/next launch. See §1a.
-- Changing the encrypt-at-rest switch or key method takes effect on the
-  NEXT launch, not live — the running session keeps using whatever `Cache`
-  object it already built. The cache is cleared immediately so stale rows
-  under the old scheme can't linger, but a "restart to apply" notify is the
-  only feedback; there's no in-session cache-object hot-swap. A genuine
-  live-swap (rebuild `self._cache` with the new key without restarting)
-  is a reasonable follow-up if the restart step proves annoying in practice.
+- Changing the encrypt-at-rest switch or key method takes effect live, no
+  restart needed: the handler clears the cache (stale rows under the old
+  scheme can't linger) then calls `Cache.rekey(key)`, which swaps
+  `self._fernet` in place on the existing `Cache` object — every other
+  reference to it (`self._browser_tofu`, etc.) keeps working unchanged since
+  the object itself isn't replaced, only its key.
 - `on_dismiss(self, event: ModalScreen.Dismissed)` is almost certainly dead
   code in this Textual version — see the NOTE in §2. Not fixed this round
   (out of scope), but worth knowing before assuming Reply/Forward-from-

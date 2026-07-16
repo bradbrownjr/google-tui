@@ -16,10 +16,6 @@ just checking it off here, so ROADMAP.md only ever shows what's still open.
   temporary local id before they have a real one, and a DELETE's target
   might itself be a queued CREATE. Also no per-item cancel in
   `PendingMutationsModal` yet (view-only).
-- [ ] **Live encryption-setting hot-swap.** Toggling encrypt-at-rest or key
-  method currently clears the cache and asks for a restart rather than
-  rebuilding `self._cache` with the new key in-session. Fine for now; worth
-  revisiting if restart-to-apply proves annoying in practice.
 
 ## P4 — Nice-to-have
 

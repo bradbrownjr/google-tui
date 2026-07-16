@@ -4186,19 +4186,21 @@ class GoogleTUI(App):
             save_settings(self.settings)
             if self._cache:
                 self._cache.clear_all()
+                self._cache.rekey(None)
             self.notify("Encryption disabled. Local cache cleared; it will repopulate unencrypted.")
             self._update_settings_cache_info()
             return
         if self.settings.key_method == "passphrase":
             self.push_screen(UnlockModal(self.settings, mode="create"), self._on_settings_passphrase_result)
         else:
-            read_or_create_keyfile()
+            key = read_or_create_keyfile()
             self.settings.encrypt_at_rest = True
             self.settings.key_method = "keyfile"
             save_settings(self.settings)
             if self._cache:
                 self._cache.clear_all()
-            self.notify("Encryption enabled (local key file). Cache cleared; restart google-tui to apply.")
+                self._cache.rekey(key)
+            self.notify("Encryption enabled (local key file). Cache cleared and now encrypted.")
             self._update_settings_cache_info()
 
     def on_radio_set_changed(self, event: RadioSet.Changed) -> None:
@@ -4237,14 +4239,15 @@ class GoogleTUI(App):
         if method == "passphrase":
             self.push_screen(UnlockModal(self.settings, mode="create"), self._on_settings_passphrase_result)
         else:
-            read_or_create_keyfile()
+            key = read_or_create_keyfile()
             self.settings.key_method = "keyfile"
             self.settings.kdf_salt = None
             self.settings.canary = None
             save_settings(self.settings)
             if self._cache:
                 self._cache.clear_all()
-            self.notify("Switched to local key file. Cache cleared; restart google-tui to apply.")
+                self._cache.rekey(key)
+            self.notify("Switched to local key file. Cache cleared and rekeyed.")
             self._update_settings_cache_info()
 
     def _on_settings_passphrase_result(self, key: bytes | None) -> None:
@@ -4262,7 +4265,8 @@ class GoogleTUI(App):
             return
         if self._cache:
             self._cache.clear_all()
-        self.notify("Encryption enabled (passphrase). Cache cleared; restart google-tui to apply.")
+            self._cache.rekey(key)
+        self.notify("Encryption enabled (passphrase). Cache cleared and now encrypted.")
         self._update_settings_cache_info()
 
     def on_button_pressed(self, event: Button.Pressed) -> None:

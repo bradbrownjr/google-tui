@@ -76,6 +76,14 @@ class Cache:
             )
             self._conn.commit()
 
+    def rekey(self, key: bytes | None) -> None:
+        """Swap the encryption key in place — e.g. Settings' encrypt-at-rest
+        toggle or key method changing mid-session. Callers are expected to
+        have already cleared the cache first: rows written under the old key
+        aren't re-encrypted, they'd just fail to decrypt under the new one.
+        """
+        self._fernet = Fernet(key) if key else None
+
     def _encode(self, value: Any) -> bytes:
         raw = json.dumps(value).encode("utf-8")
         return self._fernet.encrypt(raw) if self._fernet else raw

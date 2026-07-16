@@ -3,6 +3,25 @@
 Format: keep newest at top. One entry per meaningful change. Reference files
 touched and any breaking notes.
 
+## [2026-07-16] — Live encryption-setting hot-swap: no restart needed
+
+Closes the ROADMAP P3 item "Live encryption-setting hot-swap." Toggling
+encrypt-at-rest or the key method in Settings now applies immediately
+instead of clearing the cache and telling the user to restart.
+
+Added `Cache.rekey(key: bytes | None)` (`cache.py`) — swaps `self._fernet`
+in place on the existing `Cache` object rather than requiring a whole new
+one. Because the object identity doesn't change, every existing reference
+to it (`self._browser_tofu`, everything reading `self._cache` on the App)
+keeps working with no further wiring. All four Settings code paths that
+used to clear the cache and notify "restart google-tui to apply" —
+encrypt-at-rest on/off (`on_switch_changed`), key method switched to
+keyfile (`on_radio_set_changed`), and key method switched to/enabled with
+passphrase (`_apply_settings_passphrase_result`, shared by both the
+switch-on and key-method-change flows) — now call `self._cache.rekey(...)`
+right after `clear_all()` and the notify text no longer mentions a
+restart.
+
 ## [2026-07-16] — Offline mutation queue: Reply/Forward/toggle-task now queue instead of blocking
 
 Partly closes the ROADMAP P3 item "Offline mutation queue" — Reply/Reply
