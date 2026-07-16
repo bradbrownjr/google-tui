@@ -16,6 +16,7 @@ import os
 import re
 import sys
 import textwrap
+import time
 import urllib.parse
 from dataclasses import dataclass
 from functools import cached_property
@@ -63,6 +64,13 @@ PANE_ADJACENCY = {
     "tasks":  {"left": "email", "up": "events", "down": "hermes"},
     "hermes": {"left": "email", "up": "tasks"},
 }
+
+# Ctrl+R debounce (see action_refresh): a repeated manual refresh inside this
+# window is a no-op instead of firing another real, blocking Google API round
+# trip — Worker.cancel()'s own docstring says cancelled work "may still be
+# running", so exclusive=True alone doesn't stop an in-flight fetch from
+# costing quota, it only discards its result.
+REFRESH_COOLDOWN_SECONDS = 5.0
 
 TAB_ORDER = ["tab-mail", "tab-calendar", "tab-drive", "tab-browser", "tab-news", "tab-navigation", "tab-contacts",
              "tab-settings"]
@@ -920,6 +928,8 @@ class GoogleTUI(App):
         self._labels_cache: list[dict] = []
         self._cache: Cache | None = None
         self._online = False
+        # Ctrl+R debounce state — see REFRESH_COOLDOWN_SECONDS / action_refresh.
+        self._last_manual_refresh: float = 0.0
         self._loading_modal: LoadingModal | None = None
         self._mail_apply_gen = 0
         self._drive_apply_gen = 0
@@ -2012,6 +2022,13 @@ class GoogleTUI(App):
             self._browser_toggle_focus()
 
     def action_refresh(self) -> None:
+        now = time.monotonic()
+        elapsed = now - self._last_manual_refresh
+        if elapsed < REFRESH_COOLDOWN_SECONDS:
+            wait = REFRESH_COOLDOWN_SECONDS - elapsed
+            self.notify(f"Refreshed recently — wait {wait:.0f}s", severity="warning")
+            return
+        self._last_manual_refresh = now
         self.sub_title = "Connecting…"
         self.run_worker(self._live_refresh_thread, thread=True, exclusive=True)
 

@@ -3,6 +3,27 @@
 Format: keep newest at top. One entry per meaningful change. Reference files
 touched and any breaking notes.
 
+## [2026-07-16] — Debounce Ctrl+R to stop rapid refreshes tripping Google quota
+
+Closes the ROADMAP P3 item "Connection pool / rate limiting." Rapid `Ctrl+R`
+presses each spawned a real `run_worker(self._live_refresh_thread,
+thread=True, exclusive=True)` — `exclusive=True` only cancels the *previous*
+worker's result from being applied, it doesn't stop the underlying blocking
+Gmail/Calendar/Drive/Tasks calls already running on their own OS thread
+(`Worker.cancel()`'s own docstring: cancelled work "may still be running").
+So spamming the key still fired one full round of live API calls per press.
+`action_refresh` (`main.py`) now tracks `self._last_manual_refresh` (a
+`time.monotonic()` timestamp) and no-ops with a `notify(...,
+severity="warning")` telling the user how many seconds to wait if called
+again within `REFRESH_COOLDOWN_SECONDS` (5s) of the last one; genuinely new
+requests past the cooldown still refresh immediately. Only the manual
+Ctrl+R path is throttled — the startup refresh and the post-mutation
+refreshes (task toggle, compose send) are unaffected. Verified via an
+isolated `run_test` pilot (patched `_live_refresh_thread` to a call counter,
+isolated `platformdirs` config/cache dirs per the pattern from
+`scripts/generate_screenshot.py`) confirming a second immediate
+`action_refresh()` is throttled and one issued after the cooldown fires.
+
 ## [2026-07-15] — Updater: lock concurrent-instance updates, log crashed relaunches
 
 Two google-tui instances launched moments apart could both detect the same
