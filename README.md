@@ -17,8 +17,14 @@ last time shows up instantly on launch, while it reconnects to Google in the
 background (`Connecting…` → `Synced HH:MM` in the title bar). If it can't
 reach Google at all, you still get your cached inbox, calendar, tasks, and
 any Drive files you've previously viewed — the title bar shows `Offline
-(cached HH:MM)`, and actions that need a live connection (reply, forward,
-toggling a task) are disabled with a warning instead of failing silently.
+(cached HH:MM)`. Reply/Reply All/Forward, composing a new message, and
+toggling a task complete/incomplete all still work offline — they queue
+and show a "· N queued" count in the title bar, then send/apply
+automatically once you're back online (`Settings → General → View queued
+actions` shows what's pending). Everything else that needs a live
+connection (marking unread, creating an event, Trash/Archive/Labels,
+adding/deleting a task) is disabled with a warning instead of failing
+silently.
 
 - **Mail tab — Email pane** (left, full height): a label/folder picker
   (All Mail, system labels, nested user labels) above a threaded Gmail

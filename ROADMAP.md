@@ -7,12 +7,15 @@ just checking it off here, so ROADMAP.md only ever shows what's still open.
 
 ## P3 — Robustness
 
-- [ ] **Offline mutation queue.** Reply/Forward/toggle-task are currently
-  just disabled while offline (`self._require_online()`). Queuing them for
-  automatic replay on reconnect would be a real feature, not a small one —
-  needs conflict handling (e.g. a task toggled offline AND changed
-  elsewhere) and persistence for the queue itself. Deliberately not
-  attempted in the initial caching pass.
+- [ ] **Offline mutation queue — widen scope.** Reply/Reply All/Forward/
+  New-compose send and task-toggle (incl. subtasks) now queue for replay
+  on reconnect instead of being blocked (see CHANGELOG `[2026-07-16]`).
+  Mark Unread, New Event, ThreadModal's Trash/Archive/Labels, and
+  TaskModal's Add/Delete subtask + Delete task are still just blocked
+  offline — deliberately left out of the first pass since CREATEs need a
+  temporary local id before they have a real one, and a DELETE's target
+  might itself be a queued CREATE. Also no per-item cancel in
+  `PendingMutationsModal` yet (view-only).
 - [ ] **Live encryption-setting hot-swap.** Toggling encrypt-at-rest or key
   method currently clears the cache and asks for a restart rather than
   rebuilding `self._cache` with the new key in-session. Fine for now; worth

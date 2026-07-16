@@ -18,12 +18,14 @@ import sys
 import textwrap
 import time
 import urllib.parse
+import uuid
 from dataclasses import dataclass
 from functools import cached_property
 from pathlib import Path
 
 import platformdirs
 from google.auth.exceptions import RefreshError
+from googleapiclient.errors import HttpError
 from rapidfuzz import fuzz
 from textual import events
 from textual.app import App, ComposeResult
@@ -267,6 +269,44 @@ def _fmt_date(s: str) -> str:
 def _mk_id(prefix: str, raw: str) -> str:
     safe = "".join(c if (c.isalnum() or c in "-_") else "-" for c in raw)
     return f"{prefix}-{safe}"
+
+
+def _is_not_found_error(e: Exception) -> bool:
+    """True if `e` is Google rejecting a request because its target (thread,
+    task) no longer exists — as opposed to a transient network/API error.
+    Every queued-mutation replay target (reply_to/forward's threads().get(),
+    set_task_status's tasks().get()) does a .get() before mutating, so a
+    since-deleted target surfaces the same way regardless of mutation type:
+    an HttpError with a 404 status. Distinguishing this from "still offline"
+    or "quota hit" is what lets _replay_pending_mutations_thread drop a
+    queued item instead of retrying it forever."""
+    return isinstance(e, HttpError) and getattr(e.resp, "status", None) == 404
+
+
+_PENDING_MUTATION_LABELS = {
+    "reply": "Reply",
+    "reply_all": "Reply All",
+    "forward": "Forward",
+    "new": "New message",
+    "toggle_task": "Toggle task",
+}
+
+
+def _pending_mutation_summary(mutation: dict) -> str:
+    """One-line description for PendingMutationsModal — e.g. "Reply to
+    someone@example.com" or "Toggle task complete". Deliberately doesn't try
+    to resolve a thread_id/task_id back to a subject/title: that would need
+    a network call or a cache lookup that might itself be stale, and this is
+    read-only status text, not something worth that complexity for."""
+    label = _PENDING_MUTATION_LABELS.get(mutation["type"], mutation["type"])
+    if mutation["type"] == "forward":
+        return f"{label} to {mutation.get('to', '')}"
+    if mutation["type"] == "new":
+        return f"{label} to {mutation.get('to', '')}"
+    if mutation["type"] == "toggle_task":
+        state = "complete" if mutation.get("done") else "incomplete"
+        return f"{label}: mark {state}"
+    return label
 
 
 def _feed_list_item(url: str) -> ListItem:
@@ -962,6 +1002,17 @@ class GoogleTUI(App):
         self._online = False
         # Ctrl+R debounce state — see REFRESH_COOLDOWN_SECONDS / action_refresh.
         self._last_manual_refresh: float = 0.0
+        # Offline mutation queue (Reply/Reply All/Forward/New-compose send,
+        # task-toggle including subtasks): {uuid: mutation_dict}, persisted
+        # under Cache category "pending_mutation" so a queue survives an app
+        # restart while still offline. Loaded from cache in _load_from_cache;
+        # written/removed by _enqueue_mutation / _replay_pending_mutations_thread.
+        self._pending_mutations: dict[str, dict] = {}
+        # sub_title's "Connecting…"/"Synced HH:MM"/"Offline (cached HH:MM)"
+        # text, WITHOUT the "· N queued" suffix — see _render_sub_title,
+        # which combines this with len(self._pending_mutations) and is the
+        # only place that should assign self.sub_title directly from here on.
+        self._status_base: str = ""
         self._loading_modal: LoadingModal | None = None
         self._mail_apply_gen = 0
         self._drive_apply_gen = 0
@@ -1367,6 +1418,10 @@ class GoogleTUI(App):
                                     "tokens ~weekly — see SETUP.md §4).",
                                     id="settings-reauth-note", classes="muted",
                                 )
+                                yield Label("Offline queue", classes="pane-title-text")
+                                with Horizontal(classes="btnrow"):
+                                    yield Button("View queued actions", id="settings-view-queue")
+                                yield Static(self._queue_info_text(), id="settings-queue-info", classes="muted")
                                 with Horizontal(classes="settings-row"):
                                     yield Label("Show sender address in list")
                                     yield Switch(value=self.settings.show_sender_address,
@@ -1626,7 +1681,8 @@ class GoogleTUI(App):
             # true first run — nothing cached yet, nothing to show
             self._loading_modal = LoadingModal()
             self.push_screen(self._loading_modal)
-        self.sub_title = "Connecting…"
+        self._status_base = "Connecting…"
+        self._render_sub_title()
         # thread=True: the gauth/googleapiclient calls below are blocking
         # (synchronous httplib2), so fetching on a worker THREAD keeps the
         # asyncio event loop free to actually paint the loading/connecting
@@ -1634,6 +1690,10 @@ class GoogleTUI(App):
         self.run_worker(self._live_refresh_thread, thread=True, exclusive=True)
 
     def _load_from_cache(self) -> bool:
+        # A prior session may have been closed while still offline with
+        # queued mutations — restore them so they're not silently lost, and
+        # so they still get replayed once this session reconnects.
+        self._pending_mutations = self._cache.get_all("pending_mutation")
         thread_summaries = list(self._cache.get_all(f"thread_summary:{self._current_label_id}").values())
         events = list(self._cache.get_all("event").values())
         tasks = list(self._cache.get_all("task").values())
@@ -1766,7 +1826,94 @@ class GoogleTUI(App):
             self._apply_news_data(news_entries)
         self._online = ok
         now = dt.datetime.now().strftime("%H:%M")
-        self.sub_title = f"Synced {now}" if ok else f"Offline (cached {now})"
+        self._status_base = f"Synced {now}" if ok else f"Offline (cached {now})"
+        self._render_sub_title()
+        if ok and self._pending_mutations:
+            self.run_worker(self._replay_pending_mutations_thread, thread=True,
+                            exclusive=True, group="mutation-replay")
+
+    def _render_sub_title(self) -> None:
+        n = len(self._pending_mutations)
+        suffix = f" · {n} queued" if n else ""
+        self.sub_title = self._status_base + suffix
+        try:
+            self.query_one("#settings-queue-info", Static).update(self._queue_info_text())
+        except Exception:
+            pass  # Settings tab not mounted yet (e.g. called before compose())
+
+    def _queue_info_text(self) -> str:
+        n = len(self._pending_mutations)
+        if not n:
+            return "No queued offline actions."
+        return f"{n} queued offline action{'s' if n != 1 else ''} — will send/apply once reconnected."
+
+    # ---- offline mutation queue (Reply/Reply All/Forward/New-compose send,
+    # task-toggle incl. subtasks) — see self._pending_mutations' __init__ NOTE.
+    def _enqueue_mutation(self, mutation: dict) -> str:
+        key = str(uuid.uuid4())
+        mutation = {**mutation, "created_at": dt.datetime.now(dt.timezone.utc).isoformat()}
+        self._pending_mutations[key] = mutation
+        if self._cache:
+            self._cache.put("pending_mutation", key, mutation)
+        self._render_sub_title()
+        return key
+
+    def _replay_one_mutation(self, mutation: dict) -> None:
+        t = mutation["type"]
+        if t == "reply":
+            gauth.reply_to(self.svc, mutation["thread_id"], mutation["body"], reply_all=False)
+        elif t == "reply_all":
+            gauth.reply_to(self.svc, mutation["thread_id"], mutation["body"], reply_all=True)
+        elif t == "forward":
+            gauth.forward(self.svc, mutation["thread_id"], mutation["to"],
+                          body_prefix=mutation["body"] + "\n")
+        elif t == "new":
+            gauth.send_message(self.svc, to=mutation["to"], subject=mutation["subject"],
+                               body=mutation["body"])
+        elif t == "toggle_task":
+            gauth.set_task_status(self.svc, mutation["list_id"], mutation["task_id"], mutation["done"])
+
+    def _replay_pending_mutations_thread(self) -> None:
+        """Runs after _apply_live_refresh sees a successful reconnect. Oldest
+        first (by created_at, since dict insertion order isn't necessarily
+        queue order once items persisted across a restart get reloaded from
+        Cache.get_all — see _load_from_cache). A 404 (_is_not_found_error)
+        means the target was deleted server-side while offline: drop it,
+        nothing to apply. Any other failure leaves it queued for the next
+        successful reconnect rather than losing it — but keeps trying the
+        REST of the queue rather than giving up on the first failure, since
+        one thread/task going missing says nothing about the others.
+        """
+        items = sorted(self._pending_mutations.items(), key=lambda kv: kv[1].get("created_at", ""))
+        sent = dropped = 0
+        for key, mutation in items:
+            try:
+                self._replay_one_mutation(mutation)
+            except Exception as e:
+                if not _is_not_found_error(e):
+                    continue  # keep queued; try again next reconnect
+                dropped += 1
+                self.call_from_thread(
+                    self.notify,
+                    f"Skipped a queued {_PENDING_MUTATION_LABELS.get(mutation['type'], mutation['type'])}: "
+                    "its target no longer exists.", severity="warning")
+            else:
+                sent += 1
+            self._pending_mutations.pop(key, None)
+            if self._cache:
+                self._cache.delete("pending_mutation", key)
+        if sent or dropped:
+            self.call_from_thread(self._render_sub_title)
+        if sent:
+            parts = [f"sent {sent} queued item{'s' if sent != 1 else ''}"]
+            if dropped:
+                parts.append(f"skipped {dropped}")
+            self.call_from_thread(self.notify, ", ".join(parts).capitalize())
+            # Some queued items changed real server state (a sent reply, a
+            # completed task) — refresh so the UI shows the real result
+            # instead of whatever optimistic/cached state was showing.
+            self.call_from_thread(
+                lambda: self.run_worker(self._refresh_all_thread, thread=True, exclusive=True))
 
     # ---- refresh ----
     def _fetch_mail_data(self):
@@ -2194,7 +2341,8 @@ class GoogleTUI(App):
             self.notify(f"Refreshed recently — wait {wait:.0f}s", severity="warning")
             return
         self._last_manual_refresh = now
-        self.sub_title = "Connecting…"
+        self._status_base = "Connecting…"
+        self._render_sub_title()
         self.run_worker(self._live_refresh_thread, thread=True, exclusive=True)
 
     def action_help(self): self.push_screen(HelpModal())
@@ -2261,20 +2409,17 @@ class GoogleTUI(App):
                 if getattr(c, "id", "") and c.id.startswith("t-")]
 
     def action_reply(self):
-        if not self._require_online():
-            return
+        # Not gated by _require_online(): composing (and, if needed,
+        # QUEUING the send) works offline — see ComposeModal.on_mount /
+        # _send_now and the offline mutation queue.
         tid = self._selected_thread()
         if tid:
             self.push_screen(ComposeModal(self.svc, tid, mode="reply"), self._on_compose_result)
     def action_reply_all(self):
-        if not self._require_online():
-            return
         tid = self._selected_thread()
         if tid:
             self.push_screen(ComposeModal(self.svc, tid, mode="reply_all"), self._on_compose_result)
     def action_forward(self):
-        if not self._require_online():
-            return
         tid = self._selected_thread()
         if tid:
             self.push_screen(ComposeModal(self.svc, tid, mode="forward"), self._on_compose_result)
@@ -2519,12 +2664,21 @@ class GoogleTUI(App):
         _append_task_items(self.query_one("#task-list"), visible)
 
     def action_toggle_task(self):
-        if not self._require_online():
-            return
         t = self._selected_task()
         if not t:
             return
         done = t.get("status") != "completed"
+        if not self._online:
+            self._enqueue_mutation(
+                {"type": "toggle_task", "list_id": t["_list"], "task_id": t["id"], "done": done})
+            # Optimistic local update: t IS the dict inside self._tasks_cache
+            # (_selected_task returns it by reference, not a copy), so this
+            # flips the checkbox immediately — the same feedback the online
+            # path gets from _refresh_all_thread, which isn't available now.
+            t["status"] = "completed" if done else "needsAction"
+            self._refresh_task_list()
+            self.notify("Offline — queued, will apply once reconnected.")
+            return
         # Both the write AND the refresh that follows it are network calls, so
         # the whole sequence goes on a worker thread — `set_task_status` used
         # to run inline here, freezing the UI on an HTTPS round-trip for the
@@ -2679,8 +2833,19 @@ class GoogleTUI(App):
         # with whether it mutated anything; only then is it safe to touch
         # #task-list — see TaskModal's class docstring for the NoMatches
         # this avoids by NOT refreshing while the modal was still on top.
-        if mutated:
+        if not mutated:
+            return
+        if self._online:
             self.run_worker(self._refresh_all_thread, thread=True, exclusive=True)
+        else:
+            # An offline subtask toggle already mutated self._tasks_cache's
+            # dicts in place (TaskModal.subtasks holds the SAME objects, not
+            # copies — see _child_tasks) and got queued for replay; a real
+            # refetch here would just fail and notify a spurious "Refresh
+            # error" right after the user's optimistic toggle succeeded. A
+            # local re-render is enough — _replay_pending_mutations_thread
+            # triggers the real refresh once reconnected.
+            self._refresh_task_list()
 
     # ---- hermes ask / browser address bar (shared Input.Submitted) ----
     def on_input_submitted(self, event: Input.Submitted) -> None:
@@ -4103,6 +4268,8 @@ class GoogleTUI(App):
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "settings-reauth-google":
             self._start_google_reauth()
+        elif event.button.id == "settings-view-queue":
+            self.push_screen(PendingMutationsModal(list(self._pending_mutations.values())))
         elif event.button.id == "settings-clear-cache":
             if self._cache:
                 self._cache.clear_all()
@@ -4896,6 +5063,26 @@ class ComposeModal(ModalScreen):
     def on_mount(self) -> None:
         if self.mode == "new":
             to, subject = self._prefill_to, ""
+        elif not self.app._online:
+            # Offline: no threads().get() round trip to block on (there's no
+            # network to make it with). Fall back to the already-cached
+            # thread summary (self.app._threads_cache — subject/from only;
+            # list_threads never fetches To/Cc headers, so reply_all
+            # degrades to replying just to the sender when working from
+            # cache). The actual send gets QUEUED — see _send_now — so this
+            # degraded prefill is the only place offline compose loses
+            # anything, not the send itself.
+            cached = self.app._threads_cache.get(self.thread_id, {})
+            subj = cached.get("subject", "")
+            if self.mode == "forward":
+                to = ""
+                subject = subj if subj.lower().startswith("fwd:") else "Fwd: " + subj
+            else:
+                to = cached.get("from", "")
+                subject = subj if subj.lower().startswith("re:") else "Re: " + subj
+                if self.mode == "reply_all":
+                    self.notify("Offline — replying from cached info; Cc'd recipients may be missing.",
+                                severity="warning")
         else:
             g = self.svc["gmail"]
             th = g.users().threads().get(userId="me", id=self.thread_id, format="metadata",
@@ -5012,25 +5199,52 @@ class ComposeModal(ModalScreen):
             f"Sending in {self._countdown_remaining}… (Cancel or Esc to stop)"
         )
 
-    def _cancel_countdown(self) -> None:
-        self._countdown_timer.stop()
-        self._countdown_timer = None
+    def _reenable_fields(self) -> None:
         self.query_one("#c-to").disabled = False
         self.query_one("#c-subject").disabled = False
         self.query_one("#c-body").disabled = False
         self.query_one("#send", Button).disabled = False
         self.query_one("#send-countdown", Static).update("")
 
+    def _cancel_countdown(self) -> None:
+        self._countdown_timer.stop()
+        self._countdown_timer = None
+        self._reenable_fields()
+
     def _send_now(self) -> None:
         to = self.query_one("#c-to").value.strip()
         subject = self.query_one("#c-subject").value.strip()
         body = self.query_one("#c-body").text
-        if self.mode == "forward":
-            gauth.forward(self.svc, self.thread_id, to, body_prefix=body + "\n")
-        elif self.mode == "new":
-            gauth.send_message(self.svc, to=to, subject=subject, body=body)
-        else:
-            gauth.reply_to(self.svc, self.thread_id, body, reply_all=(self.mode == "reply_all"))
+        if not self.app._online:
+            # Queue instead of attempting a call with no network to make it
+            # over — see GoogleTUI._enqueue_mutation /
+            # _replay_pending_mutations_thread for the replay-on-reconnect
+            # side of this.
+            if self.mode == "forward":
+                mutation = {"type": "forward", "thread_id": self.thread_id, "to": to, "body": body}
+            elif self.mode == "new":
+                mutation = {"type": "new", "to": to, "subject": subject, "body": body}
+            else:  # reply / reply_all
+                mutation = {"type": self.mode, "thread_id": self.thread_id, "body": body}
+            self.app._enqueue_mutation(mutation)
+            self.app.notify("Offline — queued, will send once reconnected.")
+            self.dismiss("queued")
+            return
+        try:
+            if self.mode == "forward":
+                gauth.forward(self.svc, self.thread_id, to, body_prefix=body + "\n")
+            elif self.mode == "new":
+                gauth.send_message(self.svc, to=to, subject=subject, body=body)
+            else:
+                gauth.reply_to(self.svc, self.thread_id, body, reply_all=(self.mode == "reply_all"))
+        except Exception as e:
+            # Previously uncaught here — an exception from a set_interval
+            # timer callback (this runs via _countdown_tick) would otherwise
+            # propagate to the App's unhandled-exception handler instead of
+            # just failing this one send.
+            self.app.notify(f"Send failed: {e}", severity="error")
+            self._reenable_fields()
+            return
         self.dismiss("sent")
 
     def on_key(self, e) -> None:
@@ -5349,12 +5563,24 @@ class TaskModal(ModalScreen):
 
     # ---- toggle complete ----
     def _toggle_highlighted_subtask(self) -> None:
-        if not self.app._require_online():
-            return
         s = self._highlighted_subtask()
         if not s:
             return
         done = s.get("status") != "completed"
+        if not self.app._online:
+            self.app._enqueue_mutation({
+                "type": "toggle_task", "list_id": self.task_data["_list"],
+                "task_id": s["id"], "done": done,
+            })
+            # s IS the dict inside self.app._tasks_cache (self.subtasks is
+            # built by _child_tasks filtering the SAME objects, not copies),
+            # so this flips the checkbox in both this modal and the app's
+            # Tasks pane once it re-renders (see _on_task_modal_result).
+            s["status"] = "completed" if done else "needsAction"
+            self._mutated = True
+            self.run_worker(self._render_subtasks(), exclusive=True, group="task-subtask")
+            self.app.notify("Offline — queued, will apply once reconnected.")
+            return
         self.run_worker(lambda: self._toggle_subtask_thread(s["id"], done),
                          thread=True, exclusive=True, group="task-subtask")
 
@@ -5478,6 +5704,48 @@ class ContactModal(ModalScreen):
             self.dismiss(("compose", self.contact.get("email", "")))
         else:
             self.dismiss(None)
+
+    def on_key(self, e) -> None:
+        if e.key == "escape":
+            self.dismiss(None)
+
+
+class PendingMutationsModal(ModalScreen):
+    """Read-only view of the offline mutation queue (Settings -> General ->
+    "View queued actions" — see GoogleTUI._enqueue_mutation /
+    _replay_pending_mutations_thread). Deliberately no per-item cancel:
+    the queue is small in practice (Reply/Reply All/Forward/New-compose
+    send + task-toggle only) and self-clears once reconnected — adding
+    individual cancellation would need to also handle "cancel an
+    optimistic local update," which the toggle-task path already applied
+    to self._tasks_cache. Not worth the complexity for a first pass.
+    """
+
+    def __init__(self, mutations: list[dict]):
+        super().__init__()
+        self.mutations = mutations
+
+    def compose(self) -> ComposeResult:
+        with Container(id="pending-mutations-box", classes="pane"):
+            yield Label("QUEUED OFFLINE ACTIONS", classes="pane-title-text")
+            with VerticalScroll(id="pending-mutations-scroll"):
+                yield Static(id="pending-mutations-text", markup=False)
+            yield Button("Close", id="close")
+
+    def on_mount(self) -> None:
+        if not self.mutations:
+            text = "Nothing queued."
+        else:
+            items = sorted(self.mutations, key=lambda m: m.get("created_at", ""))
+            lines = [
+                f"{m.get('created_at', '')[:16].replace('T', ' ')}  {_pending_mutation_summary(m)}"
+                for m in items
+            ]
+            text = "\n".join(lines)
+        self.query_one("#pending-mutations-text", Static).update(text)
+
+    def on_button_pressed(self, e: Button.Pressed) -> None:
+        self.dismiss(None)
 
     def on_key(self, e) -> None:
         if e.key == "escape":

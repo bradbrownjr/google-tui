@@ -54,7 +54,9 @@ of blocking on that.
   succeeds for that file, never pre-fetched for a whole folder),
   `gemini_cert` (key `f"{host}:{port}"`, Browser tab's Gemini TOFU pinning,
   P1 M2), `feed_entry` (key = the entry's stable id — `entry.id` or
-  `entry.link` — News tab, P1 M3).
+  `entry.link` — News tab, P1 M3), `pending_mutation` (key = a `uuid4`,
+  the offline mutation queue — see the "Offline behavior" entry below and
+  CHANGELOG `[2026-07-16]`).
   **Design intent**: small "browse" rows (summaries/listings) are cheap to
   bulk-decrypt on every list population; large "content" rows (Drive text)
   are decrypted one at a time, only when opened. This is what makes
@@ -76,13 +78,52 @@ of blocking on that.
   `Cache.clear_all()`s immediately** (no re-encryption/migration code) and
   tells the user to restart. This is a deliberate simplification — see
   ROADMAP.
-- **Offline behavior is intentionally narrow**: `self._online: bool` is set
-  by `_apply_live_refresh` after each connect attempt. Reply/Reply All/
-  Forward/toggle-task check `self._require_online()` first and just
-  `notify(..., severity="warning")` instead of attempting the call — there
-  is NO queue-for-later/sync-when-reconnected mechanism. Drive preview reads
-  from cache instead of `gauth` when offline. This is "browse cached data
-  read-only while offline," not a sync engine.
+- **Offline behavior**: `self._online: bool` is set by `_apply_live_refresh`
+  after each connect attempt. Two tiers:
+  - **Still just blocked**: Mark Unread, New Event, ThreadModal's Trash/
+    Archive/Labels, and TaskModal's Add/Delete subtask + Delete task check
+    `self._require_online()` first and `notify(..., severity="warning")`
+    instead of attempting the call. No queue for these — deliberately kept
+    out of the mutation queue's scope (2026-07-16) to keep it small; a
+    CREATE needs a temporary local id before it has a real one, and a
+    DELETE's target might already be a queued CREATE, neither of which the
+    queue below handles.
+  - **Queued for replay** (2026-07-16, see CHANGELOG): Reply/Reply All/
+    Forward/New-compose send, and task-toggle (incl. subtasks) —
+    `GoogleTUI._enqueue_mutation` writes `{type, ...payload, created_at}`
+    to both `self._pending_mutations` (in-memory) and the `pending_mutation`
+    Cache category (so a queue survives an app restart while still
+    offline — loaded back in `_load_from_cache`). Task-toggle also applies
+    an OPTIMISTIC local update (flips the cached task dict's `status`
+    directly, since `_selected_task()`/`TaskModal.subtasks` hand back
+    references into `self._tasks_cache`, not copies) so the checkbox
+    changes immediately instead of waiting for a reconnect. `ComposeModal.
+    on_mount` skips the `threads().get()` metadata fetch when offline (no
+    network to make it with) and falls back to the already-cached thread
+    summary for Subject/From — degraded for `reply_all` specifically, since
+    `list_threads` never fetches To/Cc headers, so it can only address the
+    original sender until reconnected.
+    `_apply_live_refresh` kicks `_replay_pending_mutations_thread` (worker
+    thread) whenever a refresh succeeds (`ok`) and the queue is non-empty.
+    Oldest-first (`created_at`, since dict insertion order isn't reliably
+    queue order once reloaded from `Cache.get_all`). `_is_not_found_error`
+    (an `HttpError` with `.resp.status == 404` — every mutation type's
+    replay does a `.get()` before mutating, so a deleted target surfaces
+    identically regardless of type) means the target's gone: drop the item
+    with a notify. Any OTHER exception leaves it queued for the next
+    reconnect rather than losing it, but the loop still tries the rest of
+    the queue instead of stopping at the first failure. `self._status_base`
+    + `_render_sub_title()` combine the Connecting/Synced/Offline text with
+    a "· N queued" suffix — every direct `self.sub_title = ...` assignment
+    was replaced with this pair specifically so the queued-count suffix
+    can't get silently dropped by some future edit that reassigns
+    `sub_title` directly. Settings → General → "View queued actions" opens
+    `PendingMutationsModal`, a read-only list (no per-item cancel — see its
+    class docstring for why that's out of scope for now).
+  Drive preview reads from cache instead of `gauth` when offline, unrelated
+  to either tier above. This is still "browse cached data read-only, plus a
+  small queued-write escape hatch," not a full sync engine — there's no
+  conflict resolution beyond "404 means gone, anything else means retry."
 
 Mail-tab panes:
 - **Email** (left, full height): threaded Gmail list, lightbar. `Enter`

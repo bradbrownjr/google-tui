@@ -3,6 +3,83 @@
 Format: keep newest at top. One entry per meaningful change. Reference files
 touched and any breaking notes.
 
+## [2026-07-16] — Offline mutation queue: Reply/Forward/toggle-task now queue instead of blocking
+
+Partly closes the ROADMAP P3 item "Offline mutation queue" — Reply/Reply
+All/Forward/New-compose send and task-toggle (including subtasks) now
+queue for automatic replay on reconnect instead of being flatly disabled
+while offline; Mark Unread, New Event, ThreadModal's Trash/Archive/Labels,
+and TaskModal's Add/Delete subtask + Delete task remain blocked (see the
+updated ROADMAP entry for why those stayed out of scope — CREATEs need a
+temporary local id, DELETEs might target a queued CREATE, neither of which
+this queue handles).
+
+New `Cache` category `"pending_mutation"` (key = `uuid4`, value =
+`{type, ...payload, created_at}`) persists the queue across an app
+restart while still offline, loaded back in `_load_from_cache`. Added
+`Cache.delete(category, key)` (`cache.py`) to remove a replayed/dropped
+item — the first `Cache` category that needed row-level deletion rather
+than bulk `clear_all()`.
+
+`GoogleTUI._enqueue_mutation` writes to both `self._pending_mutations`
+(in-memory) and the cache; `action_reply`/`action_reply_all`/
+`action_forward`'s `_require_online()` gate is gone (composing offline is
+now allowed), and `ComposeModal._send_now` branches on `self.app._online`
+to enqueue instead of calling `gauth.reply_to`/`forward`/`send_message` —
+which also meant giving `_send_now` its first try/except: it had none
+before, so an online send failure would have propagated uncaught out of a
+`set_interval` timer callback straight to the App's unhandled-exception
+handler. `ComposeModal.on_mount` skips the blocking `threads().get()`
+metadata fetch when offline and falls back to the cached thread summary
+for Subject/From instead — `reply_all` degrades to replying just to the
+sender in this case, since `list_threads` never fetches To/Cc headers, and
+a warning notify says so. `action_toggle_task` and TaskModal's
+`_toggle_highlighted_subtask` apply an OPTIMISTIC local update (flip the
+cached task dict's `status` directly — `_selected_task()`/
+`TaskModal.subtasks` hand back references into `self._tasks_cache`, not
+copies, so this updates both the modal and the Tasks pane) so the checkbox
+changes immediately instead of waiting for a reconnect that might be a
+while off; `_on_task_modal_result` now checks `self._online` before
+deciding between a real refetch (online) or a local re-render (offline —
+a refetch would just fail and notify a confusing "Refresh error" right
+after the optimistic toggle succeeded).
+
+Replay: `_apply_live_refresh` kicks `_replay_pending_mutations_thread`
+(worker thread) whenever a refresh succeeds and the queue is non-empty.
+Processes oldest-first by `created_at` (dict insertion order isn't
+reliable queue order once reloaded from `Cache.get_all`, which doesn't
+preserve write order across categories/restarts). New helper
+`_is_not_found_error` recognizes an `HttpError` with `.resp.status == 404`
+— every queued mutation type's replay does a `.get()` before mutating
+(`reply_to`/`forward` fetch the thread, `set_task_status` fetches the
+task), so a target deleted while offline surfaces identically regardless
+of type. A 404 drops the item with a warning notify ("its target no
+longer exists"); any other exception leaves it queued for the next
+reconnect attempt, but the loop still tries the REST of the queue instead
+of stopping at the first failure, since one thread/task going missing says
+nothing about the others. A successful replay batch triggers
+`_refresh_all_thread` once, so real server state (the sent reply, the
+completed task) replaces whatever optimistic/cached state was showing.
+
+Small UI surface (per the chosen design — indicator + list, not silent):
+`self._status_base` + new `_render_sub_title()` combine the existing
+Connecting/Synced/Offline text with a "· N queued" suffix; every direct
+`self.sub_title = ...` assignment (3 of them) was replaced with this pair.
+Settings → General gained an "Offline queue" section (`Button
+#settings-view-queue` + a live-updating `Static#settings-queue-info`)
+opening `PendingMutationsModal` — a read-only, sorted-by-time list (no
+per-item cancel; see its class docstring and the ROADMAP entry for why).
+
+Verified via an isolated `run_test` pilot (isolated `platformdirs`
+config/cache dirs, `gauth.set_task_status`/`reply_to` mocked, one queued
+item made to 404 via a fake `HttpError`) confirming: an offline task
+toggle applies optimistically and queues a mutation; an offline reply
+opens with cached-thread prefill and queues instead of calling
+`gauth.reply_to`; and replay-on-reconnect sends the toggle, drops the
+404'd reply, and empties both the in-memory queue and its `notify`/
+`sub_title` reflection. Also confirmed `Cache.delete` removes exactly the
+targeted row.
+
 ## [2026-07-16] — Drive tab: "Load more" past the one-folder-page cap
 
 Closes the ROADMAP P3 pagination item — Email and Events landed earlier

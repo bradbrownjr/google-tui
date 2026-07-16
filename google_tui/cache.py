@@ -136,6 +136,12 @@ class Cache:
             )
             self._conn.commit()
 
+    def delete(self, category: str, key: str) -> None:
+        with self._lock:
+            self._conn.execute(
+                "DELETE FROM cache_items WHERE category = ? AND key = ?", (category, key))
+            self._conn.commit()
+
     def clear_all(self) -> None:
         with self._lock:
             self._conn.execute("DELETE FROM cache_items")
