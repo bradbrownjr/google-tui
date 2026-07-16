@@ -1,10 +1,15 @@
 """google-tui — multi-pane TUI for Gmail / Calendar / Tasks / Drive / Browser / News / Navigation / Hermes.
 
-Top-level layout is eight full-width TABS in the blue bar: Mail, Calendar,
-Drive, Browser, News, Navigation, Contacts, Settings (F1..F8, also Ctrl+1..8).
-The Mail tab holds four PANES: Email, Events, Tasks, Hermes (Alt+1..4, or
-Alt+arrows to move relatively). See AGENTS.md for the full keybinding
-reference and the PANE_ADJACENCY rationale.
+Top-level layout is nine full-width TABS in the blue bar: Dashboard, Mail,
+Calendar, Drive, Browser, News, Navigation, Contacts, Settings (F1..F8, also
+Ctrl+1..8 -- Settings is the odd one out at Ctrl+9, no F-key alias, since
+F9+ isn't reliably delivered by every terminal). The Mail tab is Email-only
+(list + toggleable preview pane, "p"). The Dashboard tab holds three PANES
+--- Events, Tasks, Hermes (Alt+2..4, or Alt+arrows to move relatively) ---
+as interim/placeholder content until the full dashboard feature (weather,
+stocks, etc. -- ROADMAP P4) replaces it; Alt+1 stays on the Mail tab's
+Email. See AGENTS.md for the full keybinding reference and the
+DASH_ADJACENCY rationale.
 """
 from __future__ import annotations
 
@@ -51,21 +56,27 @@ from .cache import Cache, derive_key_from_passphrase, make_canary, new_salt, rea
 from . import cache as cache_mod
 from .settings import Settings, load_settings, save_settings
 
-PANE_IDS = ["email", "events", "tasks", "hermes"]
+# The Mail tab is single-purpose (Email only, `2026-07-16`) -- Events/Tasks/
+# Hermes moved to their own Dashboard tab (`tab-dashboard`, interim home
+# until the full dashboard feature -- weather/stocks/etc, ROADMAP P4 --
+# replaces this placeholder content). PANE_IDS now covers ONLY Email's own
+# tab, which has nothing to switch to; DASH_PANE_IDS/DASH_ADJACENCY (below)
+# is the separate group for the Dashboard tab's 3 stacked panes.
+PANE_IDS = ["email"]
+DASH_PANE_IDS = ["events", "tasks", "hermes"]
 PANE_TITLES = {
     "email": "EMAIL",
     "events": "EVENTS",
     "tasks": "TASKS",
     "hermes": "HERMES ASK",
 }
-# Email spans the full left column; Events/Tasks/Hermes stack in the right
-# column. This is NOT a symmetric 2x2 grid, so left/right/up/down are an
-# explicit adjacency map rather than arithmetic on a flat pane index.
-PANE_ADJACENCY = {
-    "email":  {"right": "events"},
-    "events": {"left": "email", "down": "tasks"},
-    "tasks":  {"left": "email", "up": "events", "down": "hermes"},
-    "hermes": {"left": "email", "up": "tasks"},
+# Events/Tasks/Hermes stack in one column on the Dashboard tab -- a simple
+# up/down chain, not the left/right map this used to need back when Email
+# was a sibling column (see CHANGELOG 2026-07-16 for the split).
+DASH_ADJACENCY = {
+    "events": {"down": "tasks"},
+    "tasks":  {"up": "events", "down": "hermes"},
+    "hermes": {"up": "tasks"},
 }
 
 # Ctrl+R debounce (see action_refresh): a repeated manual refresh inside this
@@ -75,8 +86,8 @@ PANE_ADJACENCY = {
 # costing quota, it only discards its result.
 REFRESH_COOLDOWN_SECONDS = 5.0
 
-TAB_ORDER = ["tab-mail", "tab-calendar", "tab-drive", "tab-browser", "tab-news", "tab-navigation", "tab-contacts",
-             "tab-settings"]
+TAB_ORDER = ["tab-dashboard", "tab-mail", "tab-calendar", "tab-drive", "tab-browser", "tab-news", "tab-navigation",
+             "tab-contacts", "tab-settings"]
 SETTINGS_TAB_ORDER = ["settings-tab-general", "settings-tab-ai", "settings-tab-feeds", "settings-tab-search",
                        "settings-tab-navigation"]
 
@@ -100,7 +111,7 @@ SETTINGS_TAB_ORDER = ["settings-tab-general", "settings-tab-ai", "settings-tab-f
 # comfortably inside "-narrow", not right at the boundary.
 NARROW_WIDTH_THRESHOLD = 100
 
-_SUPERSCRIPT = {1: "¹", 2: "²", 3: "³", 4: "⁴", 5: "⁵", 6: "⁶", 7: "⁷", 8: "⁸"}
+_SUPERSCRIPT = {1: "¹", 2: "²", 3: "³", 4: "⁴", 5: "⁵", 6: "⁶", 7: "⁷", 8: "⁸", 9: "⁹"}
 
 NAV_EXPORT_DIR = Path(platformdirs.user_documents_dir()) / "google-tui"
 
@@ -119,12 +130,13 @@ _log_handler = logging.FileHandler(LOG_FILE, encoding="utf-8")
 _log_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
 _logger.addHandler(_log_handler)
 
-# Seconds the Drive cursor must sit still before we fetch a preview, and the
-# Contacts/Email/Tasks search boxes must sit idle before we re-filter. All of
-# these handlers fire on every keypress and each used to do its (expensive)
-# work synchronously on each one; long enough to swallow a held-down arrow key
-# or a fast typist, short enough to still feel immediate once you stop.
-_DRIVE_PREVIEW_DEBOUNCE = 0.25
+# Seconds the Drive/Email cursor must sit still before we fetch a preview,
+# and the Contacts/Email/Tasks search boxes must sit idle before we
+# re-filter. All of these handlers fire on every keypress and each used to
+# do its (expensive) work synchronously on each one; long enough to swallow
+# a held-down arrow key or a fast typist, short enough to still feel
+# immediate once you stop.
+_PREVIEW_DEBOUNCE = 0.25
 _CONTACTS_SEARCH_DEBOUNCE = 0.15
 _EMAIL_SEARCH_DEBOUNCE = 0.15
 _TASKS_SEARCH_DEBOUNCE = 0.15
@@ -553,14 +565,15 @@ def _tab_label(text: str, num: int, ascii_mode: bool = False) -> str:
 # and compose() below uses to build each TabPane's initial title. Keep in
 # sync with the TabPane ids/order in compose() if a tab is ever added/reordered.
 TAB_LABEL_SPECS: list[tuple[str, str, int]] = [
-    ("tab-mail", "Mail", 1),
-    ("tab-calendar", "Calendar", 2),
-    ("tab-drive", "Drive", 3),
-    ("tab-browser", "Browser", 4),
-    ("tab-news", "News", 5),
-    ("tab-navigation", "Navigation", 6),
-    ("tab-contacts", "Contacts", 7),
-    ("tab-settings", "Settings", 8),
+    ("tab-dashboard", "Dashboard", 1),
+    ("tab-mail", "Mail", 2),
+    ("tab-calendar", "Calendar", 3),
+    ("tab-drive", "Drive", 4),
+    ("tab-browser", "Browser", 5),
+    ("tab-news", "News", 6),
+    ("tab-navigation", "Navigation", 7),
+    ("tab-contacts", "Contacts", 8),
+    ("tab-settings", "Settings", 9),
 ]
 
 
@@ -965,7 +978,9 @@ class GoogleTUI(App):
     #main-tabs > ContentTabs Tab.-active { background: $accent; color: $text; text-style: bold; }
     #body { height: 1fr; }
     #left { width: 65%; }
-    #right { width: 1fr; }
+    #right { width: 1fr; border: round $panel-darken-1; padding: 0 1; }
+    #dashboard-body { height: 1fr; }
+    #email-preview-meta { height: auto; border-bottom: solid $panel-darken-2; padding-bottom: 1; }
     .pane { height: 1fr; border: round $panel-darken-2; padding: 0 1; }
     .pane-active { border: round $accent; }
     .pane-title-row { height: 1; }
@@ -1048,11 +1063,13 @@ class GoogleTUI(App):
     #hermes-log.ascii-border { border: ascii $panel-darken-1; }
     #drive-list-col.ascii-border { border: ascii $panel-darken-1; }
     #drive-preview-col.ascii-border { border: ascii $panel-darken-1; }
+    #right.ascii-border { border: ascii $panel-darken-1; }
     #browser-doc.ascii-border { border: ascii $panel-darken-1; }
     #nav-log.ascii-border { border: ascii $panel-darken-1; }
     #settings-feed-list.ascii-border { border: ascii $panel-darken-1; }
     #c-to-suggestions.ascii-border { border: ascii $panel-darken-1; }
     #drive-preview-meta.ascii-border { border-bottom: ascii $panel-darken-2; }
+    #email-preview-meta.ascii-border { border-bottom: ascii $panel-darken-2; }
     .thread-msg-header.ascii-border { border-bottom: ascii $panel-darken-2; }
 
     /* Narrow-terminal responsive layout (P2, 2026-07-15) -- see the
@@ -1061,16 +1078,16 @@ class GoogleTUI(App):
        Drive tab: STACK list-over-preview rather than hide either one. Both
        are genuinely useful at once even at 80 columns (the list to keep
        browsing, the preview's who/what/where/when + text to actually read
-       something) and, unlike the Mail tab's four panes, there are only two
-       of them, so a 60/40 height split still leaves each one usable in a
-       25-row terminal -- hiding the preview would leave Drive as a bare
-       filename list with no way to see what's selected without opening it.
+       something) and there are only two of them, so a 60/40 height split
+       still leaves each one usable in a 25-row terminal -- hiding the
+       preview would leave Drive as a bare filename list with no way to see
+       what's selected without opening it.
     */
     Screen.-narrow #drive-body { layout: vertical; height: 1fr; }
     Screen.-narrow #drive-list-col { width: 1fr; height: 60%; }
     Screen.-narrow #drive-preview-col { width: 1fr; height: 1fr; }
 
-    /* "p" toggle (action_toggle_drive_preview) -- manual override, on top of
+    /* "p" toggle (action_toggle_preview) -- manual override, on top of
        (not instead of) the narrow/normal stacking above: hiding the preview
        column lets #drive-list-col claim the full row/height in EITHER
        layout mode. The id+class selectors below out-specificity the bare
@@ -1079,22 +1096,32 @@ class GoogleTUI(App):
     #drive-list-col.drive-list-full { width: 1fr; }
     Screen.-narrow #drive-list-col.drive-list-full { height: 1fr; }
 
-    /* Mail tab: HIDE the inactive column instead of stacking. Email vs.
-       Events/Tasks/Hermes is a 1-vs-3 split, and Events/Tasks/Hermes are
-       already themselves stacked inside #right -- stacking a 4th thing
-       (Email) on top would quarter an already-scarce 25 rows into
-       unreadable slivers. Showing exactly ONE pane full width/full height
-       (whichever is "active" -- Alt+1..4/Tab/arrows already track that via
-       _focus_pane, this just also hides the rest when narrow) keeps the
-       primary content dominant instead of squeezed. See
+    /* Dashboard tab: HIDE the inactive pane instead of stacking. Events/
+       Tasks/Hermes stacked 3-high already squeezes an already-scarce 25
+       rows; showing exactly ONE pane full width/full height (whichever is
+       "active" -- Alt+2..4/Tab/arrows already track that via
+       _focus_dash_pane, this just also hides the rest when narrow) keeps
+       the primary content dominant instead of squeezed. See
        GoogleTUI._apply_narrow_layout, which toggles this class. */
     .narrow-hidden { display: none; }
-    /* #left/#right keep their normal 65%/1fr split (see the CSS block
-       above) even when one of them is display:none'd by .narrow-hidden --
-       display:none doesn't relinquish the width, it just leaves the other
-       column's dead space empty. Whichever one IS visible needs to claim
-       the full row. */
-    Screen.-narrow #left, Screen.-narrow #right { width: 1fr; }
+
+    /* Mail tab: Email's list+preview split stacks (doesn't hide) when
+       narrow, same rationale as Drive's list+preview column -- a preview
+       is still genuinely useful at 80 columns. Only relevant when the "p"
+       toggle has the preview visible at all; #right's own
+       .email-preview-hidden class (added alongside the toggle) still wins
+       over this when the preview is off, same source-order trick already
+       used for Drive's toggle above. */
+    Screen.-narrow #body { layout: vertical; height: 1fr; }
+    Screen.-narrow #left { width: 1fr; height: 60%; }
+    Screen.-narrow #right { width: 1fr; height: 1fr; }
+
+    /* "p" toggle (action_toggle_preview) -- hidden by default (Settings.
+       email_preview_default_visible). Same id+class-after-narrow-block
+       source-order trick as Drive's toggle above. */
+    #right.email-preview-hidden { display: none; }
+    #left.email-list-full { width: 1fr; }
+    Screen.-narrow #left.email-list-full { height: 1fr; }
     """
 
     # Screen.-narrow / Screen.-normal, applied automatically by Textual on
@@ -1111,6 +1138,7 @@ class GoogleTUI(App):
     def __init__(self):
         super().__init__()
         self.active = 0
+        self._dash_active = 0  # which of DASH_PANE_IDS is focused on tab-dashboard
         self._tasklists = []
         now = dt.datetime.now()
         self._cal_year, self._cal_month = now.year, now.month
@@ -1134,7 +1162,7 @@ class GoogleTUI(App):
         # reset-to-root in _apply_live_refresh.
         self._drive_folder_stack: list[tuple[str, str]] = []
         self._drive_files: list[dict] = []
-        # "p" toggle (action_toggle_drive_preview) — visible by default;
+        # "p" toggle (action_toggle_preview) — visible by default;
         # #drive-preview-col already fits (stacked below the list) even on a
         # narrow terminal per the CSS comment below, so there's no width-based
         # reason to default it off.
@@ -1216,6 +1244,17 @@ class GoogleTUI(App):
         # the session (naturally reset on app restart, same as the caches
         # above it).
         self._thread_full_cache: dict[str, list[dict]] = {}
+        # Email preview pane ("p", action_toggle_preview) -- Outlook-style:
+        # hidden by default (session state seeded from the persisted
+        # Settings.email_preview_default_visible), live-updates on highlight
+        # while visible via the same debounce-timer + generation-counter
+        # pattern as Drive's preview column (_drive_preview_timer/_gen).
+        # Reuses self._thread_full_cache above for memoization -- no
+        # separate cache dict needed, it's already the right shape
+        # (gauth.get_thread's per-thread message list).
+        self._email_preview_visible = self.settings.email_preview_default_visible
+        self._email_preview_timer = None
+        self._email_preview_gen = 0
         self._nav_last_result: "fetchers.RouteResult | None" = None
         # Contacts tab (P1 M5) — lazy-fetched: contacts change rarely, so
         # (unlike mail/calendar/drive/news) they're NOT pulled on every
@@ -1297,23 +1336,37 @@ class GoogleTUI(App):
         return self.query_one("#main-tabs", TabbedContent)
 
     def _focus_pane(self, idx: int) -> None:
+        """Mail tab now has exactly one pane (Email) -- idx is always 0.
+        Kept as a method (not inlined) so call sites (_goto_pane, on_mount)
+        don't need to change shape."""
         self.active = idx % len(PANE_IDS)
-        for pid in PANE_IDS:
+        try:
+            self.query_one("#email").add_class("pane-active")
+        except Exception:
+            pass
+        try:
+            self.query_one("#email-list").focus()
+        except Exception:
+            pass
+        self._apply_narrow_layout()
+        self._update_help_bar()
+
+    def _focus_dash_pane(self, idx: int) -> None:
+        """Dashboard-tab counterpart to _focus_pane, for its 3 stacked
+        panes (Events/Tasks/Hermes -- interim content, see the compose()
+        comment on tab-dashboard)."""
+        self._dash_active = idx % len(DASH_PANE_IDS)
+        for pid in DASH_PANE_IDS:
             try:
                 self.query_one(f"#{pid}").remove_class("pane-active")
             except Exception:
                 pass
-        pane_id = PANE_IDS[self.active]
+        pane_id = DASH_PANE_IDS[self._dash_active]
         try:
             self.query_one(f"#{pane_id}").add_class("pane-active")
         except Exception:
             pass
-        targets = {
-            "email": "#email-list",
-            "events": "#event-list",
-            "tasks": "#task-list",
-            "hermes": "#hermes-input",
-        }
+        targets = {"events": "#event-list", "tasks": "#task-list", "hermes": "#hermes-input"}
         try:
             self.query_one(targets[pane_id]).focus()
         except Exception:
@@ -1324,26 +1377,27 @@ class GoogleTUI(App):
     # ---- narrow-terminal responsive layout (P2, 2026-07-15) ----
     # See the NARROW_WIDTH_THRESHOLD / HORIZONTAL_BREAKPOINTS comments above
     # for the overall mechanism. This method handles only the part CSS
-    # can't: which single Mail-tab pane should be visible depends on
-    # runtime state (self.active), not just terminal width.
+    # can't: which single Dashboard-tab pane should be visible depends on
+    # runtime state (self._dash_active), not just terminal width. The Mail
+    # tab no longer needs anything here -- Email is its only content, and
+    # the preview column's visibility is governed purely by the "p" toggle
+    # (action_toggle_preview), not narrow state -- same CSS-only stacking
+    # Drive's list+preview column already uses when narrow.
     def _apply_narrow_layout(self) -> None:
-        """When narrow, show only the active Mail pane (Email, OR the
-        Events/Tasks/Hermes column) full width/full height; when not
-        narrow, restore the normal Email+stack side-by-side layout. Safe to
-        call any time (pane switch, resize, startup) — a no-op query
-        failure (e.g. called before compose() has mounted anything) is
-        swallowed the same way _apply_ascii_mode's widget lookups are.
+        """When narrow, show only the active Dashboard pane (Events, Tasks,
+        or Hermes) full width/full height; when not narrow, restore the
+        normal always-stacked layout. Safe to call any time (pane switch,
+        resize, startup) — a no-op query failure (e.g. called before
+        compose() has mounted anything) is swallowed the same way
+        _apply_ascii_mode's widget lookups are.
         """
         try:
-            left = self.query_one("#left")
-            right = self.query_one("#right")
+            self.query_one("#dashboard-body")
         except Exception:
             return
         narrow = self._narrow
-        active_pane = PANE_IDS[self.active] if narrow else None
-        left.set_class(narrow and active_pane != "email", "narrow-hidden")
-        right.set_class(narrow and active_pane == "email", "narrow-hidden")
-        for pid in PANE_IDS[1:]:  # events / tasks / hermes, inside #right
+        active_pane = DASH_PANE_IDS[self._dash_active] if narrow else None
+        for pid in DASH_PANE_IDS:
             try:
                 self.query_one(f"#{pid}").set_class(narrow and pid != active_pane, "narrow-hidden")
             except Exception:
@@ -1378,17 +1432,18 @@ class GoogleTUI(App):
         self._update_help_global()
 
     def _adjacent(self, direction: str) -> None:
-        if self._main_tabs().active != "tab-mail":
+        # Mail tab has nothing to move to now -- Email is its only pane.
+        if self._main_tabs().active != "tab-dashboard":
             return
-        current_id = PANE_IDS[self.active]
-        target_id = PANE_ADJACENCY.get(current_id, {}).get(direction)
+        current_id = DASH_PANE_IDS[self._dash_active]
+        target_id = DASH_ADJACENCY.get(current_id, {}).get(direction)
         if target_id:
-            self._focus_pane(PANE_IDS.index(target_id))
+            self._focus_dash_pane(DASH_PANE_IDS.index(target_id))
 
     # ---- help bar ----
     def _context_help_scope(self) -> str:
         tab = self._main_tabs().active
-        return f"pane:{PANE_IDS[self.active]}" if tab == "tab-mail" else f"tab:{tab}"
+        return f"pane:{DASH_PANE_IDS[self._dash_active]}" if tab == "tab-dashboard" else f"tab:{tab}"
 
     def _context_help_text(self) -> str:
         """Plain (non-clickable) context help text. Used only as the basis
@@ -1440,8 +1495,8 @@ class GoogleTUI(App):
     # cascade/specificity resolves the swap, and it's just as live.
     _ASCII_BORDER_SELECTORS = (
         ".pane", ".pane-active", ".section", "#hermes-log", "#drive-list-col",
-        "#drive-preview-col", "#browser-doc", "#nav-log", "#settings-feed-list",
-        "#c-to-suggestions", "#drive-preview-meta", ".thread-msg-header",
+        "#drive-preview-col", "#right", "#browser-doc", "#nav-log", "#settings-feed-list",
+        "#c-to-suggestions", "#drive-preview-meta", "#email-preview-meta", ".thread-msg-header",
     )
 
     def _apply_ascii_mode(self) -> None:
@@ -1473,7 +1528,31 @@ class GoogleTUI(App):
     def compose(self) -> ComposeResult:
         yield GtHeader()
         with TabbedContent(id="main-tabs", initial="tab-mail"):
-            with TabPane(_tab_label("Mail", 1, self.settings.ascii_mode), id="tab-mail"):
+            # Interim home for Events/Tasks/Hermes (moved out of the Mail tab,
+            # `2026-07-16`, to make Email single-purpose) -- placeholder
+            # content for the real Dashboard feature (ROADMAP P4: weather,
+            # stocks, word of the day, today's events, tasks due, unread
+            # count, etc.), not yet built. Badge numbers on each pane's title
+            # row (2/3/4) are unchanged from before the move -- they still
+            # match the Alt+2/3/4 shortcuts that jump here.
+            with TabPane(_tab_label("Dashboard", 1, self.settings.ascii_mode), id="tab-dashboard"):
+                with Vertical(id="dashboard-body"):
+                    with Container(id="events", classes="pane"):
+                        yield self._pane_title_row("EVENTS  (upcoming)", 2)
+                        with Horizontal(id="events-bar", classes="btnrow hidden"):
+                            yield Input(placeholder="Search events (summary/description)… (/)",
+                                        id="events-search")
+                        yield ListView(id="event-list")
+                    with Container(id="tasks", classes="pane"):
+                        yield self._pane_title_row("TASKS  (space=done, enter=detail)", 3)
+                        with Horizontal(id="tasks-bar", classes="btnrow hidden"):
+                            yield Input(placeholder="Search tasks (title/notes)… (/)", id="tasks-search")
+                        yield ListView(id="task-list")
+                    with Container(id="hermes", classes="pane"):
+                        yield self._pane_title_row("HERMES ASK  (type a question, Enter)", 4)
+                        yield RichLog(id="hermes-log", markup=False, wrap=True)
+                        yield Input(placeholder="Ask Hermes about your Google stuff…", id="hermes-input")
+            with TabPane(_tab_label("Mail", 2, self.settings.ascii_mode), id="tab-mail"):
                 with Horizontal(id="body"):
                     with Vertical(id="left"):
                         with Container(id="email", classes="pane"):
@@ -1489,23 +1568,14 @@ class GoogleTUI(App):
                                 yield Input(placeholder="Search email (subject/from/snippet)… (/)",
                                             id="email-search")
                             yield ListView(id="email-list")
-                    with Vertical(id="right"):
-                        with Container(id="events", classes="pane"):
-                            yield self._pane_title_row("EVENTS  (upcoming)", 2)
-                            with Horizontal(id="events-bar", classes="btnrow hidden"):
-                                yield Input(placeholder="Search events (summary/description)… (/)",
-                                            id="events-search")
-                            yield ListView(id="event-list")
-                        with Container(id="tasks", classes="pane"):
-                            yield self._pane_title_row("TASKS  (space=done, enter=detail)", 3)
-                            with Horizontal(id="tasks-bar", classes="btnrow hidden"):
-                                yield Input(placeholder="Search tasks (title/notes)… (/)", id="tasks-search")
-                            yield ListView(id="task-list")
-                        with Container(id="hermes", classes="pane"):
-                            yield self._pane_title_row("HERMES ASK  (type a question, Enter)", 4)
-                            yield RichLog(id="hermes-log", markup=False, wrap=True)
-                            yield Input(placeholder="Ask Hermes about your Google stuff…", id="hermes-input")
-            with TabPane(_tab_label("Calendar", 2, self.settings.ascii_mode), id="tab-calendar"):
+                    # Preview pane ("p" toggles, action_toggle_preview) -- hidden
+                    # by default (Settings.email_preview_default_visible),
+                    # live-updates as the highlight moves while visible. See
+                    # _email_on_highlight / _apply_email_preview_visibility.
+                    with VerticalScroll(id="right"):
+                        yield Static(id="email-preview-meta")
+                        yield DocumentView(id="email-preview-doc")
+            with TabPane(_tab_label("Calendar", 3, self.settings.ascii_mode), id="tab-calendar"):
                 with Container(id="calendar-section", classes="section"):
                     yield Label("CALENDAR", classes="pane-title-text")
                     with Horizontal(id="cal-search-bar", classes="btnrow hidden"):
@@ -1516,7 +1586,7 @@ class GoogleTUI(App):
                             yield DataTable(id="cal-grid")
                         with TabPane("Week", id="cal-tab-week"):
                             yield DataTable(id="cal-week-grid")
-            with TabPane(_tab_label("Drive", 3, self.settings.ascii_mode), id="tab-drive"):
+            with TabPane(_tab_label("Drive", 4, self.settings.ascii_mode), id="tab-drive"):
                 with Container(id="drive-section", classes="section"):
                     yield Label("/", id="drive-path", classes="muted")
                     with Horizontal(id="drive-search-bar", classes="btnrow hidden"):
@@ -1527,7 +1597,7 @@ class GoogleTUI(App):
                         with VerticalScroll(id="drive-preview-col"):
                             yield Static(id="drive-preview-meta")
                             yield RichLog(id="drive-preview-text", markup=False, wrap=True)
-            with TabPane(_tab_label("Browser", 4, self.settings.ascii_mode), id="tab-browser"):
+            with TabPane(_tab_label("Browser", 5, self.settings.ascii_mode), id="tab-browser"):
                 with Container(id="browser-section", classes="section"):
                     with Horizontal(id="browser-bar"):
                         yield Static("WEB", id="browser-mode")
@@ -1538,13 +1608,13 @@ class GoogleTUI(App):
                         for i, (label, _url) in enumerate(_BROWSER_BOOKMARKS):
                             yield Button(label, id=f"browser-bookmark-{i}")
                     yield DocumentView(id="browser-doc")
-            with TabPane(_tab_label("News", 5, self.settings.ascii_mode), id="tab-news"):
+            with TabPane(_tab_label("News", 6, self.settings.ascii_mode), id="tab-news"):
                 with Container(id="news-section", classes="section"):
                     yield Label("NEWS  (all subscribed feeds, newest first)", classes="pane-title-text")
                     with Horizontal(id="news-search-bar", classes="btnrow hidden"):
                         yield Input(placeholder="Search entries (title/summary)… (/)", id="news-search")
                     yield ListView(id="news-list")
-            with TabPane(_tab_label("Navigation", 6, self.settings.ascii_mode), id="tab-navigation"):
+            with TabPane(_tab_label("Navigation", 7, self.settings.ascii_mode), id="tab-navigation"):
                 with Container(id="navigation-section", classes="section"):
                     yield Label("NAVIGATION  (origin -> destination, turn-by-turn)", classes="pane-title-text")
                     with Horizontal(id="nav-bar", classes="btnrow"):
@@ -1556,14 +1626,14 @@ class GoogleTUI(App):
                     yield RichLog(id="nav-log", markup=False, wrap=True)
                     with Horizontal(id="nav-actions", classes="btnrow"):
                         yield Button("Export itinerary to file", id="nav-export")
-            with TabPane(_tab_label("Contacts", 7, self.settings.ascii_mode), id="tab-contacts"):
+            with TabPane(_tab_label("Contacts", 8, self.settings.ascii_mode), id="tab-contacts"):
                 with Container(id="contacts-section", classes="section"):
                     yield Label("CONTACTS", classes="pane-title-text")
                     with Horizontal(id="contacts-bar", classes="btnrow"):
                         yield Input(placeholder="Search contacts (name or email)…", id="contacts-search")
                         yield Button("Refresh", id="contacts-refresh")
                     yield ListView(id="contacts-list")
-            with TabPane(_tab_label("Settings", 8, self.settings.ascii_mode), id="tab-settings"):
+            with TabPane(_tab_label("Settings", 9, self.settings.ascii_mode), id="tab-settings"):
                 with Container(id="settings-section", classes="section"):
                     yield Label("SETTINGS", classes="pane-title-text")
                     with TabbedContent(id="settings-tabs"):
@@ -1587,6 +1657,10 @@ class GoogleTUI(App):
                                     yield Label("Show sender address in list")
                                     yield Switch(value=self.settings.show_sender_address,
                                                  id="settings-show-sender-address-switch")
+                                with Horizontal(classes="settings-row"):
+                                    yield Label("Show preview pane by default (Mail tab, \"p\" to toggle)")
+                                    yield Switch(value=self.settings.email_preview_default_visible,
+                                                 id="settings-email-preview-default-switch")
                                 with Horizontal(classes="settings-row"):
                                     yield Label("Check for updates on launch")
                                     yield Switch(value=self.settings.check_for_updates,
@@ -1750,6 +1824,7 @@ class GoogleTUI(App):
         # on the first actual resize.
         self._narrow = self.size.width < NARROW_WIDTH_THRESHOLD
         self._focus_pane(0)
+        self._apply_email_preview_visibility()  # applies Settings.email_preview_default_visible
         self._apply_ascii_mode()  # applies whatever Settings.ascii_mode loaded from disk; also updates the help bar
         problems = self._diagnose_setup()
         if problems:
@@ -2475,6 +2550,7 @@ class GoogleTUI(App):
         if self._main_tabs().active != tab_id:
             self._main_tabs().active = tab_id
 
+    def action_goto_tab_dashboard(self): self._goto_tab("tab-dashboard")
     def action_goto_tab_mail(self):     self._goto_tab("tab-mail")
     def action_goto_tab_calendar(self): self._goto_tab("tab-calendar")
     def action_goto_tab_drive(self):    self._goto_tab("tab-drive")
@@ -2502,8 +2578,11 @@ class GoogleTUI(App):
         if event.tabbed_content.id != "main-tabs":
             return
         tab_id = event.tabbed_content.active
-        if tab_id == "tab-mail":
+        if tab_id == "tab-dashboard":
+            self._focus_dash_pane(self._dash_active)
+        elif tab_id == "tab-mail":
             self._focus_pane(self.active)
+            self._apply_email_preview_visibility()
         elif tab_id == "tab-calendar":
             self.query_one("#cal-grid").focus()
         elif tab_id == "tab-drive":
@@ -2529,10 +2608,17 @@ class GoogleTUI(App):
                     self._refresh_contacts_list()
         self._update_help_bar()
 
-    # ---- pane switching (Mail tab) ----
+    # ---- pane switching (Alt+1..4) ----
     def _goto_pane(self, idx: int) -> None:
-        self._goto_tab("tab-mail")
-        self._focus_pane(idx)
+        """idx 0 (Email) stays on the Mail tab; idx 1/2/3 (Events/Tasks/
+        Hermes) now live on the Dashboard tab (`2026-07-16` split) — same
+        keys (Alt+1..4), same muscle memory, new target tab for 3 of them."""
+        if idx == 0:
+            self._goto_tab("tab-mail")
+            self._focus_pane(0)
+        else:
+            self._goto_tab("tab-dashboard")
+            self._focus_dash_pane(idx - 1)
 
     def action_goto_pane_email(self):  self._goto_pane(0)
     def action_goto_pane_events(self): self._goto_pane(1)
@@ -2609,15 +2695,15 @@ class GoogleTUI(App):
 
     def action_cycle(self):
         tab = self._main_tabs().active
-        if tab == "tab-mail":
-            self._focus_pane((self.active + 1) % len(PANE_IDS))
+        if tab == "tab-dashboard":
+            self._focus_dash_pane((self._dash_active + 1) % len(DASH_PANE_IDS))
         elif tab == "tab-browser":
             self._browser_toggle_focus()
 
     def action_cycle_back(self):
         tab = self._main_tabs().active
-        if tab == "tab-mail":
-            self._focus_pane((self.active - 1) % len(PANE_IDS))
+        if tab == "tab-dashboard":
+            self._focus_dash_pane((self._dash_active - 1) % len(DASH_PANE_IDS))
         elif tab == "tab-browser":
             self._browser_toggle_focus()
 
@@ -2712,7 +2798,7 @@ class GoogleTUI(App):
         if tid:
             self.push_screen(ComposeModal(self.svc, tid, mode="forward"), self._on_compose_result)
     def action_compose_new(self):
-        if self._main_tabs().active != "tab-mail" or PANE_IDS[self.active] != "email":
+        if self._main_tabs().active != "tab-mail":  # Mail tab is Email-only now
             return
         self._open_compose_new()
 
@@ -2721,7 +2807,7 @@ class GoogleTUI(App):
         (no need to open it). Email pane only; no-op elsewhere. Runs the
         network write on a worker thread per the fetch/apply split, then
         refreshes so the • unread bullet reappears."""
-        if self._main_tabs().active != "tab-mail" or PANE_IDS[self.active] != "email":
+        if self._main_tabs().active != "tab-mail":  # Mail tab is Email-only now
             return
         tid = self._selected_thread()
         if not tid:
@@ -2751,7 +2837,7 @@ class GoogleTUI(App):
         self.run_worker(_work, thread=True, exclusive=True)
 
     def action_focus_label_select(self) -> None:
-        if self._main_tabs().active != "tab-mail" or PANE_IDS[self.active] != "email":
+        if self._main_tabs().active != "tab-mail":  # Mail tab is Email-only now
             return
         try:
             sel = self.query_one("#email-label-select", Select)
@@ -2786,10 +2872,10 @@ class GoogleTUI(App):
         # _cal_find), like ThreadModal's find-in-thread, not live-as-you-type.
         tab = self._main_tabs().active
         if tab == "tab-mail":
-            pane = PANE_IDS[self.active]
-            if pane == "email":
-                self._show_pane_search("email-search")
-            elif pane == "tasks":
+            self._show_pane_search("email-search")
+        elif tab == "tab-dashboard":
+            pane = DASH_PANE_IDS[self._dash_active]
+            if pane == "tasks":
                 self._show_pane_search("tasks-search")
             elif pane == "events":
                 self._show_pane_search("events-search")
@@ -2914,6 +3000,124 @@ class GoogleTUI(App):
             snippet = snippet[:100].rstrip() + "…"
         extra = (f"\n    {snippet}  " if snippet else "\n    ") + f"({th['count']} messages — press Enter for full thread)"
         self._set_thread_label(thread_id, _email_collapsed_line(th, self.settings.show_sender_address) + extra)
+
+    # ---- email preview pane ("p" / action_toggle_preview) ----
+    # Outlook-style: hidden by default (Settings.email_preview_default_visible
+    # seeds the session state), and while visible, live-updates as the
+    # highlight bar moves -- same debounce-timer + generation-counter +
+    # session-memoization shape as Drive's preview column
+    # (_drive_on_highlight/_drive_start_preview, further below), reusing
+    # self._thread_full_cache (already populated by Space-to-expand, see
+    # _toggle_thread_expand above) instead of a second cache dict.
+    def _toggle_email_preview(self) -> None:
+        self._email_preview_visible = not self._email_preview_visible
+        self._apply_email_preview_visibility()
+        if self._email_preview_visible:
+            tid = self._selected_thread()
+            if tid:
+                self._email_start_preview(tid)
+
+    def _apply_email_preview_visibility(self) -> None:
+        try:
+            preview_col = self.query_one("#right")
+            list_col = self.query_one("#left")
+        except Exception:
+            return
+        hidden = not self._email_preview_visible
+        preview_col.set_class(hidden, "email-preview-hidden")
+        list_col.set_class(hidden, "email-list-full")
+
+    def _email_on_highlight(self, item: ListItem | None) -> None:
+        # Hidden pane costs nothing: no timer, no fetch, while the user
+        # arrows through mail with the preview off (the common case, since
+        # it's off by default) -- mirrors Drive's debounce exactly, just
+        # gated on visibility first.
+        if not self._email_preview_visible or item is None:
+            return
+        cid = item.id or ""
+        if not cid.startswith("t-"):
+            return
+        thread_id = cid[2:]
+        if self._email_preview_timer is not None:
+            self._email_preview_timer.stop()
+        self._email_preview_timer = self.set_timer(
+            _PREVIEW_DEBOUNCE, lambda: self._email_start_preview(thread_id))
+
+    def _email_start_preview(self, thread_id: str) -> None:
+        self._email_preview_timer = None
+        self._email_preview_gen += 1
+        gen = self._email_preview_gen
+        cached = self._thread_full_cache.get(thread_id)
+        if cached is not None:
+            self._apply_email_preview(gen, thread_id, cached)
+            return
+        try:
+            meta = self.query_one("#email-preview-meta", Static)
+            meta.update("Loading…")
+        except Exception:
+            pass
+        try:
+            doc_view = self.query_one("#email-preview-doc", DocumentView)
+            doc_view.document = render.parse_feed_entry("", "", base_url="", ascii_mode=self.settings.ascii_mode)
+        except Exception:
+            pass
+        self.run_worker(lambda: self._email_preview_thread(gen, thread_id),
+                        thread=True, exclusive=True, group="email-preview")
+
+    def _email_preview_thread(self, gen: int, thread_id: str) -> None:
+        """MUST run with thread=True -- gauth.get_thread is an HTTPS round
+        trip, same fetch/apply-split reasoning as _drive_preview_thread."""
+        if not self._online:
+            self.call_from_thread(self._apply_email_preview_offline, gen, thread_id)
+            return
+        try:
+            msgs = gauth.get_thread(self.svc, thread_id)
+        except Exception as ex:
+            self.call_from_thread(self._apply_email_preview_error, gen, thread_id, ex)
+            return
+        self._thread_full_cache[thread_id] = msgs
+        self.call_from_thread(self._apply_email_preview, gen, thread_id, msgs)
+
+    def _apply_email_preview(self, gen: int, thread_id: str, msgs: list[dict]) -> None:
+        if gen != self._email_preview_gen:
+            return  # highlight moved on; a newer preview owns the pane now
+        if not msgs:
+            return
+        m = msgs[-1]  # latest message -- Enter/ThreadModal remains the way to see the full thread
+        header = f"From: {m.get('from', '')}    Date: {m.get('date', '')}"
+        if len(msgs) > 1:
+            header += f"\n({len(msgs)} messages — press Enter for the full thread)"
+        html_body = (m.get("html_body") or "").strip()
+        text_body = m.get("body") or ""
+        source = html_body if html_body else text_body
+        doc = render.parse_feed_entry(m.get("subject", ""), source, base_url="",
+                                       ascii_mode=self.settings.ascii_mode)
+        try:
+            self.query_one("#email-preview-meta", Static).update(header)
+            self.query_one("#email-preview-doc", DocumentView).document = doc
+        except Exception:
+            pass
+
+    def _apply_email_preview_error(self, gen: int, thread_id: str, error: Exception) -> None:
+        if gen != self._email_preview_gen:
+            return
+        try:
+            self.query_one("#email-preview-meta", Static).update(f"(preview error: {error})")
+        except Exception:
+            pass
+
+    def _apply_email_preview_offline(self, gen: int, thread_id: str) -> None:
+        if gen != self._email_preview_gen:
+            return
+        th = self._threads_cache.get(thread_id)
+        snippet = (th.get("snippet") or "").strip() if th else ""
+        text = snippet or "(offline — this thread hasn't been opened yet, so no cached body is available)"
+        try:
+            self.query_one("#email-preview-meta", Static).update("(offline — showing snippet)")
+            self.query_one("#email-preview-doc", DocumentView).document = render.parse_feed_entry(
+                "", text, base_url="", ascii_mode=self.settings.ascii_mode)
+        except Exception:
+            pass
 
     # ---- tasks ----
     def _selected_task(self) -> dict | None:
@@ -3054,15 +3258,16 @@ class GoogleTUI(App):
             if item is not None and item.id:
                 self._open_contact_detail(item.id)
             return
-        if tab != "tab-mail":
-            return
-        pane = PANE_IDS[self.active]
-        if pane == "tasks":
-            self.action_toggle_task()
-        elif pane == "email":
+        if tab == "tab-mail":
             tid = self._selected_thread()
             if tid:
                 self._toggle_thread_expand(tid)
+            return
+        if tab != "tab-dashboard":
+            return
+        pane = DASH_PANE_IDS[self._dash_active]
+        if pane == "tasks":
+            self.action_toggle_task()
         elif pane == "events":
             eid = self._highlighted_event_id()
             if eid:
@@ -3107,9 +3312,10 @@ class GoogleTUI(App):
             self._open_contact_detail(cid)
 
     def on_list_view_highlighted(self, event: ListView.Highlighted) -> None:
-        if event.list_view.id != "drive-list":
-            return
-        self._drive_on_highlight(event.item)
+        if event.list_view.id == "drive-list":
+            self._drive_on_highlight(event.item)
+        elif event.list_view.id == "email-list":
+            self._email_on_highlight(event.item)
 
     # ---- modal returns ----
     # NOTE: ModalScreen.Dismissed doesn't exist in the installed Textual
@@ -3707,12 +3913,12 @@ class GoogleTUI(App):
         if len(matches) > 1:
             self.notify(f"Match {self._cal_search_pos + 1} of {len(matches)}")
 
-    # ---- new event (Calendar tab, and the Mail tab's Events pane) ----
+    # ---- new event (Calendar tab, and the Dashboard tab's Events pane) ----
     def action_new_event(self) -> None:
         tab = self._main_tabs().active
         if tab == "tab-calendar":
             default_date = self._cal_default_day()
-        elif tab == "tab-mail" and PANE_IDS[self.active] == "events":
+        elif tab == "tab-dashboard" and DASH_PANE_IDS[self._dash_active] == "events":
             default_date = dt.date.today()
         else:
             return
@@ -3784,7 +3990,7 @@ class GoogleTUI(App):
     def _after_create_event_thread(self, cal_active_week: bool) -> None:
         """Runs on its own worker thread (see AGENTS.md's fetch/apply-split
         NOTE) -- refreshes both places a newly-created event needs to show
-        up: the Mail tab's Events pane (via the same _refresh_all_thread
+        up: the Dashboard tab's Events pane (via the same _refresh_all_thread
         path a task toggle or a sent message already uses) and the
         Calendar tab's currently-active grid (Month or Week), rebuilt via
         the existing _fetch_cal_month/_fetch_cal_week + _apply_cal_month/
@@ -3802,15 +4008,18 @@ class GoogleTUI(App):
             self.call_from_thread(self.notify, f"Calendar refresh error: {e}", severity="error")
 
     # ---- drive tab ----
-    def action_toggle_drive_preview(self) -> None:
-        """"p" — show/hide #drive-preview-col so the file list can claim the
-        full width (or, when narrow, the full height too). No-ops outside
-        the Drive tab, same guard pattern as action_cal_prev/action_cal_next.
+    def action_toggle_preview(self) -> None:
+        """"p" — shared by Drive (file preview column) and Mail (Email
+        preview pane), same dual-context-single-action pattern as "n"/
+        action_new_event (Calendar tab vs Mail's Events pane). No-ops
+        outside those two tabs.
         """
-        if self._main_tabs().active != "tab-drive":
-            return
-        self._drive_preview_visible = not self._drive_preview_visible
-        self._apply_drive_preview_visibility()
+        tab = self._main_tabs().active
+        if tab == "tab-drive":
+            self._drive_preview_visible = not self._drive_preview_visible
+            self._apply_drive_preview_visibility()
+        elif tab == "tab-mail":
+            self._toggle_email_preview()
 
     def _apply_drive_preview_visibility(self) -> None:
         try:
@@ -3972,7 +4181,7 @@ class GoogleTUI(App):
         # keypress, so arrowing through 20 rows costs ONE preview, not 20.
         self._drive_cancel_pending_preview()
         self._drive_preview_timer = self.set_timer(
-            _DRIVE_PREVIEW_DEBOUNCE, lambda: self._drive_start_preview(f))
+            _PREVIEW_DEBOUNCE, lambda: self._drive_start_preview(f))
 
     def _drive_cancel_pending_preview(self) -> None:
         if self._drive_preview_timer is not None:
@@ -4529,6 +4738,14 @@ class GoogleTUI(App):
             self.settings.show_sender_address = event.value
             save_settings(self.settings)
             self._apply_email_list(list(self._threads_cache.values()))
+            return
+        if event.switch.id == "settings-email-preview-default-switch":
+            # Persisted DEFAULT only -- like the other switches here, this
+            # doesn't touch the CURRENT session's self._email_preview_visible
+            # (that's "p"/action_toggle_preview's job, ephemeral per session,
+            # same as Drive's toggle). Next launch reads the new default.
+            self.settings.email_preview_default_visible = event.value
+            save_settings(self.settings)
             return
         if event.switch.id == "settings-update-check-switch":
             self.settings.check_for_updates = event.value

@@ -62,23 +62,36 @@ just checking it off here, so ROADMAP.md only ever shows what's still open.
   (subject/from/date) are cached today, not full bodies — opening a thread
   while offline isn't possible yet. Would follow the same lazy,
   cache-on-view pattern as `drive_file_text`.
-- [ ] **Dashboard tab** (new first tab): weather, stocks (configurable in
-  Settings), dictionary word of the day, Wikipedia picture of the day, top-5
-  rotating news headlines (by RSS category, per the RSS settings), unread
-  email count, tasks due/overdue/unscheduled, and today's events (scheduled +
-  all-day, selectable calendar sources in Settings). Should ship with
+- [ ] **`Tab`/`Shift+Tab` pane-cycling doesn't actually fire from a real
+  keypress.** Discovered `[2026-07-16]` while pilot-testing the Dashboard
+  tab: Textual's `Screen` base class binds bare `tab`/`shift+tab` to
+  `app.focus_next`/`app.focus_previous` itself, and wins over the app's own
+  same-key `cycle`/`cycle_back` `Binding`s whenever any widget has focus
+  (`Screen.active_bindings` is first-wins-unless-priority, and `Screen` is
+  closer than `App` in the binding chain — confirmed via `Screen`/`App`/
+  `ListView` MRO inspection). Predates the Dashboard split (same dispatch
+  shape existed at `78782ab`), so every "Tab / Shift+Tab cycle panes" help
+  text has probably been describing dead keys since it was written. Likely
+  fix: `priority=True` on the `cycle`/`cycle_back` `ActionSpec`s, with
+  `action_cycle`/`action_cycle_back` returning `True` when they actually
+  act (so `App._check_bindings` doesn't ALSO fall through to Screen's
+  default afterward) — needs its own scoped pass and testing, since `Tab`
+  is also used for the Browser tab's address-bar/page focus toggle
+  (app-wide blast radius, not a drive-by fix).
+- [ ] **Dashboard tab: the actual dashboard content.** The tab exists now
+  (`tab-dashboard`, first position, `F1`/`Ctrl+1` — see CHANGELOG
+  `[2026-07-16]`), but only holds Events/Tasks/Hermes, relocated intact from
+  the old 4-pane Mail tab so Email could go single-purpose — interim
+  content, not the feature. Still to build: weather, stocks (configurable
+  in Settings), dictionary word of the day, Wikipedia picture of the day,
+  top-5 rotating news headlines (by RSS category, per the RSS settings),
+  unread email count, tasks due/overdue/unscheduled, and today's events
+  (scheduled + all-day, selectable calendar sources in Settings) — replacing
+  or supplementing the parked Events/Tasks/Hermes panes. Should ship with
   reasonable moderate defaults rather than an empty dashboard. Largest
   net-new feature on this list — new fetchers for weather/stocks/
-  dictionary/Wikipedia, a new tab, and several new Settings rows.
+  dictionary/Wikipedia, and several new Settings rows.
   *(Suggested model: Opus.)*
-- [ ] **Email tab becomes single-purpose; add preview pane.** Make the email
-  viewer the only content on its tab (today it shares the Mail tab with
-  Events/Tasks/Hermes panes via Alt+1..4), and add an inline preview pane so
-  a highlighted message can be read without opening `ThreadModal`. Once this
-  exists, give it the same show/hide toggle Drive's preview column got
-  `[2026-07-16]` (`action_toggle_drive_preview`, key `p`) — there was nothing
-  to toggle in Email before this pane exists. *(Suggested model: Opus —
-  layout rework of the whole Mail tab.)*
 - [ ] **RSS subscription list.** Categorized checklist of popular feeds to
   toggle on/off, plus add-your-own custom feed URL (Settings already has a
   feed list at `#settings-feed-list`, `main.py:569` — extend it rather than
@@ -91,9 +104,11 @@ just checking it off here, so ROADMAP.md only ever shows what's still open.
 
 ## Done
 
-- [x] Tab/pane redesign: Mail / Calendar / Drive / Search full-width tabs in
-  the blue bar (`Ctrl+1..4`); Mail tab holds Email / Events / Tasks / Hermes
-  panes (`Alt+1..4`, adjacency-based `Alt+arrows`).
+- [x] Tab/pane redesign: full-width tabs in the blue bar (`Ctrl+#`), with
+  Mail originally holding Email / Events / Tasks / Hermes panes (`Alt+1..4`,
+  adjacency-based `Alt+arrows`) — superseded `[2026-07-16]` by the Mail/
+  Dashboard split above (Mail is Email-only now; Events/Tasks/Hermes moved
+  to the Dashboard tab, same `Alt+1..4` keys).
 - [x] Threaded email list + thread view + reply/reply-all/forward compose.
   Full thread tree (every message, oldest-first, own `DocumentView` each) —
   not just the latest message — shipped in the P1 M4 rewrite (`bec0aae`,
@@ -123,9 +138,16 @@ just checking it off here, so ROADMAP.md only ever shows what's still open.
 - [x] **Drive true parent-folder tracking.** "Up" now navigates to the
   actual parent via a folder-id stack, not always back to root — see
   CHANGELOG `[2026-07-16]`.
-- [x] **Drive preview/info column toggle** (`p`, `action_toggle_drive_preview`)
+- [x] **Drive preview/info column toggle** (`p`, `action_toggle_preview`)
   — hides `#drive-preview-col` so the file list can claim the full width.
   See CHANGELOG `[2026-07-16]`.
+- [x] **Email tab single-purpose + preview pane.** Events/Tasks/Hermes
+  relocated to the new Dashboard tab (interim content, see the open
+  Dashboard item above); Mail tab is Email-only now, with a `p`-toggled
+  preview pane (`action_toggle_preview`, shared with Drive's) showing the
+  highlighted thread's latest message, hidden by default (flippable in
+  Settings → General), live-updating on highlight while visible. See
+  CHANGELOG `[2026-07-16]`.
 - [x] **Settings tab** (`Ctrl+5`): encrypt-at-rest toggle (off by default),
   passphrase-at-launch vs. local-keyfile key method, clear-cache button.
   Small "browse" cache rows bulk-decrypt cheaply; large "content" rows

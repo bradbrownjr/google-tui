@@ -37,6 +37,7 @@ class Settings:
     # — so eviction costs a little latency, never data.
     cache_retention_days: int = 0  # drop cached items not seen in this many days
     cache_max_mb: int = 0  # evict least-recently-seen items to stay under this
+    email_preview_default_visible: bool = False  # Mail tab's "p"-toggled preview pane, on launch
 
 
 def load_settings() -> Settings:

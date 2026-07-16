@@ -7,10 +7,14 @@ A multi-pane terminal UI (TUI) for your Google Workspace, built with
 
 ## Features
 
-Eight full-width **tabs** live in the blue bar: **Mail**, **Calendar**,
-**Drive**, **Browser**, **News**, **Navigation**, **Settings**, **Contacts**
-(`F1..F8`, also `Ctrl+1..8`). The Mail tab holds four **panes**: Email,
-Events, Tasks, Hermes (`Alt+1..4`, or `Alt+arrows` to move relatively).
+Nine full-width **tabs** live in the blue bar: **Dashboard**, **Mail**,
+**Calendar**, **Drive**, **Browser**, **News**, **Navigation**, **Contacts**
+(`F1..F8`, also `Ctrl+1..8`), and **Settings** (`Ctrl+9` only — no F-key
+alias, since F9+ isn't reliably delivered by every terminal). The Mail tab
+is Email-only, with a toggleable preview pane (`p`); the Dashboard tab
+holds three **panes** — Events, Tasks, Hermes (`Alt+2..4`, or `Alt+arrows`
+to move relatively) — as interim content until the full dashboard feature
+(weather, stocks, today's events, tasks due, etc.) replaces it.
 
 **Works offline, to a degree.** The app is cache-first: whatever it fetched
 last time shows up instantly on launch, while it reconnects to Google in the
@@ -26,25 +30,32 @@ connection (marking unread, creating an event, Trash/Archive/Labels,
 adding/deleting a task) is disabled with a warning instead of failing
 silently.
 
-- **Mail tab — Email pane** (left, full height): a label/folder picker
-  (All Mail, system labels, nested user labels) above a threaded Gmail
-  list with a lightbar. `l` jumps straight to the folder picker and opens
-  it. `Enter` opens the full thread — HTML-heavy messages render as actual
-  formatted HTML (bold, links, etc.) instead of stripped plain text;
-  `Space` expands/collapses the highlighted row in place to show its
-  snippet (and message count, for threads with more than one message)
-  without leaving the list; `r` / `a` / `f` reply / reply-all / forward
-  (compose modal, with a 5-second cancelable countdown before it actually
-  sends). Unread threads are marked with a bullet.
-- **Mail tab — Events pane** (upcoming): next ~3 weeks of events, lightbar,
-  `Enter`/`Space` for detail.
-- **Mail tab — Tasks pane:** all Google Task lists, lightbar. `Space` toggles
-  complete, `Enter` shows details/subtasks.
-- **Mail tab — Hermes pane:** type a question and `Enter`. Not locked into
-  Hermes — pick Hermes (Nous LLM + agent), Claude Code, opencode, or
-  Gemini CLI as your AI provider in Settings. Whichever you pick gets the
-  same live Google context automatically; action-shaped questions are
-  delegated to that provider's own agent/tool-use mode.
+- **Mail tab** (Email-only): a label/folder picker (All Mail, system
+  labels, nested user labels) above a threaded Gmail list with a lightbar.
+  `l` jumps straight to the folder picker and opens it. `Enter` opens the
+  full thread — HTML-heavy messages render as actual formatted HTML (bold,
+  links, etc.) instead of stripped plain text; `Space` expands/collapses
+  the highlighted row in place to show its snippet (and message count, for
+  threads with more than one message) without leaving the list; `r` / `a`
+  / `f` reply / reply-all / forward (compose modal, with a 5-second
+  cancelable countdown before it actually sends). Unread threads are
+  marked with a bullet. `p` toggles a preview pane on the right showing
+  the highlighted thread's latest message — hidden by default (flip the
+  default in Settings → General), and while visible it live-updates as you
+  move the highlight, Outlook-reading-pane style.
+- **Dashboard tab** (interim content — Events/Tasks/Hermes moved here so
+  Mail could go single-purpose; becomes the real dashboard — weather,
+  stocks, today's events, tasks due, unread count, etc. — as that separate
+  feature is built out):
+  - **Events pane** (upcoming): next ~3 weeks of events, lightbar,
+    `Enter`/`Space` for detail.
+  - **Tasks pane:** all Google Task lists, lightbar. `Space` toggles
+    complete, `Enter` shows details/subtasks.
+  - **Hermes pane:** type a question and `Enter`. Not locked into
+    Hermes — pick Hermes (Nous LLM + agent), Claude Code, opencode, or
+    Gemini CLI as your AI provider in Settings. Whichever you pick gets the
+    same live Google context automatically; action-shaped questions are
+    delegated to that provider's own agent/tool-use mode.
 - **Calendar tab:** a full **Month** view (events listed inside each day's
   square, `+N more` overflow opens a modal with the day's full list) and a
   **Week** view (hour-grid, day columns, event blocks) — modeled on Google
@@ -113,26 +124,25 @@ full Google Cloud Console walkthrough.
 ## Layout & keys
 
 ```
-┌[Mail¹] Calendar² Drive³ Browser⁴ News⁵ Navigation⁶ Settings⁷ Contacts⁸ ── Synced 14:32 ┐  ← blue bar
-├─ EMAIL ──────────────────────┐ ┌─ EVENTS ─────────────────────┤
-│ ▸ Frank Krizan                │ │ ▸ 07/13 Tick/Flea Appt       │
-│   Fwd: [DigiPi] …             │ │ ▸ 07/15 OHD Water Testing    │
-│                                │ ├─ TASKS ──────────────────────┤
-│                                │ │ [ ] Buy cat food             │
-│                                │ │ [x] Pay electric bill        │
-│                                │ ├─ HERMES ASK ─────────────────┤
-│                                │ │ > ask a question, Enter      │
-└────────────────────────────────┘ └───────────────────────────────┘
+┌ Dashboard¹ [Mail²] Calendar³ Drive⁴ Browser⁵ News⁶ Navigation⁷ Contacts⁸ ⋯ Ctrl+9 Settings ── Synced 14:32 ┐  ← blue bar
+├─ EMAIL ──────────────────────┐ ┌─ PREVIEW (p to toggle, off by default) ─┤
+│ ▸ Frank Krizan                │ │ From: Frank Krizan   Date: Jul 13       │
+│   Fwd: [DigiPi] …             │ │                                          │
+│                                │ │ (highlighted thread's latest message,   │
+│                                │ │  live-updates as you move the cursor)   │
+└────────────────────────────────┘ └───────────────────────────────────────┘
 ```
 
 | Key | Action |
 |-----|--------|
-| `F1..F8` | switch tab (Mail / Calendar / Drive / Browser / News / Navigation / Settings / Contacts) — also works as `Ctrl+1..8`, kept as a secondary alias |
+| `F1..F8` | switch tab (Dashboard / Mail / Calendar / Drive / Browser / News / Navigation / Contacts) — also works as `Ctrl+1..8`, kept as a secondary alias |
+| `Ctrl+9` | Settings — no F-key alias (F9+ isn't reliably delivered by every terminal) |
 | `Ctrl+Left/Right` | cycle tabs — use this if neither `F1..F8` nor `Ctrl+1..8` reaches the app (common in browser-based terminals, which reserve both for switching *their own* tabs) |
-| `Alt+1..4` | jump to Mail pane (Email / Events / Tasks / Hermes) |
-| `Alt+Left/Right/Up/Down` | move to the adjacent Mail pane; on the Browser tab, back/forward through history; on the Settings tab, cycle General/AI Provider/News Feeds/Search/Navigation |
+| `Alt+1..4` | jump to a pane: Email (Mail tab), or Events/Tasks/Hermes (Dashboard tab) |
+| `Alt+Left/Right/Up/Down` | move to the adjacent Dashboard pane; on the Browser tab, back/forward through history; on the Settings tab, cycle General/AI Provider/News Feeds/Search/Navigation |
 | `Alt+H` | Browser tab: go to your configured home page (Settings → General) |
-| `Tab` / `Shift+Tab` | cycle Mail panes |
+| `Tab` / `Shift+Tab` | cycle Dashboard panes |
+| `p` | toggle the preview pane (Mail tab) or the file preview column (Drive tab) |
 | `l` | open the folder/label picker (Email pane) |
 | `r` `a` `f` | reply / reply-all / forward (Email pane, disabled while offline) |
 | `Space` | contextual: expand/collapse the highlighted row in place, showing its snippet (Email), toggle complete (Tasks, disabled while offline), event detail (Events) |

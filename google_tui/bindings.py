@@ -41,14 +41,18 @@ GLOBAL_ACTIONS: list[ActionSpec] = [
     ActionSpec("switch_down", "alt+down", "Pane Down"),
     ActionSpec("cycle", "tab", "Cycle"),
     ActionSpec("cycle_back", "shift+tab", "Cycle"),
-    ActionSpec("goto_tab_mail", "f1,ctrl+1", "Mail"),
-    ActionSpec("goto_tab_calendar", "f2,ctrl+2", "Calendar"),
-    ActionSpec("goto_tab_drive", "f3,ctrl+3", "Drive"),
-    ActionSpec("goto_tab_browser", "f4,ctrl+4", "Browser"),
-    ActionSpec("goto_tab_news", "f5,ctrl+5", "News"),
-    ActionSpec("goto_tab_navigation", "f6,ctrl+6", "Navigation"),
-    ActionSpec("goto_tab_contacts", "f7,ctrl+7", "Contacts"),
-    ActionSpec("goto_tab_settings", "f8,ctrl+8", "Settings"),
+    ActionSpec("goto_tab_dashboard", "f1,ctrl+1", "Dashboard"),
+    ActionSpec("goto_tab_mail", "f2,ctrl+2", "Mail"),
+    ActionSpec("goto_tab_calendar", "f3,ctrl+3", "Calendar"),
+    ActionSpec("goto_tab_drive", "f4,ctrl+4", "Drive"),
+    ActionSpec("goto_tab_browser", "f5,ctrl+5", "Browser"),
+    ActionSpec("goto_tab_news", "f6,ctrl+6", "News"),
+    ActionSpec("goto_tab_navigation", "f7,ctrl+7", "Navigation"),
+    ActionSpec("goto_tab_contacts", "f8,ctrl+8", "Contacts"),
+    # No F-key alias: F9+ isn't reliably delivered by every terminal (the
+    # same reasoning that already capped the alias range at F8) -- Ctrl+9
+    # is the only way in for this 9th tab.
+    ActionSpec("goto_tab_settings", "ctrl+9", "Settings"),
     ActionSpec("cycle_tab_back", "ctrl+left", "Prev Tab"),
     ActionSpec("cycle_tab", "ctrl+right", "Next Tab"),
     ActionSpec("goto_pane_email", "alt+1", "Email"),
@@ -67,7 +71,10 @@ GLOBAL_ACTIONS: list[ActionSpec] = [
     ActionSpec("cal_prev", "[", "Prev"),
     ActionSpec("cal_next", "]", "Next"),
     ActionSpec("new_event", "n", "New Event"),
-    ActionSpec("toggle_drive_preview", "p", "Toggle Preview"),
+    # Single binding shared by Drive and Mail (Email preview pane) -- same
+    # dual-context-single-action pattern as "n"/new_event (Calendar tab vs
+    # Mail's Events pane): action_toggle_preview branches on the active tab.
+    ActionSpec("toggle_preview", "p", "Toggle Preview"),
     ActionSpec("refresh", "ctrl+r", "Refresh"),
     ActionSpec("help", "ctrl+h", "Help"),
     ActionSpec("toggle_mouse", "f12", "Mouse"),
@@ -136,14 +143,18 @@ def ascii_safe(text: str) -> str:
 
 
 HELP_GLOBAL_TEXT = (
-    "F1-F8 Tab   Alt+# Pane   Alt+←→↑↓ Move Pane   "
+    "F1-F8,Ctrl+9 Tab   Alt+# Pane   Alt+←→↑↓ Move Pane   "
     "Ctrl+P Commands   F12 Mouse   Ctrl+H Help   Ctrl+Q Quit"
 )
 
-# Keyed "pane:<id>" for Mail-tab panes, "tab:<id>" for every other tab —
-# matches GoogleTUI._context_help_text's former if/elif exactly.
+# Keyed "pane:<id>" for the Dashboard tab's 3 panes, "tab:<id>" for every
+# other tab (including tab-mail, which is Email-only -- see
+# GoogleTUI._context_help_scope). Dashboard is interim/placeholder content
+# (Events/Tasks/Hermes moved out of the Mail tab, 2026-07-16, to make Email
+# single-purpose) -- pane:events/tasks/hermes keep their pre-move text
+# unchanged, since the sub-pane content itself didn't change.
 CONTEXT_HELP: dict[str, str] = {
-    "pane:email": "Enter Open   c Compose   r Reply   a Reply All   f Forward   u Unread   Space Expand   l Labels   / Search",
+    "tab:tab-mail": "Enter Open   c Compose   r Reply   a Reply All   f Forward   u Unread   Space Expand   l Labels   / Search   p Toggle Preview",
     "pane:events": "Enter/Space Detail   n New Event   / Search",
     "pane:tasks": "Space Toggle Complete   Enter Detail   / Search",
     "pane:hermes": "Enter Ask",
@@ -182,7 +193,7 @@ CONTEXT_HELP: dict[str, str] = {
 # it's the mouse user's only way to close the modal now that the button row
 # is gone.
 _CLICK_ACTIONS: dict[str, dict[str, str]] = {
-    "pane:email": {
+    "tab:tab-mail": {
         "c Compose": "compose_new",
         "r Reply": "reply",
         "a Reply All": "reply_all",
@@ -261,16 +272,19 @@ def help_markup(scope: str, ascii_mode: bool = False) -> str:
 # Transcribed verbatim from the former module-level HELP_TEXT constant.
 HELP_TEXT = """\
 GLOBAL
-  F1..F8           Switch tab (Mail / Calendar / Drive / Browser / News / Navigation / Settings / Contacts) —
-                   also works as Ctrl+1..8, kept as a secondary alias for
-                   terminals where F-keys are intercepted (e.g. a window
-                   manager's fullscreen bindings)
+  F1..F8           Switch tab (Dashboard / Mail / Calendar / Drive / Browser /
+                   News / Navigation / Contacts) — also works as Ctrl+1..8,
+                   kept as a secondary alias for terminals where F-keys are
+                   intercepted (e.g. a window manager's fullscreen bindings).
+                   Settings is the 9th tab, Ctrl+9 only — no F-key alias, since
+                   F9+ isn't reliably delivered by every terminal.
   Ctrl+Left/Right  Cycle tabs (the universal fallback if neither F1..F8 nor
                    Ctrl+1..8 reaches the app — some terminals/multiplexers/
                    browsers swallow both)
-  Alt+1..4         Jump to Mail pane (Email / Events / Tasks / Hermes)
-  Alt+arrows       Move to the adjacent Mail pane
-  Tab / Shift+Tab  Cycle Mail panes
+  Alt+1..4         Jump to a pane: 1 Email (Mail tab), 2/3/4 Events/Tasks/
+                   Hermes (Dashboard tab)
+  Alt+arrows       Move to the adjacent Dashboard pane
+  Tab / Shift+Tab  Cycle Dashboard panes
   Ctrl+R           Reconnect / refresh live data
   Ctrl+P           Command palette
   Ctrl+H           This help
@@ -283,24 +297,32 @@ GLOBAL
   Ctrl+Q           Quit
 
 MAIL TAB
-  Email pane:   Enter open thread, Space expand/collapse (shows snippet),
-                l show labels filter (Esc hides), c Compose new, r Reply,
-                a Reply All, f Forward, / search (live filter over
-                subject/from/snippet)
+  Email-only: Enter open thread, Space expand/collapse (shows snippet),
+  l show labels filter (Esc hides), c Compose new, r Reply, a Reply All,
+  f Forward, / search (live filter over subject/from/snippet).
+  p toggles a preview pane on the right showing the highlighted thread's
+  latest message (hidden by default — Settings → General to change the
+  default) — while visible, it live-updates as you move the highlight,
+  Outlook-reading-pane style; press p again to hide it.
+
+  Thread view (opened via Enter): R/A/F Reply / Reply All / Forward — same
+  keys as the Email pane, now with visible button hints — Esc/Close closes.
+
+DASHBOARD TAB (interim — Events/Tasks/Hermes moved here from the old
+4-pane Mail tab so Email could go single-purpose; this becomes the real
+dashboard — weather, stocks, today's events, tasks due, unread count,
+etc. — as that separate feature is built out)
   Events pane:  Enter/Space open event detail, n new event, / search (live
                 filter over summary/description)
   Tasks pane:   Space toggle complete, Enter open detail, / search (live
                 filter over title/notes)
   Hermes pane:  type a question, Enter to ask
 
-  Thread view (opened via Enter): R/A/F Reply / Reply All / Forward — same
-  keys as the Email pane, now with visible button hints — Esc/Close closes.
-
 CALENDAR TAB
   [ / ]         Previous / next month (or week, in Week view)
   Enter/click   Open a day's full event list (Month view)
                 Open an event, or a chooser if several share an hour (Week view)
-  n             New event (also works from the Mail tab's Events pane) —
+  n             New event (also works from the Dashboard tab's Events pane) —
                 title + date + start/end time, or an all-day toggle
 
 DRIVE TAB
@@ -339,6 +361,8 @@ SETTINGS TAB
   Sub-tabs      General / AI Provider / News Feeds / Search / Navigation —
                 Alt+Left/Right cycles between them while the Settings tab
                 is active
+  Switch        Show the Mail tab's preview pane by default at launch —
+                "p" still toggles it per-session either way (General)
   Switch        Toggle encrypt-at-rest for the local cache (General)
   RadioSet      Choose passphrase-at-launch vs. local key file (General)
   Button        Clear the local cache immediately (General)

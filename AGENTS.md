@@ -11,24 +11,27 @@ WITHOUT prior chat context. Read it top-to-bottom before touching code.
 
 ## 1. What the app does
 
-Eight full-width **tabs** live in the blue bar (this IS the styled `Tabs`
+Nine full-width **tabs** live in the blue bar (this IS the styled `Tabs`
 bar of the outer `TabbedContent#main-tabs`, not a separate status widget):
-**Mail**, **Calendar**, **Drive**, **Browser**, **News**, **Navigation**,
-**Settings**, **Contacts**. The Mail tab holds four **panes**: Email,
-Events, Tasks, Hermes. Tabs and panes are deliberately different concepts
-with different key prefixes (`Ctrl+#` for tabs, `Alt+#` for panes) — see §2.
+**Dashboard**, **Mail**, **Calendar**, **Drive**, **Browser**, **News**,
+**Navigation**, **Contacts** (`F1..F8`/`Ctrl+1..8`), and **Settings**
+(`Ctrl+9` only — no F-key alias, F9+ isn't reliably delivered by every
+terminal). The Mail tab is Email-only (`2026-07-16` — see CHANGELOG),
+with a toggleable preview pane (`p`, hidden by default). The Dashboard tab
+holds three **panes** — Events, Tasks, Hermes — as interim/placeholder
+content until the full dashboard feature (weather, stocks, today's events,
+tasks due, unread count, etc. — ROADMAP P4) replaces it. Tabs and panes are
+deliberately different concepts with different key prefixes (`Ctrl+#` for
+tabs, `Alt+#` for panes) — see §2.
 
 ```
-┌[Mail¹]  Calendar²  Drive³  Browser⁴  News⁵  Navigation⁶  Settings⁷  Contacts⁸┐  ← blue bar,
-├─ EMAIL (widened) ────────────┐ ┌─ EVENTS ─────────────────────┤    active tab
-│ ▸ Frank Krizan                │ │ ▸ 07/13 Tick/Flea Appt       │    has an
-│   Fwd: [DigiPi] …             │ │ ▸ 07/15 OHD Water Testing    │    accent-
-│                                │ ├─ TASKS ──────────────────────┤    colored
-│                                │ │ [ ] Buy cat food             │    background
-│                                │ │ [x] Pay electric bill        │
-│                                │ ├─ HERMES ASK ─────────────────┤
-│                                │ │ > ask a question, Enter      │
-└────────────────────────────────┘ └───────────────────────────────┘
+┌ Dashboard¹ [Mail²]  Calendar³  Drive⁴  Browser⁵  News⁶  Navigation⁷  Contacts⁸ ⋯ Ctrl+9 Settings ┐  ← blue bar,
+├─ EMAIL ───────────────────────┐ ┌─ PREVIEW ("p", off by default) ─┤    active tab
+│ ▸ Frank Krizan                │ │ From: Frank Krizan  Date: Jul 13 │    has an
+│   Fwd: [DigiPi] …             │ │ (latest message of the           │    accent-
+│                                │ │  highlighted thread, live-       │    colored
+│                                │ │  updates as the cursor moves)    │    background
+└────────────────────────────────┘ └───────────────────────────────────┘
   [help bar: contextual row above a static global-shortcuts row]
 ```
 
@@ -526,16 +529,18 @@ App-level `r`/`a`/`f` bindings never reached it.
 
 | Key | Action |
 |-----|--------|
-| `F1..F8` | switch **tab** (Mail / Calendar / Drive / Browser / News / Navigation / Settings / Contacts) — also bound as `Ctrl+1..8`, a secondary alias (see caveat below) |
+| `F1..F8` | switch **tab** (Dashboard / Mail / Calendar / Drive / Browser / News / Navigation / Contacts) — also bound as `Ctrl+1..8`, a secondary alias (see caveat below) |
+| `Ctrl+9` | switch to **Settings** — no F-key alias (see "F2 was already taken" below, now updated for the 9th tab) |
 | `Ctrl+Left/Right` | cycle tabs — the universal fallback if neither `F1..F8` nor `Ctrl+1..8` reaches the app (see caveat below) |
-| `Alt+1..4` | jump to a Mail **pane** (Email / Events / Tasks / Hermes); switches to the Mail tab first if needed |
-| `Alt+Left/Right/Up/Down` | move to the adjacent Mail pane (see `PANE_ADJACENCY` below) on the Mail tab; back/forward through session history on the Browser tab; cycle Settings sub-tabs (General/AI Provider/News Feeds/Search/Navigation) on the Settings tab (`Alt+Up/Down` still only does Mail-pane adjacency — no vertical cycling defined for Settings) |
+| `Alt+1..4` | jump to a **pane**: 1 Email (Mail tab), 2/3/4 Events/Tasks/Hermes (Dashboard tab); switches tab first if needed |
+| `Alt+Left/Right/Up/Down` | move to the adjacent Dashboard pane (see `DASH_ADJACENCY` below) on the Dashboard tab; back/forward through session history on the Browser tab; cycle Settings sub-tabs (General/AI Provider/News Feeds/Search/Navigation) on the Settings tab (`Alt+Up/Down` still only does Dashboard-pane adjacency — no vertical cycling defined for Settings) |
 | `Alt+H` | Browser tab: jump to the configured home URL (`Settings.browser_home_url`, Settings → General) — no-op elsewhere |
-| `Tab` / `Shift+Tab` | cycle Mail panes (no-op outside the Mail tab) |
-| `l` | focus + open `Select#email-label-select`'s dropdown (Email pane only — no-op elsewhere) |
-| `c` | compose new (Email pane only — no-op elsewhere; blank `ComposeModal(mode="new")`, same as the old `contacts-compose-new` button, which moved here) |
-| `r` `a` `f` | reply / reply-all / forward (Email pane) — blocked with a warning notify while offline |
-| `Space` | contextual (`action_context_space`): expand/collapse the highlighted row in place (Email — see `_toggle_thread_expand`, NOT `ThreadModal`), toggle complete (Tasks — blocked while offline), event detail (Events); no-op elsewhere |
+| `Tab` / `Shift+Tab` | cycle Dashboard panes (no-op outside the Dashboard tab) |
+| `p` | toggle a preview pane: Mail tab (highlighted thread's latest message, hidden by default) or Drive tab (file preview column, visible by default) |
+| `l` | focus + open `Select#email-label-select`'s dropdown (Email/Mail tab only — no-op elsewhere) |
+| `c` | compose new (Mail tab only — no-op elsewhere; blank `ComposeModal(mode="new")`, same as the old `contacts-compose-new` button, which moved here) |
+| `r` `a` `f` | reply / reply-all / forward (Mail tab) — blocked with a warning notify while offline |
+| `Space` | contextual (`action_context_space`): expand/collapse the highlighted row in place (Mail tab — see `_toggle_thread_expand`, NOT `ThreadModal`), toggle complete (Tasks — blocked while offline), event detail (Events); no-op elsewhere |
 | `Enter` | open selected item's detail (`ListView.Selected` / `DataTable.CellSelected`) |
 | `[` `]` | previous / next month, or week if the Week sub-tab is active (Calendar tab only — no-op on other tabs) |
 | `Ctrl+R` | reconnect / refresh all data (same code path as the background sync on startup) |
@@ -546,7 +551,8 @@ App-level `r`/`a`/`f` bindings never reached it.
 **Tab number display:** the confirmed design is "always show, dimmed" —
 `_tab_label()` appends a `[dim]` superscript digit to each tab title, and
 `_pane_title_row()` renders a two-`Label` row (title `width: 1fr`, number
-`width: auto`, both styled) for Mail panes. This is NOT hide-until-modifier-
+`width: auto`, both styled) for the Email pane and the Dashboard tab's
+Events/Tasks/Hermes panes. This is NOT hide-until-modifier-
 held: Textual 8.2.8's `events.py` has only one keyboard event class (`Key`,
 press-only) — there is no key-release event and no exposed Kitty-protocol
 modifier tracking, so "numbers appear only while Ctrl/Alt is held" cannot be
@@ -583,6 +589,17 @@ skipping F2. If you ever add a 9th tab or a new global F-key binding, check
 `GLOBAL_ACTIONS` in `bindings.py` for collisions first — Textual's `Binding`
 doesn't warn on duplicate keys, it just makes the first-registered one win.
 
+**The 9th tab arrived (2026-07-16, Dashboard):** per the note above, it does
+NOT get an F-key. `goto_tab_settings` moved to `ctrl+9` alone (dropped its
+`f8` binding, since Settings shifted from position 8 to 9 when Dashboard was
+inserted first) rather than claiming `f9` — F9..F12 aren't reliably
+delivered by every terminal (the same reasoning that already ruled out using
+one of them for `toggle_mouse` above), and Settings is reachable often
+enough via Ctrl+9/`Ctrl+Left/Right`-cycling/the command palette that going
+without an F-key alias for just this one tab was judged an acceptable
+trade rather than breaking the contiguous `F1..F8` scheme for the other
+eight. If you add a 10th tab, it has the same choice to make.
+
 **`Alt+Left/Right/Up/Down` terminal caveat, and how it's actually fixed
 (2026-07-15):** unlike the `Ctrl+1..8` caveat above, this one WAS fixable in
 app code. Some terminals encode Alt+Arrow as a literal double-ESC sequence
@@ -611,12 +628,16 @@ transparently fixes the same dead-Alt-arrow symptom for Mail-pane
 navigation and Settings sub-tab cycling too, on any terminal using the
 double-ESC encoding.
 
-**`PANE_ADJACENCY`** (replaces an older `active ± 1` / `active ± 2`
-arithmetic scheme that assumed a symmetric 2x2 grid): Email spans the full
-left column; Events/Tasks/Hermes stack in the right column. This is an
-explicit `{pane: {direction: pane}}` map, not arithmetic — see `main.py`
-near `PANE_ADJACENCY`. If you add a 5th Mail pane, update this map, not a
-formula.
+**`DASH_ADJACENCY`** (`main.py`, was `PANE_ADJACENCY` before the
+`2026-07-16` Mail/Dashboard split — see CHANGELOG; replaces an even older
+`active ± 1` / `active ± 2` arithmetic scheme that assumed a symmetric 2x2
+grid): Events/Tasks/Hermes stack in one column on the Dashboard tab, so
+it's just an up/down chain now, no more `left`/`right` (those existed only
+because Email used to be a sibling column). Still an explicit
+`{pane: {direction: pane}}` map, not arithmetic. `PANE_IDS` is now just
+`["email"]` (Mail tab has nothing to switch to); `DASH_PANE_IDS =
+["events", "tasks", "hermes"]` is the Dashboard tab's own list. If you add
+a 4th Dashboard pane, update `DASH_ADJACENCY`, not a formula.
 
 NOTE on Textual selection model: `ListView.Highlighted` (capital H) is the
 cursor index setter; `ListView.highlighted_child` (read-only) is the selected
@@ -1263,12 +1284,16 @@ Gotchas that cost time before:
 
 ## 8. Common tasks a future session might do
 
-- Add a new Mail pane: add id to `PANE_IDS`/`PANE_TITLES`, a neighbor entry
-  in `PANE_ADJACENCY`, a widget in `compose()`, an `action_goto_pane_<x>`,
-  and bind `alt+N` in `BINDINGS`.
+- Add a new Dashboard pane: add id to `DASH_PANE_IDS`/`PANE_TITLES`, a
+  neighbor entry in `DASH_ADJACENCY`, a widget in `compose()`'s
+  `tab-dashboard` block, and bind `alt+N` (`_goto_pane`/`action_goto_pane_<x>`
+  already dispatch by idx, idx 0 reserved for Email/Mail).
 - Add a new top-level tab: add a `TabPane` in `compose()` under
-  `TabbedContent#main-tabs`, an `action_goto_tab_<x>`, bind `ctrl+N`, and add
-  a branch to `on_tabbed_content_tab_activated` and `_context_help_text`.
+  `TabbedContent#main-tabs`, an entry in `TAB_LABEL_SPECS`/`TAB_ORDER`, an
+  `action_goto_tab_<x>`, bind `ctrl+N` (check `GLOBAL_ACTIONS` for
+  collisions first, and whether the new tab count still fits an F-key —
+  see "The 9th tab arrived" above), and add a branch to
+  `on_tabbed_content_tab_activated` and `_context_help_scope`.
 - Change the LLM: edit `MODEL` in `ask.py`.
 - Add a Google action (e.g. create event): add a helper in `gauth.py` and a
   modal/handler in `main.py`.

@@ -3,6 +3,99 @@
 Format: keep newest at top. One entry per meaningful change. Reference files
 touched and any breaking notes.
 
+## [2026-07-16] — Dashboard tab (parking Events/Tasks/Hermes); Mail tab single-purpose + preview pane
+
+Closes the ROADMAP P4 "Email tab becomes single-purpose; add preview pane"
+item, and gives the separate "Dashboard tab" item a real (interim) home for
+the panes displaced by that split (`google_tui/main.py`, `google_tui/
+bindings.py`, `google_tui/settings.py`).
+
+**New Dashboard tab, first position, holds Events/Tasks/Hermes intact.**
+Per explicit direction: don't delete these panes to make Email
+single-purpose — park them in the real Dashboard tab (not a throwaway
+holding tab), since their functionality (today's events, tasks due, etc.)
+is exactly what the separate, larger, not-yet-built Dashboard feature
+(weather/stocks/word-of-the-day/etc. — still open on ROADMAP) will
+eventually need anyway. `TAB_LABEL_SPECS`/`TAB_ORDER` gained `tab-dashboard`
+first; every other tab's F-key/`Ctrl+N` shifted by one (`F1`/`Ctrl+1`
+Dashboard, `F2` Mail, ... `F8` Contacts) and **Settings moved to `Ctrl+9`
+with no F-key alias** (F9+ isn't reliably delivered by every terminal — the
+same reasoning that already capped the alias range at F8, see AGENTS.md's
+"F2 was already taken" note, now extended for the 9th tab). `_SUPERSCRIPT`
+needed a `9: "⁹"` entry it didn't have.
+
+**Pane-switching split.** `PANE_IDS` is now just `["email"]` (Mail tab has
+nothing left to switch to); new `DASH_PANE_IDS = ["events", "tasks",
+"hermes"]` + `DASH_ADJACENCY` (an up/down chain now — no more `left`/`right`,
+since Email is no longer a sibling column) drive the Dashboard tab's own
+`_focus_dash_pane`/`self._dash_active`, mirroring the old `_focus_pane`/
+`self.active` shape. `_goto_pane` (Alt+1..4) keeps the exact same keys:
+idx 0 (Email) stays on Mail, idx 1/2/3 (Events/Tasks/Hermes) now route to
+Dashboard. `_adjacent`, `action_cycle`/`action_cycle_back`,
+`_context_help_scope`, `action_context_space`, `action_focus_search`, and
+`action_new_event`'s Events-pane guard all repointed from `tab == "tab-mail"`
++ `PANE_IDS[self.active]` to `tab == "tab-dashboard"` +
+`DASH_PANE_IDS[self._dash_active]`.
+
+**Email preview pane ("p", Outlook-style live-update).** Mail tab's old
+`#right` column (previously the Events/Tasks/Hermes stack) is now a
+preview pane: `Static#email-preview-meta` (From/Date header, + a "(N
+messages — press Enter for the full thread)" footer when the thread has
+more than one) and `DocumentView#email-preview-doc` showing the
+**latest** message (Enter/`ThreadModal` remains how you see the full
+thread tree) via the same `render.parse_feed_entry` call
+`ThreadModal._apply_thread` already makes per-message. Hidden by default —
+new `Settings.email_preview_default_visible: bool = False` (+ a Settings →
+General `Switch`) seeds `self._email_preview_visible` each launch;
+`action_toggle_preview` (`p`) flips it for the session only (doesn't
+persist), same as Drive's toggle. **Renamed** `action_toggle_drive_preview`
+→ `action_toggle_preview`, a single binding shared by Drive and Mail
+(same dual-context-single-action shape as `n`/`action_new_event` for
+Calendar vs. the Events pane) — Textual's `Binding` has no built-in way to
+register two different actions on the same key within one scope, so this
+was the only way to give Mail a "p" without a collision.
+
+While visible, highlighting a different thread live-updates the pane
+(`on_list_view_highlighted`'s new `email-list` branch → `_email_on_highlight`
+→ debounced via the same timer+generation-counter shape as Drive's preview
+column, renamed `_DRIVE_PREVIEW_DEBOUNCE` → `_PREVIEW_DEBOUNCE` now that
+both share it) — but a HIDDEN pane costs zero fetches while arrowing
+through mail, the common case since it's off by default. Reuses
+`self._thread_full_cache` (already populated by the existing Space-to-expand
+feature) for memoization instead of a second cache dict. Offline +
+not-yet-cached shows the thread summary's snippet, same fallback tone as
+`_apply_thread_preview_error`; full offline email-body caching stays the
+separate, still-open "Cache email bodies for offline reading" ROADMAP item.
+
+**Verified** via isolated `run_test` pilots (fabricated dataset, no live
+Google calls, per AGENTS.md §6): Dashboard-first tab order and renumbering,
+Alt+2/3/4 routing to Dashboard with the right sub-pane focused, Tab-mail
+containing zero leftover Events/Tasks/Hermes widgets (guards the
+`DuplicateIds` failure mode from relocating widgets across `TabPane`s),
+the preview pane's hidden/visible/live-update/cache-hit/offline-fallback
+behavior, and Settings-driven default visibility.
+
+**Found, not fixed — pre-existing, unrelated:** while testing Dashboard's
+Tab/Shift+Tab pane-cycling with real `pilot.press("tab")` keypresses (not
+just direct `action_cycle()` calls), they never actually reached
+`action_cycle`/`action_cycle_back` — Textual's `Screen` base class itself
+binds bare `tab`/`shift+tab` to `app.focus_next`/`app.focus_previous`
+(`textual/screen.py`), and `Screen.active_bindings`' binding-chain
+resolution is first-wins-unless-priority, with Screen closer to any
+focused widget than the App class in that chain — so Screen's default
+always wins over a same-key, non-priority App-level binding whenever
+anything has focus. Confirmed via `Screen`/`App`/`ListView` MRO
+inspection, and confirmed the exact same dispatch shape already existed at
+`78782ab` (before this session's Dashboard work) — so this predates the
+split, not a regression from it. Left as-is: a real fix (likely
+`priority=True` on `cycle`/`cycle_back` + making them return `True` when
+they actually act, so `_check_bindings` doesn't ALSO fall through to
+Screen's default afterward) has app-wide blast radius (Tab is also used
+for the Browser tab's address-bar/page focus toggle) and deserves its own
+scoped pass, not a drive-by fix here. Test scripts call `action_cycle()`/
+`action_cycle_back()` directly instead of asserting on a keypress that was
+never going to reach them.
+
 ## [2026-07-16] — Drive true parent-folder tracking; Drive preview toggle ("p")
 
 Closes two ROADMAP P4 items (`google_tui/main.py`, `google_tui/bindings.py`);
