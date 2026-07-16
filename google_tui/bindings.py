@@ -30,6 +30,11 @@ class ActionSpec:
     scope: str = "global"
     show_in_help: bool = True
     bindable: bool = True
+    # Textual checks priority bindings App-down before the event ever reaches
+    # the focused widget/Screen. Needed for "cycle"/"cycle_back": Screen's own
+    # BINDINGS silently claims bare tab/shift+tab first otherwise (see the
+    # comment on those two ActionSpecs below).
+    priority: bool = False
 
 
 # Transcribed verbatim from the former GoogleTUI.BINDINGS list — order
@@ -39,8 +44,17 @@ GLOBAL_ACTIONS: list[ActionSpec] = [
     ActionSpec("switch_right", "alt+right", "Pane Right"),
     ActionSpec("switch_up", "alt+up", "Pane Up"),
     ActionSpec("switch_down", "alt+down", "Pane Down"),
-    ActionSpec("cycle", "tab", "Cycle"),
-    ActionSpec("cycle_back", "shift+tab", "Cycle"),
+    # priority=True: Textual's Screen base class binds bare tab/shift+tab to
+    # app.focus_next/focus_previous itself (show=False, non-priority), and
+    # wins over these same-key bindings whenever any widget has focus --
+    # Screen sits closer than App in the non-priority binding chain, so its
+    # binding matches first. priority=True moves these into the App-down
+    # pass that runs before that chain is ever walked. action_cycle/
+    # action_cycle_back raise SkipAction on tabs where they don't apply, so
+    # the key falls through to Screen's default focus_next/previous there
+    # instead of being silently swallowed.
+    ActionSpec("cycle", "tab", "Cycle", priority=True),
+    ActionSpec("cycle_back", "shift+tab", "Cycle", priority=True),
     ActionSpec("goto_tab_dashboard", "f1,ctrl+1", "Dashboard"),
     ActionSpec("goto_tab_mail", "f2,ctrl+2", "Mail"),
     ActionSpec("goto_tab_calendar", "f3,ctrl+3", "Calendar"),
@@ -118,7 +132,8 @@ ACTIONS: dict[tuple[str, str], ActionSpec] = {
 def bindings_for_scope(scope: str) -> list[Binding]:
     """Build a Textual BINDINGS list for one scope, in declaration order."""
     return [
-        Binding(spec.keys, spec.id, spec.label, show=spec.show_in_help)
+        Binding(spec.keys, spec.id, spec.label, show=spec.show_in_help,
+                priority=spec.priority)
         for (sc, _id), spec in ACTIONS.items()
         if sc == scope and spec.bindable and spec.keys
     ]

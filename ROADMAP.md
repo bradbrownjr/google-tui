@@ -62,22 +62,6 @@ just checking it off here, so ROADMAP.md only ever shows what's still open.
   (subject/from/date) are cached today, not full bodies — opening a thread
   while offline isn't possible yet. Would follow the same lazy,
   cache-on-view pattern as `drive_file_text`.
-- [ ] **`Tab`/`Shift+Tab` pane-cycling doesn't actually fire from a real
-  keypress.** Discovered `[2026-07-16]` while pilot-testing the Dashboard
-  tab: Textual's `Screen` base class binds bare `tab`/`shift+tab` to
-  `app.focus_next`/`app.focus_previous` itself, and wins over the app's own
-  same-key `cycle`/`cycle_back` `Binding`s whenever any widget has focus
-  (`Screen.active_bindings` is first-wins-unless-priority, and `Screen` is
-  closer than `App` in the binding chain — confirmed via `Screen`/`App`/
-  `ListView` MRO inspection). Predates the Dashboard split (same dispatch
-  shape existed at `78782ab`), so every "Tab / Shift+Tab cycle panes" help
-  text has probably been describing dead keys since it was written. Likely
-  fix: `priority=True` on the `cycle`/`cycle_back` `ActionSpec`s, with
-  `action_cycle`/`action_cycle_back` returning `True` when they actually
-  act (so `App._check_bindings` doesn't ALSO fall through to Screen's
-  default afterward) — needs its own scoped pass and testing, since `Tab`
-  is also used for the Browser tab's address-bar/page focus toggle
-  (app-wide blast radius, not a drive-by fix).
 - [ ] **Dashboard tab: the actual dashboard content.** The tab exists now
   (`tab-dashboard`, first position, `F1`/`Ctrl+1` — see CHANGELOG
   `[2026-07-16]`), but only holds Events/Tasks/Hermes, relocated intact from
@@ -152,3 +136,9 @@ just checking it off here, so ROADMAP.md only ever shows what's still open.
   passphrase-at-launch vs. local-keyfile key method, clear-cache button.
   Small "browse" cache rows bulk-decrypt cheaply; large "content" rows
   (Drive file text) decrypt lazily, one at a time, only when opened.
+- [x] **Fix dead `Tab`/`Shift+Tab` pane-cycling keys.** `Screen`'s own
+  non-priority `tab`/`shift+tab` bindings were winning over the app's
+  `cycle`/`cycle_back` actions on every keypress; made those two
+  `ActionSpec`s priority bindings and had the actions `SkipAction()` through
+  to `Screen`'s default focus-next/previous on tabs where they don't apply.
+  See CHANGELOG `[2026-07-16]`.

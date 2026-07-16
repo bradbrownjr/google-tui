@@ -3,6 +3,31 @@
 Format: keep newest at top. One entry per meaningful change. Reference files
 touched and any breaking notes.
 
+## [2026-07-16] — Fix dead Tab/Shift+Tab pane-cycling keys
+
+Closes the ROADMAP P4 item discovered the same day while pilot-testing the
+Dashboard tab (`google_tui/bindings.py`, `google_tui/main.py`).
+
+Textual's `Screen` base class binds bare `tab`/`shift+tab` to
+`app.focus_next`/`app.focus_previous` itself (non-priority), and it sits
+closer than `App` in the non-priority binding chain walked from the focused
+widget upward — so it always matched before the app's own same-key
+`cycle`/`cycle_back` bindings ever got a look, making every "Tab / Shift+Tab
+cycle panes" help text describe dead keys since it was written (predates the
+Dashboard split; same dispatch shape existed at `78782ab`).
+
+Fix: `ActionSpec` gained a `priority: bool` field (`bindings.py`), set
+`True` on the `cycle`/`cycle_back` specs so they're checked in Textual's
+App-down priority pass, which runs before the focused-widget-up chain
+(where `Screen`'s default binding lives) is ever walked. `action_cycle`/
+`action_cycle_back` (`main.py`) now `raise SkipAction()` on tabs where they
+don't apply (anything but Dashboard/Browser), so the key falls through to
+`Screen`'s default focus-next/previous there instead of being silently
+swallowed — preserving normal Tab-between-fields behavior on Settings and
+everywhere else. Verified via `run_test` pilot: Dashboard Tab/Shift+Tab now
+actually cycles Events → Tasks → Hermes and back, Browser's address-bar/page
+toggle still works, and Settings' form fields still tab through normally.
+
 ## [2026-07-16] — Dashboard tab (parking Events/Tasks/Hermes); Mail tab single-purpose + preview pane
 
 Closes the ROADMAP P4 "Email tab becomes single-purpose; add preview pane"

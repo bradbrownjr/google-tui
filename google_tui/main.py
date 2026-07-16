@@ -33,6 +33,7 @@ from google.auth.exceptions import RefreshError
 from googleapiclient.errors import HttpError
 from rapidfuzz import fuzz
 from textual import events
+from textual.actions import SkipAction
 from textual.app import App, ComposeResult
 from textual.containers import Container, Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
@@ -2699,6 +2700,10 @@ class GoogleTUI(App):
             self._focus_dash_pane((self._dash_active + 1) % len(DASH_PANE_IDS))
         elif tab == "tab-browser":
             self._browser_toggle_focus()
+        else:
+            # Not our key to claim here -- let it fall through to Screen's
+            # default tab -> app.focus_next binding (non-priority pass).
+            raise SkipAction()
 
     def action_cycle_back(self):
         tab = self._main_tabs().active
@@ -2706,6 +2711,8 @@ class GoogleTUI(App):
             self._focus_dash_pane((self._dash_active - 1) % len(DASH_PANE_IDS))
         elif tab == "tab-browser":
             self._browser_toggle_focus()
+        else:
+            raise SkipAction()
 
     def action_refresh(self) -> None:
         now = time.monotonic()
