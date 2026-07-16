@@ -127,6 +127,10 @@ _CONTACTS_SEARCH_DEBOUNCE = 0.15
 _EMAIL_SEARCH_DEBOUNCE = 0.15
 _TASKS_SEARCH_DEBOUNCE = 0.15
 _EVENTS_SEARCH_DEBOUNCE = 0.15
+# Events pane "Load more" (action_load_more_events): how many more days the
+# window grows by each time. Calendar's events.list is a plain date-range
+# query, not cursor-paginated, so there's no natural end to reach.
+_EVENTS_WINDOW_STEP_DAYS = 21
 _DRIVE_SEARCH_DEBOUNCE = 0.15
 _NEWS_SEARCH_DEBOUNCE = 0.15
 
@@ -560,20 +564,23 @@ def _append_email_items(email_list, threads, show_sender_address: bool = False) 
     )
 
 
-# Sentinel id (not a _mk_id — no underlying thread) on_list_view_selected
-# special-cases to call action_load_more_email instead of opening a thread.
+# Sentinel ids (not _mk_id — no underlying thread/event/file) that
+# on_list_view_selected special-cases to a load-more action instead of
+# opening a detail view.
 LOAD_MORE_EMAIL_ID = "load-more-email"
+LOAD_MORE_EVENTS_ID = "load-more-events"
 
 
-def _append_load_more_row(email_list, show: bool) -> None:
-    """Appends a clickable "Load more" row backing Email pagination — only
-    when `show` (there IS a next page, per self._email_next_page_token) and
-    the caller hasn't already filtered the list by search (loading another
-    page while a filter's active would be confusing: which page's worth of
-    threads is the filter even matching against?)."""
+def _append_load_more_row(list_view, show: bool, item_id: str, label: str) -> None:
+    """Appends a clickable "Load more" row — shared by the Email pane
+    (LOAD_MORE_EMAIL_ID) and the Events pane (LOAD_MORE_EVENTS_ID) — only
+    when `show` (there's more to load: Email's next_page_token, or Events'
+    always-extendable window) and the caller hasn't already filtered the
+    list by search (loading more while a filter's active would be
+    confusing: which page/window's worth of rows is the filter even
+    matching against?)."""
     if show:
-        email_list.append(ListItem(Label("↓ Load more messages…", classes="muted"),
-                                    id=LOAD_MORE_EMAIL_ID))
+        list_view.append(ListItem(Label(label, classes="muted"), id=item_id))
 
 
 def _child_tasks(task: dict, all_tasks: list[dict]) -> list[dict]:
@@ -976,6 +983,13 @@ class GoogleTUI(App):
         # "Load more" row _apply_email_list_async/_apply_mail_data_async
         # append when it's not None (see gauth.list_threads's page_token).
         self._email_next_page_token: str | None = None
+        # Events pane's "Load more" (see action_load_more_events): unlike
+        # Gmail's cursor-based pagination, Calendar's events.list is a plain
+        # date-range query, so "more" just means a bigger window — bumped by
+        # _EVENTS_WINDOW_STEP_DAYS each time, with no natural end (there's
+        # always a further-out week to ask for), so this has no next-token
+        # equivalent to track — only how wide the window currently is.
+        self._events_window_days: int = _EVENTS_WINDOW_STEP_DAYS
         # Full per-message fetch backing the Space-expand preview once a
         # thread has >1 message (see _toggle_thread_expand) — keyed by
         # thread_id, populated lazily on first expand, kept for the rest of
@@ -1763,7 +1777,10 @@ class GoogleTUI(App):
         # action_load_more_email / _apply_email_list_async to know whether a
         # "Load more" row belongs at the bottom of the Email pane.
         self._email_next_page_token = next_page_token
-        events = gauth.list_events(self.svc, days=21)
+        # self._events_window_days, not a literal 21: once Load More has
+        # widened the window this session, an ordinary refresh (Ctrl+R,
+        # startup) must keep showing that same wider window, not snap back.
+        events = gauth.list_events(self.svc, days=self._events_window_days)
         tasklists = gauth.list_tasklists(self.svc)
         tasks = []
         for tl in tasklists:
@@ -1881,6 +1898,32 @@ class GoogleTUI(App):
             merged[t["threadId"]] = t
         self.call_from_thread(self._apply_email_list, list(merged.values()))
 
+    def action_load_more_events(self) -> None:
+        if not self._online:
+            self.notify("Can't load more events while offline.", severity="warning")
+            return
+        self.run_worker(self._load_more_events_thread, thread=True, exclusive=True, group="events-loadmore")
+
+    def _load_more_events_thread(self) -> None:
+        # Calendar's events.list is a plain date-range query, not
+        # cursor-paginated like Gmail — "load more" just means refetching
+        # the WHOLE window at a wider size (no incremental page to merge),
+        # so this replaces self._events_cache outright rather than merging.
+        new_window = self._events_window_days + _EVENTS_WINDOW_STEP_DAYS
+        try:
+            events = gauth.list_events(self.svc, days=new_window)
+        except Exception as e:
+            self.call_from_thread(self.notify, f"Load more error: {e}", severity="error")
+            return
+        self._events_window_days = new_window
+        if self._cache:
+            self._cache.put_many("event", {e["id"]: e for e in events})
+        self.call_from_thread(self._apply_events_after_load_more, events)
+
+    def _apply_events_after_load_more(self, events: list[dict]) -> None:
+        self._events_cache = events
+        self._refresh_event_list()
+
     def _apply_email_list(self, threads) -> None:
         self._mail_apply_gen += 1
         gen = self._mail_apply_gen
@@ -1898,7 +1941,8 @@ class GoogleTUI(App):
         visible = _fuzzy_filter_threads(threads, query) if query.strip() else threads
         email_list = self.query_one("#email-list")
         _append_email_items(email_list, visible, self.settings.show_sender_address)
-        _append_load_more_row(email_list, bool(self._email_next_page_token) and not query.strip())
+        _append_load_more_row(email_list, bool(self._email_next_page_token) and not query.strip(),
+                              LOAD_MORE_EMAIL_ID, "↓ Load more messages…")
 
     def _apply_mail_data(self, threads, events, tasks, tasklists) -> None:
         self._tasklists = tasklists
@@ -1932,7 +1976,8 @@ class GoogleTUI(App):
         visible_threads = _fuzzy_filter_threads(threads, email_query) if email_query.strip() else threads
         email_list = self.query_one("#email-list")
         _append_email_items(email_list, visible_threads, self.settings.show_sender_address)
-        _append_load_more_row(email_list, bool(self._email_next_page_token) and not email_query.strip())
+        _append_load_more_row(email_list, bool(self._email_next_page_token) and not email_query.strip(),
+                              LOAD_MORE_EMAIL_ID, "↓ Load more messages…")
 
         self._events_cache = events
         try:
@@ -1940,7 +1985,10 @@ class GoogleTUI(App):
         except Exception:
             events_query = ""
         visible_events = _fuzzy_filter_events(events, events_query) if events_query.strip() else events
-        _append_event_items(self.query_one("#event-list"), visible_events)
+        event_list = self.query_one("#event-list")
+        _append_event_items(event_list, visible_events)
+        _append_load_more_row(event_list, not events_query.strip(),
+                              LOAD_MORE_EVENTS_ID, "↓ Load more events…")
 
         self._tasks_cache = tasks
         try:
@@ -2506,7 +2554,10 @@ class GoogleTUI(App):
         except Exception:
             query = ""
         visible = _fuzzy_filter_events(events, query) if query.strip() else events
-        _append_event_items(self.query_one("#event-list"), visible)
+        event_list = self.query_one("#event-list")
+        _append_event_items(event_list, visible)
+        _append_load_more_row(event_list, not query.strip(),
+                              LOAD_MORE_EVENTS_ID, "↓ Load more events…")
 
     def _highlighted_event_id(self) -> str | None:
         el = self.query_one("#event-list")
@@ -2556,6 +2607,8 @@ class GoogleTUI(App):
         cid = event.item.id or ""
         if cid == LOAD_MORE_EMAIL_ID:
             self.action_load_more_email()
+        elif cid == LOAD_MORE_EVENTS_ID:
+            self.action_load_more_events()
         elif cid.startswith("t-"):
             tid = cid[2:]
             order = self._email_thread_order()

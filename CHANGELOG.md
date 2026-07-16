@@ -3,6 +3,28 @@
 Format: keep newest at top. One entry per meaningful change. Reference files
 touched and any breaking notes.
 
+## [2026-07-16] — Events pane: "Load more" past the 3-week window
+
+Part of the ROADMAP P3 pagination item (Drive still open — see ROADMAP).
+Unlike Gmail's cursor-based pagination, Calendar's `events.list` is a plain
+date-range query, so "load more" here means refetching the WHOLE window at
+a wider size rather than merging an incremental page — no `next_page_token`
+equivalent to track, only `self._events_window_days` (starts at 21,
+`action_load_more_events` grows it by `_EVENTS_WINDOW_STEP_DAYS` each call,
+with no natural end — there's always a further-out week to ask for). An
+ordinary refresh (Ctrl+R, startup) now passes `self._events_window_days`
+to `gauth.list_events` instead of a literal `21`, so a widened window
+persists across refreshes instead of snapping back. The "Load more" row
+itself reuses the same `_append_load_more_row` helper the Email pane's row
+already used — generalized to take an id/label pair instead of being
+Email-specific — appended to the Events pane whenever there's no active
+search filter (Events' window, unlike Email's page cursor, is *always*
+further-extendable, so the row has no "no more to load" hidden state the
+way Email's does). Verified via an isolated `run_test` pilot (`gauth.
+list_events` mocked to return a bigger set at the wider window) confirming
+the row appears after the initial window, widening the window refetches
+and re-renders correctly, and the row hides while a search filter is active.
+
 ## [2026-07-16] — Email pane: "Load more" past the 80-thread cap
 
 Part of the ROADMAP P3 pagination item (Events/Drive still open — see

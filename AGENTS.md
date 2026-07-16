@@ -99,7 +99,11 @@ Mail-tab panes:
   set[str]` tracks which threads are currently expanded and naturally
   resets whenever the list is torn down and repopulated (no persistence).
 - **Events** (right top, renamed from "Calendar" to avoid clashing with the
-  Calendar tab): next ~3 weeks of events, lightbar, `Enter`/`Space` → detail.
+  Calendar tab): next ~3 weeks of events (`self._events_window_days`),
+  lightbar, `Enter`/`Space` → detail. A "↓ Load more events…" row
+  (`LOAD_MORE_EVENTS_ID`) at the bottom (hidden while `/`-filtered) widens
+  the window by `_EVENTS_WINDOW_STEP_DAYS` and refetches — see CHANGELOG
+  `[2026-07-16]`.
 - **Tasks** (right middle): all Google Task lists combined, lightbar.
   `Space` toggles complete (live), `Enter` shows details/subtasks.
 - **Hermes Ask** (right bottom): type question, `Enter`. General questions
@@ -778,6 +782,9 @@ user_cache_dir("google-tui")/cache.db`; `KEY_FILE_PATH` and `SETTINGS_PATH`
   (`main.py`'s `_toggle_thread_expand`). `page_token`/`next_page_token`
   back the Email pane's "Load more" row (`action_load_more_email`).
 - `list_events(svc, days)` — Calendar `events.list` over next `days` days.
+  Backs the Mail tab's Events pane; `days` is `self._events_window_days`,
+  not a constant, once "Load more" has widened it (see the Events pane
+  entry above).
 - `events_between(svc, start, end)` — generic date-range `events.list`;
   `month_events(svc, year, month)` and the Calendar tab's week grid both call
   this rather than duplicating the API-call shape.

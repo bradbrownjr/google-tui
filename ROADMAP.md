@@ -7,15 +7,12 @@ just checking it off here, so ROADMAP.md only ever shows what's still open.
 
 ## P3 — Robustness
 
-- [ ] **Pagination / "load more" — Events and Drive remain.** Email's
-  80-thread cap now has a "Load more" row (`gauth.list_threads`'s
-  `page_token`/`next_page_token`, `main.py`'s `action_load_more_email` —
-  see CHANGELOG `[2026-07-16]`). Events (3-week cap) and Drive (one folder
-  page) still need the same treatment — Events via a bigger
-  `events_between` window rather than a cursor (Calendar's date-range
-  model doesn't need one), Drive via `files().list`'s own `pageToken`/
-  `nextPageToken` (same shape as Gmail's, not yet wired through
-  `gauth.list_drive`).
+- [ ] **Pagination / "load more" — Drive remains.** Email's 80-thread cap
+  and Events' 3-week window both now have a "Load more" row (see CHANGELOG
+  `[2026-07-16]`, both entries). Drive (one folder page, `max_results=200`
+  in `gauth.list_drive`, no continuation) still needs the same treatment —
+  via `files().list`'s own `pageToken`/`nextPageToken` (same shape as
+  Gmail's, not yet wired through `gauth.list_drive`).
 - [ ] **Offline mutation queue.** Reply/Forward/toggle-task are currently
   just disabled while offline (`self._require_online()`). Queuing them for
   automatic replay on reconnect would be a real feature, not a small one —
