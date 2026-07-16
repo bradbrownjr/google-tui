@@ -14,9 +14,6 @@ just checking it off here, so ROADMAP.md only ever shows what's still open.
 - [ ] **Drive image preview** — currently images show metadata only ("no text
   preview"); in-terminal rendering would need the `textual-image` package
   (not a current dependency).
-- [ ] **Drive true parent-folder tracking** — "up" reloads root rather than
-  the actual parent; would need a folder-id stack instead of the current
-  `path` string.
 - [ ] **Config file** (`config.toml`) for: default LLM model, timezone, pane
   order, searxng URL, refresh interval.
 - [ ] **Markdown detection + rendering** in Drive file preview, calendar/task
@@ -55,8 +52,12 @@ just checking it off here, so ROADMAP.md only ever shows what's still open.
 - [ ] **Multiple accounts** switch (if a second token appears).
 - [ ] **Unit tests in-repo** (`tests/`) using the `run_test` pilot pattern from
   AGENTS.md §6, runnable via `pytest`.
-- [ ] **Keyboard-first everywhere** — ensure every mouse action has a key
-  equivalent (Drive folder nav, calendar month nav).
+- [ ] **Keyboard-first everywhere** — audit remaining tabs/modals for
+  mouse-only actions. Drive folder nav (arrow keys + Enter) and Calendar
+  month/week nav (`[`/`]`) — the two examples this item used to name — are
+  already fully keyboard-accessible; confirmed `[2026-07-16]` via a
+  keyboard-only pilot, no code change needed. What's left, if anything, is
+  unaudited — re-scope once something concrete turns up.
 - [ ] **Cache email bodies for offline reading.** Only thread summaries
   (subject/from/date) are cached today, not full bodies — opening a thread
   while offline isn't possible yet. Would follow the same lazy,
@@ -73,10 +74,11 @@ just checking it off here, so ROADMAP.md only ever shows what's still open.
 - [ ] **Email tab becomes single-purpose; add preview pane.** Make the email
   viewer the only content on its tab (today it shares the Mail tab with
   Events/Tasks/Hermes panes via Alt+1..4), and add an inline preview pane so
-  a highlighted message can be read without opening `ThreadModal`.
-  *(Suggested model: Opus — layout rework of the whole Mail tab.)*
-- [ ] **Toggle preview/info column in Email and Drive**, default to visible
-  when the terminal is wide enough to fit it. *(Suggested model: Sonnet.)*
+  a highlighted message can be read without opening `ThreadModal`. Once this
+  exists, give it the same show/hide toggle Drive's preview column got
+  `[2026-07-16]` (`action_toggle_drive_preview`, key `p`) — there was nothing
+  to toggle in Email before this pane exists. *(Suggested model: Opus —
+  layout rework of the whole Mail tab.)*
 - [ ] **RSS subscription list.** Categorized checklist of popular feeds to
   toggle on/off, plus add-your-own custom feed URL (Settings already has a
   feed list at `#settings-feed-list`, `main.py:569` — extend it rather than
@@ -118,6 +120,12 @@ just checking it off here, so ROADMAP.md only ever shows what's still open.
   overlaid at render, replayed on reconnect; a delete whose target is itself a
   queued create just cancels the create). Completes the P3 queue work — see
   CHANGELOG `[2026-07-16]`.
+- [x] **Drive true parent-folder tracking.** "Up" now navigates to the
+  actual parent via a folder-id stack, not always back to root — see
+  CHANGELOG `[2026-07-16]`.
+- [x] **Drive preview/info column toggle** (`p`, `action_toggle_drive_preview`)
+  — hides `#drive-preview-col` so the file list can claim the full width.
+  See CHANGELOG `[2026-07-16]`.
 - [x] **Settings tab** (`Ctrl+5`): encrypt-at-rest toggle (off by default),
   passphrase-at-launch vs. local-keyfile key method, clear-cache button.
   Small "browse" cache rows bulk-decrypt cheaply; large "content" rows

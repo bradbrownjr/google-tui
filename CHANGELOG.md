@@ -3,6 +3,54 @@
 Format: keep newest at top. One entry per meaningful change. Reference files
 touched and any breaking notes.
 
+## [2026-07-16] — Drive true parent-folder tracking; Drive preview toggle ("p")
+
+Closes two ROADMAP P4 items (`google_tui/main.py`, `google_tui/bindings.py`);
+a third named example turned out to already be done — see below.
+
+**Drive true parent-folder tracking.** "Up" reloaded root instead of the
+actual parent, and two sibling folders sharing a name (e.g. `FolderA/Sub` and
+`FolderC/Sub`) would resolve to the wrong place since the old code navigated
+off the display `path` string rather than a folder id. New
+`self._drive_folder_stack: list[tuple[str, str]]` — ancestor
+`(folder_id, path)` pairs from root down to (not including) the current
+folder — is pushed in `_drive_open_selected` on descend and popped on ascend;
+`_apply_drive_files` resets it to `[]` whenever `path == "/"`, covering both
+the explicit root case and `_apply_live_refresh`'s existing reset-to-root.
+`path` itself is unchanged and still drives the breadcrumb label — only
+navigation now keys off folder id. Verified via an isolated `run_test` pilot
+(3-level descent + same-named-sibling case) since this is exactly the kind of
+bug a path-string comparison can pass by accident.
+
+**Drive preview/info column toggle ("p").** New `action_toggle_drive_preview`
+(`p`, global scope, no-ops outside the Drive tab — same guard pattern as
+`action_cal_prev`/`action_cal_next`) shows/hides `#drive-preview-col` so the
+file list can claim the full row (or, on a narrow terminal, the full column
+height too) when you don't need the preview. New CSS:
+`#drive-preview-col.drive-preview-hidden { display: none; }` and
+`#drive-list-col.drive-list-full { width: 1fr; }` (plus a
+`Screen.-narrow` variant for height) — both are id+class selectors, so they
+out-specificity the existing bare-id narrow/normal rules regardless of
+declaration order, verified directly (`widget.styles.display`/`.height`
+inside a pilot) rather than assumed. Defaults to visible; state is
+in-memory/per-session only, matching every other layout toggle in the app
+(none of them persist to `settings.json`).
+
+**ROADMAP "Keyboard-first everywhere" — Drive folder nav and calendar month
+nav, its two named examples, were already fully keyboard-accessible with NO
+code change needed:** Drive's `ListView` already supports arrow-key
+highlight + Enter for both descending into a folder and hitting the "up" row
+(Textual's default `ListView` behavior, not something this app added), and
+Calendar's `[`/`]` (`action_cal_prev`/`action_cal_next`) already cover both
+Month and Week view. Confirmed with a keyboard-only pilot (no `pilot.click`
+anywhere in the test) rather than assumed from reading the binding table —
+same category of staleness as the P2 threading-depth entry removed
+`[2026-07-15]`. The "Toggle preview/info column in **Email** and Drive" item
+turned out to only be actionable for Drive right now: the Email pane
+(`#email-list`) has no preview/info column to toggle at all yet — that's the
+separate, larger "Email tab becomes single-purpose; add preview pane" P4 item
+below, un-started. ROADMAP.md's wording narrowed accordingly.
+
 ## [2026-07-16] — Offline mutation queue: CREATE/DELETE (New Event, Add/Delete subtask, Delete task)
 
 Closes the last ROADMAP P3 offline-queue item — the CREATE/DELETE actions

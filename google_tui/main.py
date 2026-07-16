@@ -1070,6 +1070,15 @@ class GoogleTUI(App):
     Screen.-narrow #drive-list-col { width: 1fr; height: 60%; }
     Screen.-narrow #drive-preview-col { width: 1fr; height: 1fr; }
 
+    /* "p" toggle (action_toggle_drive_preview) -- manual override, on top of
+       (not instead of) the narrow/normal stacking above: hiding the preview
+       column lets #drive-list-col claim the full row/height in EITHER
+       layout mode. The id+class selectors below out-specificity the bare
+       id ones above regardless of source order, in both branches. */
+    #drive-preview-col.drive-preview-hidden { display: none; }
+    #drive-list-col.drive-list-full { width: 1fr; }
+    Screen.-narrow #drive-list-col.drive-list-full { height: 1fr; }
+
     /* Mail tab: HIDE the inactive column instead of stacking. Email vs.
        Events/Tasks/Hermes is a 1-vs-3 split, and Events/Tasks/Hermes are
        already themselves stacked inside #right -- stacking a 4th thing
@@ -1117,7 +1126,19 @@ class GoogleTUI(App):
         self._cal_week_start = today - dt.timedelta(days=today.weekday())
         self._drive_folder_id = "root"
         self._drive_path = "/"
+        # Ancestor (folder_id, path) pairs from root down to (but not
+        # including) the current folder — lets "up" navigate to the actual
+        # parent instead of always reloading root. Pushed on descend, popped
+        # on ascend; reset to [] whenever _apply_drive_files loads path "/",
+        # which covers both the explicit root case and the full-refresh
+        # reset-to-root in _apply_live_refresh.
+        self._drive_folder_stack: list[tuple[str, str]] = []
         self._drive_files: list[dict] = []
+        # "p" toggle (action_toggle_drive_preview) — visible by default;
+        # #drive-preview-col already fits (stacked below the list) even on a
+        # narrow terminal per the CSS comment below, so there's no width-based
+        # reason to default it off.
+        self._drive_preview_visible = True
         # Drive's pagination cursor for the page AFTER the currently-shown
         # folder listing, or None if there isn't one — set by
         # _fetch_drive_files (always reflects whichever folder was fetched
@@ -2487,6 +2508,7 @@ class GoogleTUI(App):
             self.query_one("#cal-grid").focus()
         elif tab_id == "tab-drive":
             self.query_one("#drive-list").focus()
+            self._apply_drive_preview_visibility()
         elif tab_id == "tab-browser":
             self.query_one("#browser-url").focus()
         elif tab_id == "tab-news":
@@ -3780,6 +3802,26 @@ class GoogleTUI(App):
             self.call_from_thread(self.notify, f"Calendar refresh error: {e}", severity="error")
 
     # ---- drive tab ----
+    def action_toggle_drive_preview(self) -> None:
+        """"p" — show/hide #drive-preview-col so the file list can claim the
+        full width (or, when narrow, the full height too). No-ops outside
+        the Drive tab, same guard pattern as action_cal_prev/action_cal_next.
+        """
+        if self._main_tabs().active != "tab-drive":
+            return
+        self._drive_preview_visible = not self._drive_preview_visible
+        self._apply_drive_preview_visibility()
+
+    def _apply_drive_preview_visibility(self) -> None:
+        try:
+            preview_col = self.query_one("#drive-preview-col")
+            list_col = self.query_one("#drive-list-col")
+        except Exception:
+            return
+        hidden = not self._drive_preview_visible
+        preview_col.set_class(hidden, "drive-preview-hidden")
+        list_col.set_class(hidden, "drive-list-full")
+
     def _fetch_drive_files(self, folder_id: str) -> list[dict]:
         files, next_page_token = gauth.list_drive(self.svc, folder_id)
         # Plain attribute write from a (possibly) worker thread — same
@@ -3790,6 +3832,8 @@ class GoogleTUI(App):
         return files
 
     def _apply_drive_files(self, files: list[dict], folder_id: str, path: str) -> None:
+        if path == "/":
+            self._drive_folder_stack = []
         self._drive_folder_id = folder_id
         self._drive_path = path
         self._drive_files = files
@@ -3891,13 +3935,18 @@ class GoogleTUI(App):
             return
         cid = lst.highlighted_child.id or ""
         if cid == "d-up":
-            self._drive_load("root", "/")
+            if self._drive_folder_stack:
+                parent_id, parent_path = self._drive_folder_stack.pop()
+            else:
+                parent_id, parent_path = "root", "/"
+            self._drive_load(parent_id, parent_path)
             return
         if not cid.startswith("d-"):
             return
         fid = cid[2:]
         f = next((x for x in self._drive_files if x["id"] == fid), None)
         if f and f["mimeType"] == "application/vnd.google-apps.folder":
+            self._drive_folder_stack.append((self._drive_folder_id, self._drive_path))
             self._drive_load(f["id"], self._drive_path + f["name"] + "/")
 
     def _drive_on_highlight(self, item: ListItem | None) -> None:

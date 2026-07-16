@@ -67,6 +67,7 @@ GLOBAL_ACTIONS: list[ActionSpec] = [
     ActionSpec("cal_prev", "[", "Prev"),
     ActionSpec("cal_next", "]", "Next"),
     ActionSpec("new_event", "n", "New Event"),
+    ActionSpec("toggle_drive_preview", "p", "Toggle Preview"),
     ActionSpec("refresh", "ctrl+r", "Refresh"),
     ActionSpec("help", "ctrl+h", "Help"),
     ActionSpec("toggle_mouse", "f12", "Mouse"),
@@ -147,7 +148,7 @@ CONTEXT_HELP: dict[str, str] = {
     "pane:tasks": "Space Toggle Complete   Enter Detail   / Search",
     "pane:hermes": "Enter Ask",
     "tab:tab-calendar": "[ / ] Prev/Next Month or Week   Enter Day Detail   n New Event",
-    "tab:tab-drive": "Enter Open Folder / Reload Preview   / Search (this folder)",
+    "tab:tab-drive": "Enter Open Folder / Reload Preview   / Search (this folder)   p Toggle Preview",
     "tab:tab-browser": "Enter Load/Search   Alt+←/→ Back/Forward   Alt+H Home   Tab Toggle Focus   0-9+Enter Link",
     "tab:tab-news": "Enter/Space Open Entry   / Search",
     "tab:tab-navigation": "Enter/Go Compute Route   Export Save Itinerary To File",
@@ -307,6 +308,8 @@ DRIVE TAB
   Enter/click   Open a folder, or re-load a file's preview
   / search      Live filter by name over the CURRENT folder's file list
                 (not the whole Drive tree)
+  p             Toggle the preview/info column — hide it to give the file
+                list the full width
 
 BROWSER TAB
   Enter (address bar)    Load URL, or run a search (bare text w/ no scheme searches)
