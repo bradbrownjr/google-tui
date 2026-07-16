@@ -151,7 +151,7 @@ def main() -> None:
          patch.object(gauth, "month_events", return_value=FAKE_EVENTS), \
          patch.object(gauth, "list_tasklists", return_value=FAKE_TASKLISTS), \
          patch.object(gauth, "list_tasks", return_value=FAKE_TASKS), \
-         patch.object(gauth, "list_drive", return_value=FAKE_DRIVE), \
+         patch.object(gauth, "list_drive", return_value=(FAKE_DRIVE, None)), \
          patch.object(gauth, "list_contacts", return_value=FAKE_CONTACTS), \
          patch.object(gauth, "get_thread", return_value=[]), \
          patch.object(gauth, "get_file_metadata", return_value={}), \

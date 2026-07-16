@@ -135,7 +135,10 @@ Other tabs:
   true parent folder (pre-existing simplification, not fixed by the tab
   redesign — see §7). Offline: reads `drive_file_meta`/`drive_file_text`
   from cache instead of `gauth`; shows "not available offline" for a file
-  that was never viewed while online.
+  that was never viewed while online. A folder capped at `max_results=200`
+  (`gauth.list_drive`) gets a "↓ Load more files…" row at the bottom
+  (`LOAD_MORE_DRIVE_ID`, hidden while `/`-filtered) that fetches the next
+  page via `self._drive_next_page_token` — see CHANGELOG `[2026-07-16]`.
   - `gauth.get_file_metadata(svc, file_id)` — added for the preview's
     who/what/where/when: `fields="id,name,mimeType,size,owners,
     modifiedTime,createdTime,parents,webViewLink"`.
@@ -790,7 +793,12 @@ user_cache_dir("google-tui")/cache.db`; `KEY_FILE_PATH` and `SETTINGS_PATH`
   this rather than duplicating the API-call shape.
 - `list_tasklists(svc)` / `list_tasks(svc, list_id, show_completed)` — task
   lists and one list's items (caller tags each item with `_list`).
-- `list_drive(svc, folder_id)` — Drive `files.list` in `folder_id` (or root).
+- `list_drive(svc, folder_id, max_results, page_token)` — returns `(files,
+  next_page_token)`. Drive `files.list` in `folder_id` (or root).
+  `page_token`/`next_page_token` back the Drive tab's "Load more" row
+  (`action_load_more_drive`); the `fields` mask explicitly includes
+  `nextPageToken` — Drive's partial-response filtering drops it otherwise,
+  unlike Gmail's `threads().list` which returns it regardless.
 - `get_file_metadata(svc, file_id)` — `files.get` with an expanded `fields`
   string (`owners`, `createdTime`, `modifiedTime`, `parents`, ...); backs the
   Drive tab's who/what/where/when preview panel.

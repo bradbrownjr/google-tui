@@ -569,16 +569,17 @@ def _append_email_items(email_list, threads, show_sender_address: bool = False) 
 # opening a detail view.
 LOAD_MORE_EMAIL_ID = "load-more-email"
 LOAD_MORE_EVENTS_ID = "load-more-events"
+LOAD_MORE_DRIVE_ID = "load-more-drive"
 
 
 def _append_load_more_row(list_view, show: bool, item_id: str, label: str) -> None:
     """Appends a clickable "Load more" row — shared by the Email pane
-    (LOAD_MORE_EMAIL_ID) and the Events pane (LOAD_MORE_EVENTS_ID) — only
-    when `show` (there's more to load: Email's next_page_token, or Events'
-    always-extendable window) and the caller hasn't already filtered the
-    list by search (loading more while a filter's active would be
-    confusing: which page/window's worth of rows is the filter even
-    matching against?)."""
+    (LOAD_MORE_EMAIL_ID), the Events pane (LOAD_MORE_EVENTS_ID), and the
+    Drive tab (LOAD_MORE_DRIVE_ID) — only when `show` (there's more to
+    load: a next_page_token for Email/Drive, or Events' always-extendable
+    window) and the caller hasn't already filtered the list by search
+    (loading more while a filter's active would be confusing: which
+    page/window's worth of rows is the filter even matching against?)."""
     if show:
         list_view.append(ListItem(Label(label, classes="muted"), id=item_id))
 
@@ -938,6 +939,13 @@ class GoogleTUI(App):
         self._drive_folder_id = "root"
         self._drive_path = "/"
         self._drive_files: list[dict] = []
+        # Drive's pagination cursor for the page AFTER the currently-shown
+        # folder listing, or None if there isn't one — set by
+        # _fetch_drive_files (always reflects whichever folder was fetched
+        # most recently), read by action_load_more_drive and the "Load
+        # more" row _apply_drive_files_async/_apply_drive_search_async
+        # append when it's not None. Same shape as _email_next_page_token.
+        self._drive_next_page_token: str | None = None
         # Drive preview is debounced (see _drive_on_highlight) and memoised for
         # the session: highlighting a row costs a metadata round-trip + a file
         # download, so we neither fire one per arrow keypress nor re-fetch a
@@ -2609,6 +2617,8 @@ class GoogleTUI(App):
             self.action_load_more_email()
         elif cid == LOAD_MORE_EVENTS_ID:
             self.action_load_more_events()
+        elif cid == LOAD_MORE_DRIVE_ID:
+            self.action_load_more_drive()
         elif cid.startswith("t-"):
             tid = cid[2:]
             order = self._email_thread_order()
@@ -3285,7 +3295,13 @@ class GoogleTUI(App):
 
     # ---- drive tab ----
     def _fetch_drive_files(self, folder_id: str) -> list[dict]:
-        return gauth.list_drive(self.svc, folder_id)
+        files, next_page_token = gauth.list_drive(self.svc, folder_id)
+        # Plain attribute write from a (possibly) worker thread — same
+        # pattern as self._email_next_page_token. A folder navigation
+        # always fetches page 1 fresh, so this always reflects the
+        # CURRENTLY OPEN folder's next page, never a stale one.
+        self._drive_next_page_token = next_page_token
+        return files
 
     def _apply_drive_files(self, files: list[dict], folder_id: str, path: str) -> None:
         self._drive_folder_id = folder_id
@@ -3310,7 +3326,10 @@ class GoogleTUI(App):
         except Exception:
             query = ""
         visible = _fuzzy_filter_drive_files(files, query) if query.strip() else files
-        _append_drive_items(self.query_one("#drive-list"), visible, path)
+        drive_list = self.query_one("#drive-list")
+        _append_drive_items(drive_list, visible, path)
+        _append_load_more_row(drive_list, bool(self._drive_next_page_token) and not query.strip(),
+                              LOAD_MORE_DRIVE_ID, "↓ Load more files…")
 
     def _drive_load(self, folder_id: str = "root", path: str = "/") -> None:
         try:
@@ -3319,6 +3338,38 @@ class GoogleTUI(App):
             self.notify(f"Drive error: {ex}", severity="error")
             files = []
         self._apply_drive_files(files, folder_id, path)
+
+    def action_load_more_drive(self) -> None:
+        if not self._drive_next_page_token:
+            self.notify("No more files to load.", severity="warning")
+            return
+        if not self._online:
+            self.notify("Can't load more files while offline.", severity="warning")
+            return
+        self.run_worker(self._load_more_drive_thread, thread=True, exclusive=True, group="drive-loadmore")
+
+    def _load_more_drive_thread(self) -> None:
+        folder_id = self._drive_folder_id
+        token = self._drive_next_page_token
+        try:
+            new_files, next_page_token = gauth.list_drive(self.svc, folder_id, page_token=token)
+        except Exception as e:
+            self.call_from_thread(self.notify, f"Load more error: {e}", severity="error")
+            return
+        self._drive_next_page_token = next_page_token
+        if not new_files:
+            self.call_from_thread(self.notify, "No more files.", severity="warning")
+        # Dict merge, not list concat — same DuplicateIds hazard/fix as
+        # action_load_more_email's merge by threadId. Written to cache in
+        # this same deduplicated shape so "drive_listing" never persists a
+        # literal duplicate row either.
+        merged = {f["id"]: f for f in self._drive_files}
+        for f in new_files:
+            merged[f["id"]] = f
+        combined = list(merged.values())
+        if self._cache:
+            self._cache.put("drive_listing", folder_id, combined)
+        self.call_from_thread(self._apply_drive_files, combined, folder_id, self._drive_path)
 
     def _refresh_drive_list(self) -> None:
         # Debounced keystroke path for #drive-search — filters
@@ -3343,7 +3394,10 @@ class GoogleTUI(App):
         except Exception:
             query = ""
         visible = _fuzzy_filter_drive_files(files, query) if query.strip() else files
-        _append_drive_items(self.query_one("#drive-list"), visible, path)
+        drive_list = self.query_one("#drive-list")
+        _append_drive_items(drive_list, visible, path)
+        _append_load_more_row(drive_list, bool(self._drive_next_page_token) and not query.strip(),
+                              LOAD_MORE_DRIVE_ID, "↓ Load more files…")
 
     def _drive_open_selected(self) -> None:
         lst = self.query_one("#drive-list")

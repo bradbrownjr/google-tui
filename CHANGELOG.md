@@ -3,6 +3,28 @@
 Format: keep newest at top. One entry per meaningful change. Reference files
 touched and any breaking notes.
 
+## [2026-07-16] — Drive tab: "Load more" past the one-folder-page cap
+
+Closes the ROADMAP P3 pagination item — Email and Events landed earlier
+today (see the two entries below). `gauth.list_drive` now accepts
+`page_token` and returns `(files, next_page_token)` instead of a bare list
+(its 1 real caller, `main.py`'s `_fetch_drive_files`, plus
+`scripts/generate_screenshot.py`'s mock, updated to match) — needed adding
+`nextPageToken` to the `fields` mask explicitly, since Drive's partial-
+response filtering drops it otherwise. `_fetch_drive_files` stashes the
+token on `self._drive_next_page_token` (reset fresh on every folder
+navigation, since a page token is folder-specific); `_apply_drive_files_async`
+and `_apply_drive_search_async` append a "↓ Load more files…" row (via the
+same generalized `_append_load_more_row` Email/Events use) whenever it's set
+and no search filter is active. Selecting it (`action_load_more_drive` →
+`_load_more_drive_thread`) fetches the next page for the CURRENT folder and
+merges it into `self._drive_files` by file id — same dict-merge-not-concat
+DuplicateIds fix as Email's — writing the deduplicated result back to the
+`drive_listing` cache row too, not just the rendered list. Verified via an
+isolated `run_test` pilot (two fake pages, `gauth.list_drive` mocked)
+confirming the row appears after page 1, hides while filtered, and
+disappears after loading page 2 (no further `next_page_token`).
+
 ## [2026-07-16] — Events pane: "Load more" past the 3-week window
 
 Part of the ROADMAP P3 pagination item (Drive still open — see ROADMAP).

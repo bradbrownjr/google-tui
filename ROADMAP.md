@@ -7,12 +7,6 @@ just checking it off here, so ROADMAP.md only ever shows what's still open.
 
 ## P3 — Robustness
 
-- [ ] **Pagination / "load more" — Drive remains.** Email's 80-thread cap
-  and Events' 3-week window both now have a "Load more" row (see CHANGELOG
-  `[2026-07-16]`, both entries). Drive (one folder page, `max_results=200`
-  in `gauth.list_drive`, no continuation) still needs the same treatment —
-  via `files().list`'s own `pageToken`/`nextPageToken` (same shape as
-  Gmail's, not yet wired through `gauth.list_drive`).
 - [ ] **Offline mutation queue.** Reply/Forward/toggle-task are currently
   just disabled while offline (`self._require_online()`). Queuing them for
   automatic replay on reconnect would be a real feature, not a small one —

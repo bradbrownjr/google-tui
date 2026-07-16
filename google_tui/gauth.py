@@ -637,14 +637,20 @@ _MIME_EXPORT = {
 }
 
 
-def list_drive(svc, folder_id: str = "root", max_results: int = 200) -> list[dict]:
+def list_drive(svc, folder_id: str = "root", max_results: int = 200,
+                page_token: str | None = None) -> tuple[list[dict], str | None]:
+    """Lists one folder's children. Returns `(files, next_page_token)` —
+    `page_token` (from a prior call's `next_page_token`) fetches the page
+    after it, backing the Drive tab's "Load more" (main.py's
+    action_load_more_drive)."""
     d = svc["drive"]
     q = f"'{folder_id}' in parents and trashed=false"
-    resp = d.files().list(
-        q=q, pageSize=max_results,
-        fields="files(id,name,mimeType,modifiedTime,parents,size)",
-    ).execute()
-    return resp.get("files", [])
+    params = {"q": q, "pageSize": max_results,
+              "fields": "nextPageToken,files(id,name,mimeType,modifiedTime,parents,size)"}
+    if page_token:
+        params["pageToken"] = page_token
+    resp = d.files().list(**params).execute()
+    return resp.get("files", []), resp.get("nextPageToken")
 
 
 def get_file_metadata(svc, file_id: str) -> dict:
