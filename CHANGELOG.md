@@ -3,6 +3,64 @@
 Format: keep newest at top. One entry per meaningful change. Reference files
 touched and any breaking notes.
 
+## [2026-07-16] — Offline mutation queue: CREATE/DELETE (New Event, Add/Delete subtask, Delete task)
+
+Closes the last ROADMAP P3 offline-queue item — the CREATE/DELETE actions
+that the earlier PATCH-only queue couldn't handle because a created item has
+no server id to render against yet. New Event, Add subtask, Delete subtask,
+and Delete task now queue offline instead of being blocked by
+`_require_online()`.
+
+**Design — "reconcile at render" (`main.py`).** The queue
+(`self._pending_mutations`, already persisted in the `pending_mutation` cache
+category and reloaded on restart) is the single source of truth for
+not-yet-synced changes. `_events_cache`/`_tasks_cache` stay RAW server/cache
+data; every render overlays the queue: `shown = server_data −
+pending_deletes + pending_creates`. Because a create is popped from the queue
+the instant it replays (`_replay_pending_mutations_thread`), its placeholder
+stops being overlaid at the same moment the real row lands in the next
+refresh — no window where both show, and nothing to persist or hand-reconcile
+separately. New module helpers `_merge_pending_events`/`_merge_pending_tasks`
+(+ `_pending_event_creates`/`_pending_task_creates`/
+`_pending_deleted_task_keys`) do the overlay; both short-circuit to the input
+list when the queue is empty, so the common path is untouched. Overlay is
+applied at every render/lookup site: `_apply_mail_data_async`,
+`_apply_task_list_async`, `_apply_event_list_async`, `_selected_task`,
+`_open_event_by_id`, the TaskModal-open call, and (range-filtered, since
+`_event_day` is month-agnostic) `_apply_cal_month`/`_apply_cal_week`.
+
+**Temp ids.** `_new_temp_id()` mints a hyphen-free `tmp<uuid.hex>` placeholder
+(`_is_temp_id`); hyphen-free on purpose so the Tasks pane's
+`<list_id>-<task_id>` widget-id split (`_selected_task`) still recovers the id
+cleanly. Pending rows render with a `⏳ ` marker (`_PENDING_MARK`) so they
+don't misread as already-saved.
+
+**Replay.** `_replay_one_mutation` gained `create_event` (rebuilds
+date/datetime from the stored ISO strings), `create_task`, and `delete_task`
+arms. A create the user also toggled complete while offline carries
+`completed` on the mutation and replays as insert-then-`set_task_status` on
+the freshly-returned real id (insert can't set completion in one call).
+
+**The DELETE-targets-a-CREATE case** (the specific blocker the old ROADMAP
+entry called out): `_enqueue_task_delete` checks the target. A temp id →
+cancel the queued create (`_cancel_pending_create_task`); the task never
+reached Google, so nothing is sent. A real id → also cancel any queued
+child-creates parented to it (`_cancel_pending_child_creates`), since the
+server delete cascades and replaying those would only 404 or orphan. A
+temp-looking id with no matching create falls back to a normal delete rather
+than being swallowed. Toggling a not-yet-synced task routes through
+`_toggle_pending_task` instead of enqueuing a doomed `toggle_task`.
+
+**UI wiring.** `action_new_event` dropped its `_require_online()` gate;
+`CreateEventModal._try_create` queues via `_enqueue_event_create` and
+dismisses `"queued"`, which `_on_create_event_result` handles with a
+cache-only re-render (`_refresh_event_list` + new `_rebuild_active_cal_grid`)
+— no network refresh to fail. TaskModal's `_add_subtask`/
+`_delete_highlighted_subtask`/`_confirm_delete_task`/`_toggle_highlighted_subtask`
+gained offline branches (optimistic local list edit + queue). Verified with
+isolated unit tests over the overlay math, the queue helpers (temp/real
+delete, child-create cleanup, toggle-pending), and replay dispatch.
+
 ## [2026-07-16] — Offline mutation queue: Mark Unread + Trash/Archive/Labels, plus per-item cancel
 
 Widens the ROADMAP P3 offline mutation queue further (see the same-day

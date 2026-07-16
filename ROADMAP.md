@@ -5,23 +5,6 @@ Update this file as items are completed — move the completed item's entry
 into CHANGELOG.md under a new dated section (`## [YYYY-MM-DD]`) instead of
 just checking it off here, so ROADMAP.md only ever shows what's still open.
 
-## P3 — Robustness
-
-- [ ] **Offline mutation queue — CREATE-style actions still blocked.**
-  Reply/Reply All/Forward/New-compose send, task-toggle (incl. subtasks),
-  Mark Unread, and ThreadModal's Trash/Archive/Labels all queue for replay
-  on reconnect instead of being blocked, and `PendingMutationsModal` now
-  supports per-item cancel (Delete key) (see CHANGELOG `[2026-07-16]`, two
-  entries). New Event and TaskModal's Add/Delete subtask + Delete task are
-  still just blocked offline — genuinely out of scope for the same queue
-  design: CREATEs (New Event, Add subtask) need a temporary local id before
-  they have a real one so they can show up in their list immediately, which
-  nothing in this codebase does yet (compose/send sidesteps the problem by
-  not showing anything locally, which doesn't work for a visible calendar/
-  subtask list); and a DELETE's target might itself be a queued CREATE,
-  which needs the CREATE-side temp-id work to exist first before it can be
-  designed.
-
 ## P4 — Nice-to-have
 
 - [ ] **Week view sub-hour granularity** (30/15-minute rows) — the current
@@ -130,6 +113,11 @@ just checking it off here, so ROADMAP.md only ever shows what's still open.
   cache.py`, SQLite), `Header.sub_title` Connecting/Synced/Offline
   indicator, mutating actions disabled while offline, Drive preview reads
   from cache when offline.
+- [x] **Offline mutation queue — full CREATE/DELETE.** New Event, Add
+  subtask, Delete subtask, Delete task now queue offline (temp-id placeholders
+  overlaid at render, replayed on reconnect; a delete whose target is itself a
+  queued create just cancels the create). Completes the P3 queue work — see
+  CHANGELOG `[2026-07-16]`.
 - [x] **Settings tab** (`Ctrl+5`): encrypt-at-rest toggle (off by default),
   passphrase-at-launch vs. local-keyfile key method, clear-cache button.
   Small "browse" cache rows bulk-decrypt cheaply; large "content" rows

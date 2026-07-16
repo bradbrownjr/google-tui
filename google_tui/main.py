@@ -271,6 +271,26 @@ def _mk_id(prefix: str, raw: str) -> str:
     return f"{prefix}-{safe}"
 
 
+# ---- offline CREATE temp ids -----------------------------------------------
+# An event/task created while offline has no server id yet, but still needs to
+# show up in its list immediately. We give it a client-side placeholder id
+# until a reconnect replays the create and Google hands back the real id (see
+# _replay_one_mutation's create_* branches, which reconcile temp -> real).
+_TEMP_ID_PREFIX = "tmp"
+
+
+def _new_temp_id() -> str:
+    """Hyphen-free (uuid4().hex carries no dashes) on purpose: the Tasks pane
+    packs `<list_id>-<task_id>` into one widget id and splits on the LAST
+    hyphen to recover the task id (see _selected_task), so a hyphen inside the
+    id half would corrupt that parse."""
+    return _TEMP_ID_PREFIX + uuid.uuid4().hex
+
+
+def _is_temp_id(x: object) -> bool:
+    return isinstance(x, str) and x.startswith(_TEMP_ID_PREFIX)
+
+
 def _is_not_found_error(e: Exception) -> bool:
     """True if `e` is Google rejecting a request because its target (thread,
     task) no longer exists — as opposed to a transient network/API error.
@@ -293,6 +313,9 @@ _PENDING_MUTATION_LABELS = {
     "trash": "Trash",
     "archive": "Archive",
     "modify_labels": "Apply labels",
+    "create_event": "New event",
+    "create_task": "Add subtask",
+    "delete_task": "Delete task",
 }
 
 
@@ -313,6 +336,10 @@ def _pending_mutation_summary(mutation: dict) -> str:
     if mutation["type"] == "modify_labels":
         n = len(mutation.get("add", [])) + len(mutation.get("remove", []))
         return f"{label}: {n} label(s)"
+    if mutation["type"] == "create_event":
+        return f"{label}: {mutation.get('summary', '')}"
+    if mutation["type"] == "create_task":
+        return f"{label}: {mutation.get('title', '')}"
     return label
 
 
@@ -645,11 +672,18 @@ def _child_tasks(task: dict, all_tasks: list[dict]) -> list[dict]:
     return [t for t in all_tasks if t.get("_list") == lid and t.get("parent") == tid]
 
 
+# Leading marker on a list row whose item is an offline create not yet synced
+# to Google (see _merge_pending_* / _TEMP_ID_PREFIX). Purely informational — a
+# normal-looking row would misleadingly read as "already saved".
+_PENDING_MARK = "⏳ "
+
+
 def _append_task_items(task_list, tasks) -> None:
     # Same extend()-once rationale as _append_email_items above.
     task_list.extend(
         ListItem(
-            Label(f"{'[x]' if t.get('status') == 'completed' else '[ ]'} {t.get('title','')[:50]}"),
+            Label(f"{_PENDING_MARK if t.get('_pending') else ''}"
+                  f"{'[x]' if t.get('status') == 'completed' else '[ ]'} {t.get('title','')[:50]}"),
             id=_mk_id("k", f"{t['_list']}-{t['id']}"))
         for t in tasks
     )
@@ -660,7 +694,8 @@ def _append_event_items(event_list, events) -> None:
     # above.
     event_list.extend(
         ListItem(
-            Label(f"{_fmt_date(e.get('start', {}).get('dateTime') or e.get('start', {}).get('date', ''))}"
+            Label(f"{_PENDING_MARK if e.get('_pending') else ''}"
+                  f"{_fmt_date(e.get('start', {}).get('dateTime') or e.get('start', {}).get('date', ''))}"
                   f"  {e.get('summary','')[:40]}"),
             id=_mk_id("e", e["id"]))
         for e in events
@@ -688,6 +723,103 @@ def _event_day(e: dict) -> int | None:
         return dt.datetime.fromisoformat(s.replace("Z", "+00:00")).day
     except Exception:
         return None
+
+
+# ---- offline CREATE/DELETE reconciliation ----------------------------------
+# The offline queue (self._pending_mutations) is the single source of truth for
+# not-yet-synced changes. Rather than mutate the cached event/task lists and
+# then have to un-mutate them on replay, every render overlays the queue onto
+# the raw server/cache data: shown = server_data - pending_deletes +
+# pending_creates. Because a create is removed from the queue the instant it
+# replays (see _replay_pending_mutations_thread), its temp row simply stops
+# being overlaid at the same moment the real row arrives in the next refresh —
+# no window where both show, and nothing to persist separately (the queue
+# already survives restarts via the "pending_mutation" cache category).
+
+def _pending_event_creates(pending: dict) -> list[dict]:
+    """Optimistic event dicts rebuilt from queued `create_event` mutations,
+    shaped exactly like a Calendar event resource so the Events pane and the
+    Month/Week grids render them with no special case."""
+    out = []
+    for m in pending.values():
+        if m.get("type") != "create_event":
+            continue
+        if m.get("all_day"):
+            start = {"date": m["start"]}
+            end = {"date": m["end"]}
+        else:
+            start = {"dateTime": m["start"]}
+            end = {"dateTime": m["end"]}
+        out.append({"id": m["temp_id"], "summary": m.get("summary", ""),
+                    "start": start, "end": end, "_pending": True})
+    return out
+
+
+def _pending_task_creates(pending: dict) -> list[dict]:
+    """Optimistic task dicts rebuilt from queued `create_task` mutations,
+    shaped like a Google Tasks resource (+ this app's `_list` tag). A create
+    the user has since toggled complete carries `completed` on the mutation
+    (see _toggle_pending_task); reflect that in the placeholder's status."""
+    out = []
+    for m in pending.values():
+        if m.get("type") != "create_task":
+            continue
+        status = "completed" if m.get("completed") else "needsAction"
+        out.append({"id": m["temp_id"], "title": m.get("title", ""),
+                    "status": status, "parent": m.get("parent"),
+                    "notes": "", "_list": m["list_id"], "_pending": True})
+    return out
+
+
+def _pending_deleted_task_keys(pending: dict) -> set:
+    return {(m["list_id"], m["task_id"]) for m in pending.values()
+            if m.get("type") == "delete_task"}
+
+
+def _event_start_key(e: dict) -> str:
+    s = e.get("start", {})
+    return s.get("dateTime") or s.get("date") or ""
+
+
+def _merge_pending_events(events: list[dict], pending: dict) -> list[dict]:
+    """Server/cache events with queued offline creates overlaid. Re-sorted by
+    start only when something was actually added, so the common (empty-queue)
+    path returns the input untouched — no risk to the server's existing order."""
+    creates = _pending_event_creates(pending)
+    if not creates:
+        return list(events)
+    merged = list(events) + creates
+    merged.sort(key=_event_start_key)
+    return merged
+
+
+def _merge_pending_tasks(tasks: list[dict], pending: dict) -> list[dict]:
+    """Server/cache tasks with queued offline deletes removed and queued
+    offline (sub)task creates added."""
+    deleted = _pending_deleted_task_keys(pending)
+    creates = _pending_task_creates(pending)
+    if not deleted and not creates:
+        return list(tasks)
+    kept = [t for t in tasks if (t.get("_list"), t.get("id")) not in deleted]
+    return kept + creates
+
+
+def _event_date_obj(e: dict) -> dt.date | None:
+    raw = _event_start_key(e)
+    try:
+        return dt.datetime.fromisoformat(raw.replace("Z", "+00:00")).date()
+    except Exception:
+        return None
+
+
+def _event_in_month(e: dict, year: int, month: int) -> bool:
+    d = _event_date_obj(e)
+    return d is not None and d.year == year and d.month == month
+
+
+def _event_in_week(e: dict, week_start: dt.date) -> bool:
+    d = _event_date_obj(e)
+    return d is not None and week_start <= d < week_start + dt.timedelta(days=7)
 
 
 def _is_previewable(mime: str) -> bool:
@@ -1867,6 +1999,81 @@ class GoogleTUI(App):
         self._render_sub_title()
         return key
 
+    # ---- offline CREATE/DELETE overlay (see _merge_pending_* module docs) ----
+    def _reconcile_events(self, events: list[dict]) -> list[dict]:
+        return _merge_pending_events(events, self._pending_mutations)
+
+    def _reconcile_tasks(self, tasks: list[dict]) -> list[dict]:
+        return _merge_pending_tasks(tasks, self._pending_mutations)
+
+    def _enqueue_event_create(self, title: str, start, end, all_day: bool) -> None:
+        """Queue an offline New-Event. `start`/`end` are date/datetime objects
+        from CreateEventModal; stored as ISO strings so the mutation is plain-
+        JSON (the queue is persisted to the cache as JSON)."""
+        self._enqueue_mutation({
+            "type": "create_event", "temp_id": _new_temp_id(),
+            "summary": title, "all_day": all_day,
+            "start": start.isoformat(), "end": end.isoformat(),
+        })
+        self.notify("Offline — queued, will create once reconnected.")
+
+    def _enqueue_task_create(self, list_id: str, title: str, parent: str | None) -> str:
+        temp_id = _new_temp_id()
+        self._enqueue_mutation({
+            "type": "create_task", "temp_id": temp_id,
+            "list_id": list_id, "title": title, "parent": parent,
+        })
+        self.notify("Offline — queued, will add once reconnected.")
+        return temp_id
+
+    def _enqueue_task_delete(self, list_id: str, task_id: str) -> None:
+        """Queue an offline (sub)task delete. If the target is itself a
+        not-yet-synced offline create (temp id), just cancel that create — the
+        task never reached Google, so there is nothing to delete server-side
+        (ROADMAP: 'a DELETE's target might itself be a queued CREATE'). For a
+        real task, also cancel any queued child-creates parented to it: the
+        server delete cascades to children, so replaying those creates would
+        only 404 or resurrect orphans under a since-deleted parent."""
+        if _is_temp_id(task_id):
+            if self._cancel_pending_create_task(list_id, task_id):
+                return
+            # No matching create (e.g. a real id that merely looks temp) —
+            # fall through and queue a normal delete rather than swallow it.
+        self._cancel_pending_child_creates(list_id, task_id)
+        self._enqueue_mutation({"type": "delete_task", "list_id": list_id, "task_id": task_id})
+
+    def _cancel_pending_create_task(self, list_id: str, temp_id: str) -> bool:
+        for key, m in list(self._pending_mutations.items()):
+            if (m.get("type") == "create_task" and m.get("list_id") == list_id
+                    and m.get("temp_id") == temp_id):
+                self._cancel_mutation(key)
+                # A subtask created then deleted offline may itself have been
+                # some other queued create's parent — clean those up too.
+                self._cancel_pending_child_creates(list_id, temp_id)
+                return True
+        return False
+
+    def _cancel_pending_child_creates(self, list_id: str, parent_id: str) -> None:
+        for key, m in list(self._pending_mutations.items()):
+            if (m.get("type") == "create_task" and m.get("list_id") == list_id
+                    and m.get("parent") == parent_id):
+                self._cancel_mutation(key)
+
+    def _toggle_pending_task(self, list_id: str, temp_id: str, done: bool) -> bool:
+        """Toggle-complete on a task that's still only a queued offline create:
+        there is no server task to PATCH, so record the desired completion on
+        the create mutation itself. _replay_one_mutation applies it right after
+        the insert; _pending_task_creates reflects it in the placeholder now."""
+        for key, m in self._pending_mutations.items():
+            if (m.get("type") == "create_task" and m.get("list_id") == list_id
+                    and m.get("temp_id") == temp_id):
+                m["completed"] = done
+                if self._cache:
+                    self._cache.put("pending_mutation", key, m)
+                self._render_sub_title()
+                return True
+        return False
+
     def _cancel_mutation(self, key: str) -> None:
         """Drop a queued mutation (PendingMutationsModal's Delete action)
         without ever sending it. Does NOT undo any optimistic local update
@@ -1906,6 +2113,25 @@ class GoogleTUI(App):
         elif t == "modify_labels":
             gauth.modify_labels(self.svc, mutation["thread_id"],
                                add=mutation.get("add"), remove=mutation.get("remove"))
+        elif t == "create_event":
+            all_day = mutation.get("all_day", False)
+            if all_day:
+                start: object = dt.date.fromisoformat(mutation["start"])
+                end: object = dt.date.fromisoformat(mutation["end"])
+            else:
+                start = dt.datetime.fromisoformat(mutation["start"])
+                end = dt.datetime.fromisoformat(mutation["end"])
+            gauth.create_event(self.svc, mutation["summary"], start, end, all_day=all_day)
+        elif t == "create_task":
+            created = gauth.create_task(self.svc, mutation["list_id"], mutation["title"],
+                                        parent=mutation.get("parent"))
+            # If the user toggled this not-yet-synced task complete while still
+            # offline (see _toggle_pending_task), apply that now that it has a
+            # real id — insert() can't set completion status in one call.
+            if mutation.get("completed") and created.get("id"):
+                gauth.set_task_status(self.svc, mutation["list_id"], created["id"], True)
+        elif t == "delete_task":
+            gauth.delete_task(self.svc, mutation["list_id"], mutation["task_id"])
 
     def _replay_pending_mutations_thread(self) -> None:
         """Runs after _apply_live_refresh sees a successful reconnect. Oldest
@@ -2168,23 +2394,29 @@ class GoogleTUI(App):
         _append_load_more_row(email_list, bool(self._email_next_page_token) and not email_query.strip(),
                               LOAD_MORE_EMAIL_ID, "↓ Load more messages…")
 
+        # Caches stay RAW (server/cache data only); the offline queue is
+        # overlaid at render time so a not-yet-synced create/delete shows
+        # immediately and disappears the instant it replays — see the
+        # _merge_pending_* module docs.
         self._events_cache = events
+        disp_events = self._reconcile_events(events)
         try:
             events_query = self.query_one("#events-search", Input).value
         except Exception:
             events_query = ""
-        visible_events = _fuzzy_filter_events(events, events_query) if events_query.strip() else events
+        visible_events = _fuzzy_filter_events(disp_events, events_query) if events_query.strip() else disp_events
         event_list = self.query_one("#event-list")
         _append_event_items(event_list, visible_events)
         _append_load_more_row(event_list, not events_query.strip(),
                               LOAD_MORE_EVENTS_ID, "↓ Load more events…")
 
         self._tasks_cache = tasks
+        disp_tasks = self._reconcile_tasks(tasks)
         try:
             tasks_query = self.query_one("#tasks-search", Input).value
         except Exception:
             tasks_query = ""
-        visible_tasks = _fuzzy_filter_tasks(tasks, tasks_query) if tasks_query.strip() else tasks
+        visible_tasks = _fuzzy_filter_tasks(disp_tasks, tasks_query) if tasks_query.strip() else disp_tasks
         _append_task_items(self.query_one("#task-list"), visible_tasks)
 
     def _refresh_all_thread(self) -> None:
@@ -2671,7 +2903,10 @@ class GoogleTUI(App):
             return None
         raw = cid[2:]  # "<list>-<id>"
         lid, _, tid = raw.rpartition("-")
-        for t in getattr(self, "_tasks_cache", []):
+        # Reconciled, not raw _tasks_cache: an offline-created (temp-id) task
+        # is only in the overlay, but the user must still be able to select it
+        # (e.g. to delete it, which cancels its queued create).
+        for t in self._reconcile_tasks(getattr(self, "_tasks_cache", [])):
             if t.get("_list") == lid and t.get("id") == tid:
                 return t
         return None
@@ -2696,6 +2931,7 @@ class GoogleTUI(App):
         await self.query_one("#task-list").clear()
         if gen != self._tasks_apply_gen:
             return  # superseded by a newer apply call
+        tasks = self._reconcile_tasks(tasks)  # overlay offline creates/deletes
         try:
             query = self.query_one("#tasks-search", Input).value
         except Exception:
@@ -2709,13 +2945,17 @@ class GoogleTUI(App):
             return
         done = t.get("status") != "completed"
         if not self._online:
-            self._enqueue_mutation(
-                {"type": "toggle_task", "list_id": t["_list"], "task_id": t["id"], "done": done})
-            # Optimistic local update: t IS the dict inside self._tasks_cache
-            # (_selected_task returns it by reference, not a copy), so this
-            # flips the checkbox immediately — the same feedback the online
-            # path gets from _refresh_all_thread, which isn't available now.
-            t["status"] = "completed" if done else "needsAction"
+            if _is_temp_id(t["id"]):
+                # Task is itself a not-yet-synced offline create: record the
+                # desired completion on the queued create rather than enqueue a
+                # toggle against an id that doesn't exist server-side yet.
+                self._toggle_pending_task(t["_list"], t["id"], done)
+            else:
+                self._enqueue_mutation(
+                    {"type": "toggle_task", "list_id": t["_list"], "task_id": t["id"], "done": done})
+            # Re-render from the queue overlay; a temp task is rebuilt fresh
+            # each render (see _pending_task_creates), so the flipped state
+            # comes back through _toggle_pending_task, not this local dict.
             self._refresh_task_list()
             self.notify("Offline — queued, will apply once reconnected.")
             return
@@ -2751,6 +2991,7 @@ class GoogleTUI(App):
         await self.query_one("#event-list").clear()
         if gen != self._events_apply_gen:
             return  # superseded by a newer apply call
+        events = self._reconcile_events(events)  # overlay offline creates
         try:
             query = self.query_one("#events-search", Input).value
         except Exception:
@@ -2769,7 +3010,8 @@ class GoogleTUI(App):
         return cid[2:] if cid.startswith("e-") else None
 
     def _open_event_by_id(self, eid: str) -> None:
-        for e in getattr(self, "_events_cache", []):
+        # Reconciled so an offline-created (temp-id) event can be opened too.
+        for e in self._reconcile_events(getattr(self, "_events_cache", [])):
             if e.get("id") == eid:
                 self.push_screen(EventModal(e))
                 return
@@ -2827,8 +3069,12 @@ class GoogleTUI(App):
         elif cid.startswith("k-"):
             t = self._selected_task()
             if t:
-                self.push_screen(TaskModal(self.svc, t, getattr(self, "_tasks_cache", [])),
-                                  self._on_task_modal_result)
+                # Reconciled task list so a pending offline subtask create
+                # shows up as a child inside the modal (and a pending delete
+                # is already filtered out).
+                self.push_screen(
+                    TaskModal(self.svc, t, self._reconcile_tasks(getattr(self, "_tasks_cache", []))),
+                    self._on_task_modal_result)
         elif cid.startswith("d-") or cid == "d-up":
             self._drive_open_selected()
         elif cid.startswith("n-"):
@@ -3256,6 +3502,12 @@ class GoogleTUI(App):
         grid = self.query_one("#cal-grid")
         grid.clear(columns=True)
         grid.add_columns("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+        # Overlay offline-created events that fall in THIS month. Range-filtered
+        # explicitly because _event_day returns a day-of-month only (month-
+        # agnostic), so a pending event in another month would otherwise land
+        # on the same-numbered cell here.
+        events = list(events) + [e for e in _pending_event_creates(self._pending_mutations)
+                                 if _event_in_month(e, self._cal_year, self._cal_month)]
         by_day: dict[int, list[dict]] = {}
         for e in events:
             d = _event_day(e)
@@ -3291,6 +3543,10 @@ class GoogleTUI(App):
         grid.add_column("Hour")
         for label in ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"):
             grid.add_column(label)
+        # Overlay offline-created events falling in the displayed week (all-day
+        # ones are skipped just below, same as real all-day events).
+        events = list(events) + [e for e in _pending_event_creates(self._pending_mutations)
+                                 if _event_in_week(e, self._cal_week_start)]
         cells: dict[tuple[int, int], list[dict]] = {}
         for e in events:
             s = e.get("start", {}).get("dateTime")
@@ -3438,8 +3694,8 @@ class GoogleTUI(App):
             default_date = dt.date.today()
         else:
             return
-        if not self._require_online():
-            return
+        # No online gate: offline, the modal queues the create (with a temp id)
+        # instead of blocking — see CreateEventModal._try_create.
         self.push_screen(CreateEventModal(self.svc, default_date), self._on_create_event_result)
 
     def _cal_default_day(self) -> dt.date:
@@ -3471,12 +3727,37 @@ class GoogleTUI(App):
         # before the modal is actually popped).
         if not created:
             return
+        if created == "queued":
+            # Offline: the create is already in the queue. Re-render from cache
+            # + overlay — NO network refresh (which would just fail and toast a
+            # spurious error). The Events pane and the active calendar grid both
+            # pick up the pending event via their reconcile-at-render overlay.
+            self._refresh_event_list()
+            self._rebuild_active_cal_grid()
+            return
         try:
             cal_active_week = self.query_one("#cal-tabs", TabbedContent).active == "cal-tab-week"
         except Exception:
             cal_active_week = False
         self.run_worker(lambda: self._after_create_event_thread(cal_active_week),
                          thread=True, exclusive=True)
+
+    def _rebuild_active_cal_grid(self) -> None:
+        """Re-apply the currently-active calendar grid (Month or Week) from
+        cache, no network fetch — used after an offline create so the pending
+        event appears in the grid too. _apply_cal_month/_apply_cal_week overlay
+        the queue themselves, so this just replays the cached base data."""
+        if not self._cache:
+            return
+        try:
+            if self.query_one("#cal-tabs", TabbedContent).active == "cal-tab-week":
+                key = self._cal_week_start.isoformat()
+                self._apply_cal_week(self._cache.get("cal_week", key) or [])
+            else:
+                key = f"{self._cal_year:04d}-{self._cal_month:02d}"
+                self._apply_cal_month(self._cache.get("cal_month", key) or [])
+        except Exception:
+            pass  # Calendar tab not mounted / grid not composed yet
 
     def _after_create_event_thread(self, cal_active_week: bool) -> None:
         """Runs on its own worker thread (see AGENTS.md's fetch/apply-split
@@ -5482,6 +5763,14 @@ class CreateEventModal(ModalScreen):
                 self.notify("End time must be after start time", severity="warning")
                 return
         self._submitting = True
+        if not self.app._online:
+            # Offline: queue with a temp id instead of blocking. The base
+            # screen's reconcile-at-render overlay shows it immediately; a
+            # reconnect replays the real insert (see _enqueue_event_create /
+            # _replay_one_mutation's create_event branch).
+            self.app._enqueue_event_create(title, start, end, all_day)
+            self.dismiss("queued")
+            return
         self.run_worker(lambda: self._create_thread(title, start, end, all_day),
                          thread=True, exclusive=True, group="event-create")
 
@@ -5570,7 +5859,8 @@ class TaskModal(ModalScreen):
         await lst.clear()
         lst.extend(
             ListItem(
-                Label(f"{'[x]' if s.get('status') == 'completed' else '[ ]'} "
+                Label(f"{_PENDING_MARK if s.get('_pending') else ''}"
+                      f"{'[x]' if s.get('status') == 'completed' else '[ ]'} "
                       f"{s.get('title','')[:50]}"),
                 id=_mk_id("sk", s["id"]))
             for s in self.subtasks
@@ -5618,13 +5908,25 @@ class TaskModal(ModalScreen):
 
     # ---- add ----
     def _add_subtask(self) -> None:
-        if not self.app._require_online():
-            return
         inp = self.query_one("#tk-subtask-input", Input)
         title = inp.value.strip()
         if not title:
             return
         inp.value = ""
+        if not self.app._online:
+            # Queue with a temp id and show it right away. The same temp id is
+            # what a later offline delete cancels, and what a reconnect
+            # replaces with the real subtask (see _enqueue_task_create).
+            temp_id = self.app._enqueue_task_create(
+                self.task_data["_list"], title, self.task_data["id"])
+            self.subtasks = self.subtasks + [{
+                "id": temp_id, "title": title, "status": "needsAction",
+                "parent": self.task_data["id"], "notes": "",
+                "_list": self.task_data["_list"], "_pending": True,
+            }]
+            self._mutated = True
+            self.run_worker(self._render_subtasks(), exclusive=True, group="task-subtask")
+            return
         self.run_worker(lambda: self._add_subtask_thread(title),
                          thread=True, exclusive=True, group="task-subtask")
 
@@ -5643,10 +5945,16 @@ class TaskModal(ModalScreen):
             return
         done = s.get("status") != "completed"
         if not self.app._online:
-            self.app._enqueue_mutation({
-                "type": "toggle_task", "list_id": self.task_data["_list"],
-                "task_id": s["id"], "done": done,
-            })
+            if _is_temp_id(s["id"]):
+                # Toggling a subtask that's itself a not-yet-synced offline
+                # create: no server task to PATCH, so record the desired state
+                # on the queued create instead of enqueuing a doomed toggle.
+                self.app._toggle_pending_task(self.task_data["_list"], s["id"], done)
+            else:
+                self.app._enqueue_mutation({
+                    "type": "toggle_task", "list_id": self.task_data["_list"],
+                    "task_id": s["id"], "done": done,
+                })
             # s IS the dict inside self.app._tasks_cache (self.subtasks is
             # built by _child_tasks filtering the SAME objects, not copies),
             # so this flips the checkbox in both this modal and the app's
@@ -5673,10 +5981,17 @@ class TaskModal(ModalScreen):
 
     # ---- delete ----
     def _delete_highlighted_subtask(self) -> None:
-        if not self.app._require_online():
-            return
         s = self._highlighted_subtask()
         if not s:
+            return
+        if not self.app._online:
+            # Queue the delete (or, if this subtask is itself a queued offline
+            # create, just cancel that create — _enqueue_task_delete decides).
+            self.app._enqueue_task_delete(self.task_data["_list"], s["id"])
+            self.subtasks = [x for x in self.subtasks if x.get("id") != s["id"]]
+            self._mutated = True
+            self.run_worker(self._render_subtasks(), exclusive=True, group="task-subtask")
+            self.app.notify("Offline — queued, will delete once reconnected.")
             return
         # No confirm dialog for a subtask delete — consistent with this
         # app's existing no-confirm precedent (AGENTS.md §7) and low stakes
@@ -5694,12 +6009,11 @@ class TaskModal(ModalScreen):
         self._reload_subtasks()
 
     def _confirm_delete_task(self) -> None:
-        if not self.app._require_online():
-            return
         # Unlike a subtask, deleting the TOP-LEVEL task also cascades to
         # every subtask under it server-side and closes this whole modal —
         # a lightweight confirm here is worth the one extra keypress even
-        # though nothing else in this app confirms before a mutation.
+        # though nothing else in this app confirms before a mutation. Still
+        # confirmed offline (the queued delete cascades the same on replay).
         n = len(self.subtasks)
         msg = "Delete this task"
         msg += f" and its {n} subtask{'s' if n != 1 else ''}?" if n else "?"
@@ -5707,6 +6021,14 @@ class TaskModal(ModalScreen):
 
     def _on_delete_task_confirm(self, confirmed: bool | None) -> None:
         if not confirmed:
+            return
+        if not self.app._online:
+            # Queue the delete (or cancel this task's own queued create if it's
+            # a temp item), then close — the queued delete cascades to subtasks
+            # server-side on replay, same as the online path.
+            self.app._enqueue_task_delete(self.task_data["_list"], self.task_data["id"])
+            self.app.notify("Offline — queued, will delete once reconnected.")
+            self.call_after_refresh(lambda: self.dismiss(True))
             return
         self.call_after_refresh(self._start_delete_task)
 
