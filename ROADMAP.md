@@ -9,8 +9,6 @@ just checking it off here, so ROADMAP.md only ever shows what's still open.
 
 - [ ] **Pagination / "load more".** Email caps at 80 threads; events at 3
   weeks; Drive at one folder page. Add lazy load on scroll / a "More" button.
-- [ ] **Token refresh handling.** If `~/.hermes/google_token.json` expires
-  without a `refresh_token`, show a guided re-auth message.
 - [ ] **Offline mutation queue.** Reply/Forward/toggle-task are currently
   just disabled while offline (`self._require_online()`). Queuing them for
   automatic replay on reconnect would be a real feature, not a small one —

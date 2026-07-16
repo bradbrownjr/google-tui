@@ -365,6 +365,22 @@ Other tabs:
   Cloud apps — SETUP.md §4) and adding a new scope to an existing token
   (e.g. `contacts.readonly` for P1 M5).
 
+  `_diagnose_setup` only runs once, at startup — it can't catch a
+  refresh_token that dies hours into an already-running session (this app
+  is routinely left running for days). `_live_refresh_thread` (2026-07-16)
+  covers that case too: `_google_auth_broken_detail()` calls
+  `gauth.get_credentials()` fresh and specifically catches
+  `google.auth.exceptions.RefreshError` (a dead/missing refresh_token or a
+  revoked grant) as distinct from `_google_creds_ok()`'s existing catch-all,
+  which can't tell a dead token apart from a plain network hiccup. If it
+  IS a dead token, `_live_refresh_thread` skips its five (doomed) fetch
+  attempts entirely and shows one notify pointing at Settings → General →
+  "Re-authorize Google account" instead of the five near-identical raw
+  `RefreshError` strings a per-section catch used to produce. Runs at the
+  top of `_live_refresh_thread`, so it covers all three callers (startup,
+  manual `Ctrl+R`, and the post-mutation refresh after a task toggle)
+  from one place.
+
   **Deliberately NOT** `InstalledAppFlow.run_local_server()` (spawn a local
   HTTP server, auto-open a system browser, block until the redirect hits
   it) — this app commonly runs on a **headless VM** or an underpowered

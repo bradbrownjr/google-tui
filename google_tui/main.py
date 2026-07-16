@@ -23,6 +23,7 @@ from functools import cached_property
 from pathlib import Path
 
 import platformdirs
+from google.auth.exceptions import RefreshError
 from rapidfuzz import fuzz
 from textual import events
 from textual.app import App, ComposeResult
@@ -1516,6 +1517,34 @@ class GoogleTUI(App):
         except Exception:
             return False
 
+    def _google_auth_broken_detail(self) -> str | None:
+        """Distinguishes a dead refresh_token (missing, or revoked/expired by
+        Google — both raise RefreshError from Credentials.refresh()) from a
+        generic network/API hiccup, so _live_refresh_thread can show ONE
+        clear, actionable message instead of the same cryptic RefreshError
+        string repeated once per data source — mail/labels/calendar/drive
+        each independently touch `self.svc`/gauth.services(). Returns the
+        exception detail if this IS an auth problem; None for anything else
+        (including no problem at all), which leaves the existing per-section
+        try/except in _live_refresh_thread to report whatever it actually
+        was, same as before this check existed.
+        """
+        try:
+            gauth.get_credentials()
+            return None
+        except RefreshError as e:
+            return str(e)
+        except Exception:
+            return None
+
+    def _notify_reauth_needed(self, detail: str) -> None:
+        self.notify(
+            "Google sign-in expired and couldn't refresh automatically "
+            f"({detail}). Go to Settings (F8) -> General -> "
+            "'Re-authorize Google account' to fix this.",
+            severity="error", timeout=12,
+        )
+
     def _on_onboarding_result(self, _result) -> None:
         self.call_after_refresh(self._continue_startup)
 
@@ -1616,6 +1645,12 @@ class GoogleTUI(App):
         self._cache.put_many("tasklist", {tl["id"]: tl for tl in tasklists})
 
     def _live_refresh_thread(self) -> None:
+        auth_broken = self._google_auth_broken_detail()
+        if auth_broken:
+            self.call_from_thread(self._notify_reauth_needed, auth_broken)
+            self.call_from_thread(
+                self._apply_live_refresh, False, None, None, None, None, None, None)
+            return
         mail = cal_month = cal_week = drive_files = labels = news_entries = None
         ok = True
         try:

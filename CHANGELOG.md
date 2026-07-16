@@ -3,6 +3,34 @@
 Format: keep newest at top. One entry per meaningful change. Reference files
 touched and any breaking notes.
 
+## [2026-07-16] — Guided re-auth message when the Google refresh_token is dead
+
+Closes the ROADMAP P3 item "Token refresh handling." A missing or
+revoked/expired `refresh_token` in `~/.hermes/google_token.json` makes
+`Credentials.refresh()` raise `google.auth.exceptions.RefreshError` —
+previously `_live_refresh_thread` (`main.py`) just caught this as a generic
+`Exception` in each of its five independent try/except blocks (mail,
+labels, cal_month, cal_week, drive), so the user saw up to five near-
+identical raw exception strings ("Refresh error: The credentials do not
+contain the necessary fields...") with no pointer to what to actually do.
+`_live_refresh_thread` now checks `_google_auth_broken_detail()` first —
+a fresh `gauth.get_credentials()` call that specifically catches
+`RefreshError` (as opposed to `_google_creds_ok()`'s existing catch-all,
+which can't distinguish a dead token from a plain network hiccup) — and if
+the token really is dead, shows ONE actionable notify pointing at Settings
+→ General → "Re-authorize Google account" (the existing in-app OAuth flow,
+`GoogleReauthModal`) and marks the app Offline, skipping all five doomed
+fetch attempts instead of running and failing every one of them. A non-auth
+exception (network error, quota, etc.) falls through unchanged to the
+existing per-section handling. Covers all three paths that call
+`_live_refresh_thread` (startup, manual Ctrl+R, and the post-mutation
+refresh after a task toggle) since they all go through this one function.
+Verified via an isolated `run_test` pilot (`gauth.get_credentials` patched
+to raise `RefreshError`, `GoogleTUI.notify` patched to a call-recording
+mock) confirming exactly one guided notify fires and `self._online` goes
+`False`; a second check confirms a non-`RefreshError` exception is not
+misreported as an auth problem.
+
 ## [2026-07-16] — F1..F8 primary tab switching, Ctrl+1..8 kept as secondary alias
 
 Closes the ROADMAP P3 item "Ctrl+# tab bindings don't work over SSH." Most
