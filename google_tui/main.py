@@ -560,6 +560,22 @@ def _append_email_items(email_list, threads, show_sender_address: bool = False) 
     )
 
 
+# Sentinel id (not a _mk_id — no underlying thread) on_list_view_selected
+# special-cases to call action_load_more_email instead of opening a thread.
+LOAD_MORE_EMAIL_ID = "load-more-email"
+
+
+def _append_load_more_row(email_list, show: bool) -> None:
+    """Appends a clickable "Load more" row backing Email pagination — only
+    when `show` (there IS a next page, per self._email_next_page_token) and
+    the caller hasn't already filtered the list by search (loading another
+    page while a filter's active would be confusing: which page's worth of
+    threads is the filter even matching against?)."""
+    if show:
+        email_list.append(ListItem(Label("↓ Load more messages…", classes="muted"),
+                                    id=LOAD_MORE_EMAIL_ID))
+
+
 def _child_tasks(task: dict, all_tasks: list[dict]) -> list[dict]:
     """Subtasks of `task` (P2, 2026-07-15). Google Tasks models a subtask as
     an ordinary task whose `parent` field points at another task's id in the
@@ -954,6 +970,12 @@ class GoogleTUI(App):
         # every list repopulate (refresh/label change); no persistence needed.
         self._expanded_thread_ids: set[str] = set()
         self._threads_cache: dict[str, dict] = {}
+        # Gmail's pagination cursor for the page AFTER the currently-shown
+        # threads, or None if there isn't one — set by _fetch_mail_data /
+        # _refresh_email_for_label, read by action_load_more_email and the
+        # "Load more" row _apply_email_list_async/_apply_mail_data_async
+        # append when it's not None (see gauth.list_threads's page_token).
+        self._email_next_page_token: str | None = None
         # Full per-message fetch backing the Space-expand preview once a
         # thread has >1 message (see _toggle_thread_expand) — keyed by
         # thread_id, populated lazily on first expand, kept for the rest of
@@ -1733,8 +1755,14 @@ class GoogleTUI(App):
         # that actually changed — a refresh where nothing moved costs a single
         # API call instead of re-pulling all 80 thread summaries.
         known = self._cached_thread_summaries(label_id)
-        threads = gauth.list_threads(self.svc, max_results=80, label_ids=label_ids,
-                                     known=known)
+        threads, next_page_token = gauth.list_threads(self.svc, max_results=80, label_ids=label_ids,
+                                                       known=known)
+        # Plain attribute write from a worker thread — safe (CPython attribute
+        # assignment is atomic) and consistent with how self._cache/self._online
+        # are already touched off-thread elsewhere in this file. Read by
+        # action_load_more_email / _apply_email_list_async to know whether a
+        # "Load more" row belongs at the bottom of the Email pane.
+        self._email_next_page_token = next_page_token
         events = gauth.list_events(self.svc, days=21)
         tasklists = gauth.list_tasklists(self.svc)
         tasks = []
@@ -1802,14 +1830,56 @@ class GoogleTUI(App):
             # Same historyId revalidation as _fetch_mail_data: switching back to
             # a label you've already opened re-reads it from cache rather than
             # re-pulling 80 thread summaries from Gmail.
-            threads = gauth.list_threads(self.svc, max_results=80, label_ids=label_ids,
-                                         known=self._cached_thread_summaries(label_id))
+            threads, next_page_token = gauth.list_threads(
+                self.svc, max_results=80, label_ids=label_ids,
+                known=self._cached_thread_summaries(label_id))
+            # Switching labels means "Load more" (if any) now applies to
+            # THIS label's next page, not whatever label was active before.
+            self._email_next_page_token = next_page_token
             if self._cache:
                 self._cache.put_many(f"thread_summary:{label_id}", {t["threadId"]: t for t in threads})
         except Exception as e:
             self.call_from_thread(self.notify, f"Label refresh error: {e}", severity="error")
             return
         self.call_from_thread(self._apply_email_list, threads)
+
+    def action_load_more_email(self) -> None:
+        if not self._email_next_page_token:
+            self.notify("No more messages to load.", severity="warning")
+            return
+        if not self._online:
+            self.notify("Can't load more messages while offline.", severity="warning")
+            return
+        self.run_worker(self._load_more_email_thread, thread=True, exclusive=True, group="mail-loadmore")
+
+    def _load_more_email_thread(self) -> None:
+        label_id = self._current_label_id
+        label_ids = None if label_id in (None, "ALL") else [label_id]
+        token = self._email_next_page_token
+        try:
+            new_threads, next_page_token = gauth.list_threads(
+                self.svc, max_results=80, label_ids=label_ids,
+                known=self._cached_thread_summaries(label_id), page_token=token)
+        except Exception as e:
+            self.call_from_thread(self.notify, f"Load more error: {e}", severity="error")
+            return
+        self._email_next_page_token = next_page_token
+        if self._cache:
+            self._cache.put_many(f"thread_summary:{label_id}", {t["threadId"]: t for t in new_threads})
+        if not new_threads:
+            self.call_from_thread(self.notify, "No more messages.", severity="warning")
+            # Still re-apply: next_page_token may have gone None, which drops
+            # the "Load more" row even though no NEW threads came back.
+        # Dict, not list concat: a thread landing on both pages (should be
+        # rare, but not impossible if it was already cached under a
+        # different label) must not become two ListItems with the same
+        # _mk_id — that's a DuplicateIds crash, not just a visual dupe.
+        # Dict preserves each key's ORIGINAL position even when overwritten,
+        # so this can't silently reorder the list either.
+        merged = {t["threadId"]: t for t in self._threads_cache.values()}
+        for t in new_threads:
+            merged[t["threadId"]] = t
+        self.call_from_thread(self._apply_email_list, list(merged.values()))
 
     def _apply_email_list(self, threads) -> None:
         self._mail_apply_gen += 1
@@ -1826,7 +1896,9 @@ class GoogleTUI(App):
         except Exception:
             query = ""
         visible = _fuzzy_filter_threads(threads, query) if query.strip() else threads
-        _append_email_items(self.query_one("#email-list"), visible, self.settings.show_sender_address)
+        email_list = self.query_one("#email-list")
+        _append_email_items(email_list, visible, self.settings.show_sender_address)
+        _append_load_more_row(email_list, bool(self._email_next_page_token) and not query.strip())
 
     def _apply_mail_data(self, threads, events, tasks, tasklists) -> None:
         self._tasklists = tasklists
@@ -1858,7 +1930,9 @@ class GoogleTUI(App):
         except Exception:
             email_query = ""
         visible_threads = _fuzzy_filter_threads(threads, email_query) if email_query.strip() else threads
-        _append_email_items(self.query_one("#email-list"), visible_threads, self.settings.show_sender_address)
+        email_list = self.query_one("#email-list")
+        _append_email_items(email_list, visible_threads, self.settings.show_sender_address)
+        _append_load_more_row(email_list, bool(self._email_next_page_token) and not email_query.strip())
 
         self._events_cache = events
         try:
@@ -2480,7 +2554,9 @@ class GoogleTUI(App):
     # ---- list selections (Enter) ----
     def on_list_view_selected(self, event: ListView.Selected) -> None:
         cid = event.item.id or ""
-        if cid.startswith("t-"):
+        if cid == LOAD_MORE_EMAIL_ID:
+            self.action_load_more_email()
+        elif cid.startswith("t-"):
             tid = cid[2:]
             order = self._email_thread_order()
             try:
@@ -2636,7 +2712,7 @@ class GoogleTUI(App):
     def _build_context(self) -> str:
         parts = []
         try:
-            threads = gauth.list_threads(self.svc, max_results=10)
+            threads, _ = gauth.list_threads(self.svc, max_results=10)
             parts.append("RECENT EMAIL THREADS:\n" + "\n".join(
                 f"- {t['from']}: {t['subject']}" for t in threads[:8]))
         except Exception:

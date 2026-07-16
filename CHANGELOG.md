@@ -3,6 +3,34 @@
 Format: keep newest at top. One entry per meaningful change. Reference files
 touched and any breaking notes.
 
+## [2026-07-16] — Email pane: "Load more" past the 80-thread cap
+
+Part of the ROADMAP P3 pagination item (Events/Drive still open — see
+ROADMAP). `gauth.list_threads` now accepts `page_token` and returns
+`(threads, next_page_token)` instead of a bare list (its 3 callers in
+`main.py`, plus `scripts/generate_screenshot.py`'s mock, updated to match).
+`_fetch_mail_data`/`_refresh_email_for_label` stash the returned
+`next_page_token` on `self._email_next_page_token`; whenever it's set (and
+no search filter is active — loading page 2 while filtered would be
+ambiguous about what the filter even applies to), `_apply_email_list_async`
+and `_apply_mail_data_async` append a clickable "↓ Load more messages…" row
+(sentinel id `LOAD_MORE_EMAIL_ID`, handled in `on_list_view_selected` like
+every other row-id-prefix branch there) after the normal thread rows.
+Selecting it runs `action_load_more_email` → `_load_more_email_thread`,
+which fetches the next page and merges it into `self._threads_cache` by
+`threadId` (not a list concat) so a thread that lands on both pages —
+possible if it was already cached under a different label — can't produce
+two `ListItem`s with the same `_mk_id` (a `DuplicateIds` crash, not just a
+visual dupe); a dict update preserves each key's original position, so
+this can't reorder the list either. Reuses the existing
+`_apply_email_list`/clear+repopulate pipeline wholesale rather than adding
+a new incremental-append code path, so search filtering, the generation
+counter, and the `ListView.clear()`-is-async handling all keep working
+unchanged. Verified via an isolated `run_test` pilot (two fake pages,
+`gauth.list_threads` mocked) confirming the row appears after page 1, hides
+while filtered, and disappears after loading page 2 (which has no further
+`next_page_token`).
+
 ## [2026-07-16] — Guided re-auth message when the Google refresh_token is dead
 
 Closes the ROADMAP P3 item "Token refresh handling." A missing or

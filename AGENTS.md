@@ -668,8 +668,14 @@ thread — ~160 round-trips at `max_results=80`, measured at **~20 seconds**. It
 now issues them through Gmail's HTTP **batch** endpoint (`new_batch_http_request`,
 50 sub-requests per call), so the same fetch is 2 round-trips. Order is
 preserved and a failed sub-request is skipped rather than sinking the list.
-Keep any new per-item Google fetch batched the same way. (Pagination is still
-tracked as a P2 ROADMAP item; that's a separate concern from call count.)
+Keep any new per-item Google fetch batched the same way. Batching was a
+separate concern from pagination (staying under the 80-thread cap at all) —
+`list_threads` now also accepts `page_token` and returns `(threads,
+next_page_token)`, backing the Email pane's "Load more" row
+(`action_load_more_email`/`_load_more_email_thread`, 2026-07-16; see
+CHANGELOG). Events (3-week window) and Drive (one folder page) still have
+no load-more equivalent — tracked as the remainder of the ROADMAP P3
+pagination item.
 
 **Revalidate, don't refetch.** The cache is not just an offline fallback — it is
 the thing that keeps refreshes cheap, and every cached category now carries a
@@ -763,12 +769,14 @@ user_cache_dir("google-tui")/cache.db`; `KEY_FILE_PATH` and `SETTINGS_PATH`
   `Credentials.from_authorized_user_file(~/.hermes/google_token.json)` + builds
   the four `googleapiclient` resources. Refreshes a worker copy so the API
   client isn't shared across worker threads.
-- `list_threads(svc, max_results, q)` — Gmail threads, formats `metadata`
+- `list_threads(svc, max_results, q, label_ids, known, page_token)` —
+  returns `(threads, next_page_token)`. Gmail threads, formats `metadata`
   then `full` per thread for snippet/body/headers. Unread via `UNREAD` label.
   Each returned dict also carries `"snippet"` (Gmail message resources
   include a top-level `snippet` regardless of `format`, so this is free —
   no extra API call); backs the Email pane's Space-to-expand inline preview
-  (`main.py`'s `_toggle_thread_expand`).
+  (`main.py`'s `_toggle_thread_expand`). `page_token`/`next_page_token`
+  back the Email pane's "Load more" row (`action_load_more_email`).
 - `list_events(svc, days)` — Calendar `events.list` over next `days` days.
 - `events_between(svc, start, end)` — generic date-range `events.list`;
   `month_events(svc, year, month)` and the Calendar tab's week grid both call

@@ -210,7 +210,8 @@ _BATCH_SIZE = 50
 
 def list_threads(svc, max_results: int = 50, q: str | None = None,
                  label_ids: list[str] | None = None,
-                 known: dict[str, dict] | None = None) -> list[dict]:
+                 known: dict[str, dict] | None = None,
+                 page_token: str | None = None) -> tuple[list[dict], str | None]:
     """List threads with their metadata.
 
     Two things keep this cheap:
@@ -231,6 +232,14 @@ def list_threads(svc, max_results: int = 50, q: str | None = None,
 
     Order is preserved (rows are reassembled in the order Gmail listed them),
     and a failed sub-request is skipped rather than taking the whole list down.
+
+    Returns `(threads, next_page_token)`. `page_token` (from a prior call's
+    `next_page_token`) fetches the page after it — backs the Email pane's
+    "Load more" (main.py's action_load_more_email). `known` still applies to
+    a later page exactly as it does to the first: harmless in the common
+    case where a page-2+ thread was never cached before (nothing to reuse,
+    so it's just fetched), and correctly free in the rarer case where it was
+    (e.g. previously seen under a different label).
     """
     g = svc["gmail"]
     params = {"userId": "me", "maxResults": max_results}
@@ -238,10 +247,13 @@ def list_threads(svc, max_results: int = 50, q: str | None = None,
         params["q"] = q
     if label_ids:
         params["labelIds"] = label_ids
+    if page_token:
+        params["pageToken"] = page_token
     resp = g.users().threads().list(**params).execute()
     listed = resp.get("threads", [])
+    next_page_token = resp.get("nextPageToken")
     if not listed:
-        return []
+        return [], next_page_token
 
     known = known or {}
     reused: dict[str, dict] = {}
@@ -292,7 +304,7 @@ def list_threads(svc, max_results: int = 50, q: str | None = None,
         row = _thread_summary(tid, th)
         if row is not None:
             out.append(row)
-    return out
+    return out, next_page_token
 
 
 def get_thread(svc, thread_id: str) -> list[dict]:

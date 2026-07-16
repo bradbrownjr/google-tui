@@ -145,7 +145,7 @@ def main() -> None:
     with patch.object(gauth, "get_credentials", return_value=FAKE_CREDS), \
          patch.object(gauth, "services", side_effect=_fake_services), \
          patch.object(gauth, "list_labels", return_value=FAKE_LABELS), \
-         patch.object(gauth, "list_threads", return_value=FAKE_THREADS), \
+         patch.object(gauth, "list_threads", return_value=(FAKE_THREADS, None)), \
          patch.object(gauth, "list_events", return_value=FAKE_EVENTS), \
          patch.object(gauth, "events_between", return_value=FAKE_EVENTS), \
          patch.object(gauth, "month_events", return_value=FAKE_EVENTS), \
