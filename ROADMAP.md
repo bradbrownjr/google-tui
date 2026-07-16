@@ -21,14 +21,6 @@ just checking it off here, so ROADMAP.md only ever shows what's still open.
   method currently clears the cache and asks for a restart rather than
   rebuilding `self._cache` with the new key in-session. Fine for now; worth
   revisiting if restart-to-apply proves annoying in practice.
-- [ ] **Ctrl+# tab bindings don't work over SSH — consider Function keys.**
-  `Ctrl+1..8` (`main.py:597-604`) are swallowed by many SSH clients/terminal
-  multiplexers before they reach the app. Midnight Commander's F-key
-  convention (F1..F8) is generally more SSH-safe; downside is some
-  terminals/window managers reserve individual F-keys too (e.g. fullscreen
-  toggles). Recommend switching the primary bindings to F1..F8 and keeping
-  Ctrl+1..8 as secondary aliases, rather than a straight swap.
-  *(Suggested model: Sonnet.)*
 
 ## P4 — Nice-to-have
 

@@ -41,14 +41,14 @@ GLOBAL_ACTIONS: list[ActionSpec] = [
     ActionSpec("switch_down", "alt+down", "Pane Down"),
     ActionSpec("cycle", "tab", "Cycle"),
     ActionSpec("cycle_back", "shift+tab", "Cycle"),
-    ActionSpec("goto_tab_mail", "ctrl+1", "Mail"),
-    ActionSpec("goto_tab_calendar", "ctrl+2", "Calendar"),
-    ActionSpec("goto_tab_drive", "ctrl+3", "Drive"),
-    ActionSpec("goto_tab_browser", "ctrl+4", "Browser"),
-    ActionSpec("goto_tab_news", "ctrl+5", "News"),
-    ActionSpec("goto_tab_navigation", "ctrl+6", "Navigation"),
-    ActionSpec("goto_tab_contacts", "ctrl+7", "Contacts"),
-    ActionSpec("goto_tab_settings", "ctrl+8", "Settings"),
+    ActionSpec("goto_tab_mail", "f1,ctrl+1", "Mail"),
+    ActionSpec("goto_tab_calendar", "f2,ctrl+2", "Calendar"),
+    ActionSpec("goto_tab_drive", "f3,ctrl+3", "Drive"),
+    ActionSpec("goto_tab_browser", "f4,ctrl+4", "Browser"),
+    ActionSpec("goto_tab_news", "f5,ctrl+5", "News"),
+    ActionSpec("goto_tab_navigation", "f6,ctrl+6", "Navigation"),
+    ActionSpec("goto_tab_contacts", "f7,ctrl+7", "Contacts"),
+    ActionSpec("goto_tab_settings", "f8,ctrl+8", "Settings"),
     ActionSpec("cycle_tab_back", "ctrl+left", "Prev Tab"),
     ActionSpec("cycle_tab", "ctrl+right", "Next Tab"),
     ActionSpec("goto_pane_email", "alt+1", "Email"),
@@ -69,7 +69,7 @@ GLOBAL_ACTIONS: list[ActionSpec] = [
     ActionSpec("new_event", "n", "New Event"),
     ActionSpec("refresh", "ctrl+r", "Refresh"),
     ActionSpec("help", "ctrl+h", "Help"),
-    ActionSpec("toggle_mouse", "f2", "Mouse"),
+    ActionSpec("toggle_mouse", "f12", "Mouse"),
     ActionSpec("quit", "ctrl+q", "Quit"),
 ]
 
@@ -135,8 +135,8 @@ def ascii_safe(text: str) -> str:
 
 
 HELP_GLOBAL_TEXT = (
-    "Ctrl+# / Ctrl+←→ Tab   Alt+# Pane   Alt+←→↑↓ Move Pane   "
-    "Ctrl+P Commands   F2 Mouse   Ctrl+H Help   Ctrl+Q Quit"
+    "F1-F8 Tab   Alt+# Pane   Alt+←→↑↓ Move Pane   "
+    "Ctrl+P Commands   F12 Mouse   Ctrl+H Help   Ctrl+Q Quit"
 )
 
 # Keyed "pane:<id>" for Mail-tab panes, "tab:<id>" for every other tab —
@@ -260,19 +260,23 @@ def help_markup(scope: str, ascii_mode: bool = False) -> str:
 # Transcribed verbatim from the former module-level HELP_TEXT constant.
 HELP_TEXT = """\
 GLOBAL
-  Ctrl+1..8        Switch tab (Mail / Calendar / Drive / Browser / News / Navigation / Settings / Contacts)
-  Ctrl+Left/Right  Cycle tabs (use this if Ctrl+1..7 doesn't reach the app —
-                   some terminals/browsers don't transmit Ctrl+digit)
+  F1..F8           Switch tab (Mail / Calendar / Drive / Browser / News / Navigation / Settings / Contacts) —
+                   also works as Ctrl+1..8, kept as a secondary alias for
+                   terminals where F-keys are intercepted (e.g. a window
+                   manager's fullscreen bindings)
+  Ctrl+Left/Right  Cycle tabs (the universal fallback if neither F1..F8 nor
+                   Ctrl+1..8 reaches the app — some terminals/multiplexers/
+                   browsers swallow both)
   Alt+1..4         Jump to Mail pane (Email / Events / Tasks / Hermes)
   Alt+arrows       Move to the adjacent Mail pane
   Tab / Shift+Tab  Cycle Mail panes
   Ctrl+R           Reconnect / refresh live data
   Ctrl+P           Command palette
   Ctrl+H           This help
-  F2               Release/recapture the mouse. While the app holds the mouse
+  F12              Release/recapture the mouse. While the app holds the mouse
                    your terminal can't draw its own selection, so you can't
                    drag-copy text (a URL, say) the way you normally would.
-                   F2 hands the mouse back; F2 again takes it. You can also
+                   F12 hands the mouse back; F12 again takes it. You can also
                    drag-select inside the app and press Ctrl+C, which copies
                    over SSH via OSC 52 where the terminal allows it.
   Ctrl+Q           Quit

@@ -9,8 +9,8 @@ A multi-pane terminal UI (TUI) for your Google Workspace, built with
 
 Eight full-width **tabs** live in the blue bar: **Mail**, **Calendar**,
 **Drive**, **Browser**, **News**, **Navigation**, **Settings**, **Contacts**
-(`Ctrl+1..8`). The Mail tab holds four **panes**: Email, Events, Tasks,
-Hermes (`Alt+1..4`, or `Alt+arrows` to move relatively).
+(`F1..F8`, also `Ctrl+1..8`). The Mail tab holds four **panes**: Email,
+Events, Tasks, Hermes (`Alt+1..4`, or `Alt+arrows` to move relatively).
 
 **Works offline, to a degree.** The app is cache-first: whatever it fetched
 last time shows up instantly on launch, while it reconnects to Google in the
@@ -121,8 +121,8 @@ full Google Cloud Console walkthrough.
 
 | Key | Action |
 |-----|--------|
-| `Ctrl+1..8` | switch tab (Mail / Calendar / Drive / Browser / News / Navigation / Settings / Contacts) |
-| `Ctrl+Left/Right` | cycle tabs — use this if `Ctrl+1..8` doesn't reach the app (common in browser-based terminals, which reserve `Ctrl+1..8` for switching *their own* tabs) |
+| `F1..F8` | switch tab (Mail / Calendar / Drive / Browser / News / Navigation / Settings / Contacts) — also works as `Ctrl+1..8`, kept as a secondary alias |
+| `Ctrl+Left/Right` | cycle tabs — use this if neither `F1..F8` nor `Ctrl+1..8` reaches the app (common in browser-based terminals, which reserve both for switching *their own* tabs) |
 | `Alt+1..4` | jump to Mail pane (Email / Events / Tasks / Hermes) |
 | `Alt+Left/Right/Up/Down` | move to the adjacent Mail pane; on the Browser tab, back/forward through history; on the Settings tab, cycle General/AI Provider/News Feeds/Search/Navigation |
 | `Alt+H` | Browser tab: go to your configured home page (Settings → General) |

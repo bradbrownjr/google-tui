@@ -1,10 +1,10 @@
 """google-tui — multi-pane TUI for Gmail / Calendar / Tasks / Drive / Browser / News / Navigation / Hermes.
 
-Top-level layout is seven full-width TABS in the blue bar: Mail, Calendar,
-Drive, Browser, News, Navigation, Settings (Ctrl+1..7). The Mail tab holds
-four PANES: Email, Events, Tasks, Hermes (Alt+1..4, or Alt+arrows to move
-relatively). See AGENTS.md for the full keybinding reference and the
-PANE_ADJACENCY rationale.
+Top-level layout is eight full-width TABS in the blue bar: Mail, Calendar,
+Drive, Browser, News, Navigation, Contacts, Settings (F1..F8, also Ctrl+1..8).
+The Mail tab holds four PANES: Email, Events, Tasks, Hermes (Alt+1..4, or
+Alt+arrows to move relatively). See AGENTS.md for the full keybinding
+reference and the PANE_ADJACENCY rationale.
 """
 from __future__ import annotations
 
@@ -979,7 +979,7 @@ class GoogleTUI(App):
         self._drive_search_apply_gen = 0
         self._news_search_timer = None
         self._news_search_apply_gen = 0
-        # F2 hands the mouse back to the terminal so its native click-drag
+        # F12 hands the mouse back to the terminal so its native click-drag
         # selection works (see action_toggle_mouse).
         self._mouse_released = False
         # True when the current Google token is missing/invalid (checked via
@@ -2035,7 +2035,7 @@ class GoogleTUI(App):
     def action_help(self): self.push_screen(HelpModal())
 
     def action_toggle_mouse(self) -> None:
-        """Release/recapture the mouse (F2).
+        """Release/recapture the mouse (F12).
 
         While a TUI has mouse reporting enabled the terminal hands drag events
         to the app instead of drawing its own selection, which is why you can't
@@ -2043,7 +2043,7 @@ class GoogleTUI(App):
         program. Turning reporting off hands the mouse back to the terminal:
         native click-drag selection and the terminal's own copy work exactly as
         they normally do, anywhere in the app. Clicking widgets stops working
-        until you press F2 again — keyboard navigation is unaffected either way.
+        until you press F12 again — keyboard navigation is unaffected either way.
 
         (Textual's own Ctrl+C-on-a-selection copies via OSC 52, which is the
         nicer path when it works, but plenty of setups — macOS Terminal, tmux
@@ -2070,7 +2070,7 @@ class GoogleTUI(App):
         if release:
             self.notify(
                 "Mouse released — select and copy text with your terminal as "
-                "usual. Press F2 to give it back to the app.",
+                "usual. Press F12 to give it back to the app.",
                 timeout=6)
         else:
             self.notify("Mouse captured by the app again.")
@@ -4072,7 +4072,7 @@ class GoogleReauthModal(ModalScreen):
                     "Copy URL puts it on your computer's clipboard even over "
                     "SSH (terminal must allow OSC 52 — in tmux: "
                     "set -g set-clipboard on). If nothing lands on your "
-                    "clipboard, use Save to file, or press F2 to release the "
+                    "clipboard, use Save to file, or press F12 to release the "
                     "mouse and select the URL with your terminal as usual.",
                     id="reauth-copy-help", classes="muted",
                 )
@@ -4100,13 +4100,13 @@ class GoogleReauthModal(ModalScreen):
         machine the app runs on, so the URL lands on the clipboard of whatever
         computer you're sitting at even when the app is on a headless box over
         SSH. Not universal (macOS Terminal ignores it; tmux needs
-        `set-clipboard on`), which is exactly why "Save to file" and the F2
+        `set-clipboard on`), which is exactly why "Save to file" and the F12
         mouse-release toggle exist alongside it.
         """
         self.app.copy_to_clipboard(self._auth_url or "")
         self.query_one("#reauth-status", Static).update(
             "Copied to clipboard. If your clipboard is still empty, your "
-            "terminal blocks OSC 52 — use Save to file or F2 instead.")
+            "terminal blocks OSC 52 — use Save to file or F12 instead.")
 
     def _save_url(self) -> None:
         """Bulletproof fallback for terminals that swallow OSC 52: drop the URL

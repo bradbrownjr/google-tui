@@ -3,6 +3,27 @@
 Format: keep newest at top. One entry per meaningful change. Reference files
 touched and any breaking notes.
 
+## [2026-07-16] — F1..F8 primary tab switching, Ctrl+1..8 kept as secondary alias
+
+Closes the ROADMAP P3 item "Ctrl+# tab bindings don't work over SSH." Most
+terminals (browser-based ones especially — Chrome/Firefox/Edge reserve
+`Ctrl+1..8` for their own tab switching) never transmit `Ctrl+<digit>` to the
+app at all. `bindings.py`'s `GLOBAL_ACTIONS` now gives each `goto_tab_*`
+action two keys via `Binding`'s comma-separated `key` field (e.g.
+`"f1,ctrl+1"`) — bare `F1..F8` is the SSH-safe primary binding, `Ctrl+1..8`
+stays as a secondary alias for terminals that do support it, and
+`Ctrl+Left/Right` remains the last-resort fallback. Surfaced a real conflict
+along the way: `action_toggle_mouse` already used `f2`, and Calendar is tab
+position 2, so a straight F1..F8 mapping would have collided with it —
+`toggle_mouse` moved to `f12` (confirmed unused) instead of breaking the
+contiguous F1..F8-for-tabs scheme. Updated help text (`HELP_GLOBAL_TEXT`,
+`HELP_TEXT` in `bindings.py`), README.md, and AGENTS.md's key-bindings table
+and terminal-caveat section to match. Verified via an isolated `run_test`
+pilot (same isolated-`platformdirs` pattern as the Ctrl+R debounce fix,
+`_load_from_cache` patched to skip `LoadingModal` so key bindings reach the
+base screen) confirming F1..F8 each switch to the right tab, Ctrl+1/2/8
+still work, F2 no longer triggers `action_toggle_mouse`, and F12 does.
+
 ## [2026-07-16] — Debounce Ctrl+R to stop rapid refreshes tripping Google quota
 
 Closes the ROADMAP P3 item "Connection pool / rate limiting." Rapid `Ctrl+R`

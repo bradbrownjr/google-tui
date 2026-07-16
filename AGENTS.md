@@ -462,8 +462,8 @@ App-level `r`/`a`/`f` bindings never reached it.
 
 | Key | Action |
 |-----|--------|
-| `Ctrl+1..8` | switch **tab** (Mail / Calendar / Drive / Browser / News / Navigation / Settings / Contacts) |
-| `Ctrl+Left/Right` | cycle tabs — the reliable fallback for `Ctrl+1..8` (see caveat below) |
+| `F1..F8` | switch **tab** (Mail / Calendar / Drive / Browser / News / Navigation / Settings / Contacts) — also bound as `Ctrl+1..8`, a secondary alias (see caveat below) |
+| `Ctrl+Left/Right` | cycle tabs — the universal fallback if neither `F1..F8` nor `Ctrl+1..8` reaches the app (see caveat below) |
 | `Alt+1..4` | jump to a Mail **pane** (Email / Events / Tasks / Hermes); switches to the Mail tab first if needed |
 | `Alt+Left/Right/Up/Down` | move to the adjacent Mail pane (see `PANE_ADJACENCY` below) on the Mail tab; back/forward through session history on the Browser tab; cycle Settings sub-tabs (General/AI Provider/News Feeds/Search/Navigation) on the Settings tab (`Alt+Up/Down` still only does Mail-pane adjacency — no vertical cycling defined for Settings) |
 | `Alt+H` | Browser tab: jump to the configured home URL (`Settings.browser_home_url`, Settings → General) — no-op elsewhere |
@@ -489,17 +489,35 @@ modifier tracking, so "numbers appear only while Ctrl/Alt is held" cannot be
 implemented in this Textual version. Don't attempt to "fix" this later
 without re-checking whether Textual has since added key-release support.
 
-**`Ctrl+1..8` terminal caveat:** most terminals (and browser-based terminals
-especially — Chrome/Firefox/Edge reserve `Ctrl+1..8` for switching *browser*
-tabs, intercepting the keystroke before it ever reaches the terminal) don't
-reliably transmit `Ctrl+<digit>` at all; only terminals with `modifyOtherKeys`
-or the Kitty keyboard protocol enabled do (confirmed via
-`ANSI_SEQUENCES_KEYS` in this Textual version — the sequences exist and are
-mapped, but most terminals never send them). `Ctrl+Left/Right` (`Ctrl+Arrow`)
-is universally well-supported and is the reliable path — `Ctrl+1..8` is kept
-for terminals that do support it, but don't assume it works everywhere, and
-don't "fix" it by touching the bindings — there's nothing to fix in this
-app's code; it's what the terminal transmits.
+**`Ctrl+1..8` terminal caveat, and the F1..F8 fix (2026-07-16):** most
+terminals (and browser-based terminals especially — Chrome/Firefox/Edge
+reserve `Ctrl+1..8` for switching *browser* tabs, intercepting the keystroke
+before it ever reaches the terminal) don't reliably transmit `Ctrl+<digit>`
+at all; only terminals with `modifyOtherKeys` or the Kitty keyboard protocol
+enabled do (confirmed via `ANSI_SEQUENCES_KEYS` in this Textual version —
+the sequences exist and are mapped, but most terminals never send them).
+Unlike the `Alt+Arrow` double-ESC bug elsewhere in this file, this one has no
+in-app fix — it's what the terminal transmits, or doesn't, before the app
+ever sees a keystroke. Instead of trying to force `Ctrl+<digit>` to work
+everywhere, `bindings.py`'s `GLOBAL_ACTIONS` now gives each `goto_tab_*`
+action TWO keys via `Binding`'s comma-separated `key` field (e.g.
+`"f1,ctrl+1"` for `goto_tab_mail`) — bare `F1..F8` is the primary binding
+(SSH-safe: unlike `Ctrl+<digit>`, a bare function key is a single well-known
+escape sequence every terminal/multiplexer forwards), `Ctrl+1..8` stays as a
+secondary alias for the terminals that do support it. `Ctrl+Left/Right`
+(`Ctrl+Arrow`) remains the universal last-resort fallback for the rare
+terminal/window-manager combo that intercepts F-keys too (e.g. a WM's
+fullscreen-toggle bindings).
+
+**F2 was already taken:** `action_toggle_mouse` (release/recapture the
+mouse for native terminal copy-paste) used `f2` before this change. Since
+Calendar is tab position 2, a straight `F1..F8` tab mapping would collide
+with it directly — not a terminal quirk, an in-app conflict. Resolved by
+moving `toggle_mouse` to `f12` (checked: no other binding used any of
+F9..F12) rather than breaking the contiguous F1..F8-for-tabs scheme by
+skipping F2. If you ever add a 9th tab or a new global F-key binding, check
+`GLOBAL_ACTIONS` in `bindings.py` for collisions first — Textual's `Binding`
+doesn't warn on duplicate keys, it just makes the first-registered one win.
 
 **`Alt+Left/Right/Up/Down` terminal caveat, and how it's actually fixed
 (2026-07-15):** unlike the `Ctrl+1..8` caveat above, this one WAS fixable in
