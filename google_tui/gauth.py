@@ -184,6 +184,9 @@ def _thread_summary(thread_id: str, th: dict, history_id: str = "") -> dict | No
         return None
     last = msgs[-1]
     hdrs = {h["name"].lower(): h["value"] for h in last.get("payload", {}).get("headers", [])}
+    label_ids: set[str] = set()
+    for m in msgs:
+        label_ids.update(m.get("labelIds", []))
     return {
         "threadId": thread_id,
         "subject": hdrs.get("subject", "(no subject)"),
@@ -191,6 +194,10 @@ def _thread_summary(thread_id: str, th: dict, history_id: str = "") -> dict | No
         "date": hdrs.get("date", ""),
         "count": len(msgs),
         "unread": any("UNREAD" in m.get("labelIds", []) for m in msgs),
+        # Union across every message, same as "unread" above — a thread's
+        # applied labels are whatever any of its messages carries. Backs the
+        # Email list's label-chip line (main.py's _thread_label_chips).
+        "labelIds": sorted(label_ids),
         # Gmail message resources include a top-level "snippet" regardless
         # of `format` — no extra API call needed. Backs the Email pane's
         # Space-to-expand inline preview (main.py's _toggle_thread_expand).

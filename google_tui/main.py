@@ -646,7 +646,25 @@ def _format_sender(raw: str, show_address: bool) -> str:
     return name or addr
 
 
-def _email_collapsed_line(th: dict, show_sender_address: bool = False) -> str:
+def _thread_label_chips(th: dict, labels_by_id: dict | None) -> str:
+    """Comma-joined display names of a thread's applied *user* labels (not
+    system ones like INBOX/UNREAD/CATEGORY_* — Gmail's own web/mobile UI
+    doesn't show those as chips either, only custom labels). `labels_by_id`
+    is the app's `_labels_cache` reshaped to {id: label}; None/empty (labels
+    not loaded yet) means no chip line."""
+    if not labels_by_id:
+        return ""
+    ids = th.get("labelIds") or []
+    names = sorted(
+        _label_display_name(labels_by_id[lid]).strip()
+        for lid in ids
+        if lid in labels_by_id and labels_by_id[lid].get("type") != "system"
+    )
+    return ", ".join(names)
+
+
+def _email_collapsed_line(th: dict, show_sender_address: bool = False,
+                          labels_by_id: dict | None = None) -> str:
     mark = "•" if th["unread"] else " "
     subj = th["subject"] or "(no subject)"
     frm = _format_sender(th["from"], show_sender_address)
@@ -654,14 +672,17 @@ def _email_collapsed_line(th: dict, show_sender_address: bool = False) -> str:
     subj_field = f"{subj[:60]}{count_note}"
     date_str = _fmt_email_date(th.get("date", ""))
     line = f"{mark} {frm[:36]:<36} {subj_field:<66}"
-    return f"{line} {date_str}" if date_str else line
+    line = f"{line} {date_str}" if date_str else line
+    chips = _thread_label_chips(th, labels_by_id)
+    return f"{line}\n    Labels: {chips}" if chips else line
 
 
-def _thread_expanded_text(th: dict, msgs: list[dict], show_sender_address: bool = False) -> str:
+def _thread_expanded_text(th: dict, msgs: list[dict], show_sender_address: bool = False,
+                          labels_by_id: dict | None = None) -> str:
     """Space-expand preview for a multi-message thread: one line per message
     (From + a short body snippet), so a "(N)" thread actually shows all N
     messages inline instead of just the latest one's snippet."""
-    lines = [_email_collapsed_line(th, show_sender_address)]
+    lines = [_email_collapsed_line(th, show_sender_address, labels_by_id)]
     for m in msgs:
         frm = _format_sender((m.get("from") or "").strip(), show_sender_address)
         snippet = (m.get("body") or "").strip().replace("\n", " ")
@@ -671,14 +692,15 @@ def _thread_expanded_text(th: dict, msgs: list[dict], show_sender_address: bool 
     return "\n".join(lines)
 
 
-def _append_email_items(email_list, threads, show_sender_address: bool = False) -> None:
+def _append_email_items(email_list, threads, show_sender_address: bool = False,
+                        labels_by_id: dict | None = None) -> None:
     # extend(), not append()-in-a-loop: ListView.append mounts ONE widget per
     # call (a mount + layout + repaint each), so an 80-thread inbox paid for 80
     # separate mount cycles. extend() batches the whole list into a single one.
     # Same reason every other list in this file builds its items first and
     # extends once.
     email_list.extend(
-        ListItem(Label(_email_collapsed_line(th, show_sender_address)),
+        ListItem(Label(_email_collapsed_line(th, show_sender_address, labels_by_id)),
                  id=_mk_id("t", th["threadId"]))
         for th in threads
     )
@@ -2706,6 +2728,9 @@ class GoogleTUI(App):
         self._events_cache = events
         self._refresh_event_list()
 
+    def _labels_by_id(self) -> dict:
+        return {l["id"]: l for l in self._labels_cache}
+
     def _apply_email_list(self, threads) -> None:
         self._mail_apply_gen += 1
         gen = self._mail_apply_gen
@@ -2722,7 +2747,7 @@ class GoogleTUI(App):
             query = ""
         visible = _fuzzy_filter_threads(threads, query) if query.strip() else threads
         email_list = self.query_one("#email-list")
-        _append_email_items(email_list, visible, self.settings.show_sender_address)
+        _append_email_items(email_list, visible, self.settings.show_sender_address, self._labels_by_id())
         _append_load_more_row(email_list, bool(self._email_next_page_token) and not query.strip(),
                               LOAD_MORE_EMAIL_ID, "↓ Load more messages…")
 
@@ -2758,7 +2783,7 @@ class GoogleTUI(App):
             email_query = ""
         visible_threads = _fuzzy_filter_threads(threads, email_query) if email_query.strip() else threads
         email_list = self.query_one("#email-list")
-        _append_email_items(email_list, visible_threads, self.settings.show_sender_address)
+        _append_email_items(email_list, visible_threads, self.settings.show_sender_address, self._labels_by_id())
         _append_load_more_row(email_list, bool(self._email_next_page_token) and not email_query.strip(),
                               LOAD_MORE_EMAIL_ID, "↓ Load more messages…")
 
@@ -3284,24 +3309,25 @@ class GoogleTUI(App):
         if not th:
             return
         show_addr = self.settings.show_sender_address
+        labels = self._labels_by_id()
         if thread_id in self._expanded_thread_ids:
             self._expanded_thread_ids.discard(thread_id)
-            self._set_thread_label(thread_id, _email_collapsed_line(th, show_addr))
+            self._set_thread_label(thread_id, _email_collapsed_line(th, show_addr, labels))
             return
         self._expanded_thread_ids.add(thread_id)
         if th.get("count", 1) > 1:
             cached = self._thread_full_cache.get(thread_id)
             if cached is not None:
-                self._set_thread_label(thread_id, _thread_expanded_text(th, cached, show_addr))
+                self._set_thread_label(thread_id, _thread_expanded_text(th, cached, show_addr, labels))
             else:
-                self._set_thread_label(thread_id, _email_collapsed_line(th, show_addr) + "\n    Loading messages…")
+                self._set_thread_label(thread_id, _email_collapsed_line(th, show_addr, labels) + "\n    Loading messages…")
                 self.run_worker(lambda: self._fetch_thread_preview(thread_id),
                                  thread=True, exclusive=False, group="thread-preview")
             return
         snippet = (th.get("snippet") or "").strip()
         if len(snippet) > 100:
             snippet = snippet[:100].rstrip() + "…"
-        text = _email_collapsed_line(th, show_addr) + (("\n    " + snippet) if snippet else "")
+        text = _email_collapsed_line(th, show_addr, labels) + (("\n    " + snippet) if snippet else "")
         self._set_thread_label(thread_id, text)
 
     def _fetch_thread_preview(self, thread_id: str) -> None:
@@ -3317,7 +3343,8 @@ class GoogleTUI(App):
         th = self._threads_cache.get(thread_id)
         if not th or thread_id not in self._expanded_thread_ids:
             return
-        self._set_thread_label(thread_id, _thread_expanded_text(th, msgs, self.settings.show_sender_address))
+        self._set_thread_label(thread_id, _thread_expanded_text(
+            th, msgs, self.settings.show_sender_address, self._labels_by_id()))
 
     def _apply_thread_preview_error(self, thread_id: str) -> None:
         th = self._threads_cache.get(thread_id)
@@ -3327,7 +3354,8 @@ class GoogleTUI(App):
         if len(snippet) > 100:
             snippet = snippet[:100].rstrip() + "…"
         extra = (f"\n    {snippet}  " if snippet else "\n    ") + f"({th['count']} messages — press Enter for full thread)"
-        self._set_thread_label(thread_id, _email_collapsed_line(th, self.settings.show_sender_address) + extra)
+        self._set_thread_label(thread_id, _email_collapsed_line(
+            th, self.settings.show_sender_address, self._labels_by_id()) + extra)
 
     # ---- email preview pane ("p" / action_toggle_preview) ----
     # Outlook-style: hidden by default (Settings.email_preview_default_visible

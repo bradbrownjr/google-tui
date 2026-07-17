@@ -53,13 +53,6 @@ just checking it off here, so ROADMAP.md only ever shows what's still open.
 
 ## P2 — Email
 
-- [ ] **Show applied labels under/after the subject** in the Email list —
-  `gauth.get_thread` returns per-message `label_ids` now (`[2026-07-18]`,
-  used by `ThreadModal`'s "Labels: …" line and `LabelPickerModal`'s
-  pre-check), but `list_threads`/the thread-summary dicts the Email list
-  itself renders from still don't carry `labelIds`; needs that piece too
-  before adding a `_label_display_name`-formatted chip line under the
-  subject the same way `_thread_expanded_text` adds the snippet line today.
 - [ ] **Searchable/filterable label list** — `email-label-select` and
   `LabelPickerModal`'s `SelectionList` are both flat, unfiltered lists today;
   a Gmail account with many labels (nested categories, auto-created ones)
@@ -257,6 +250,14 @@ just checking it off here, so ROADMAP.md only ever shows what's still open.
 
 ## Done
 
+- [x] **Show applied labels under the subject in the Email list**
+  (`[2026-07-18]`) — `list_threads`'s thread-summary dicts now carry
+  `labelIds` (union across the thread's messages, `gauth._thread_summary`),
+  and `_email_collapsed_line` appends a `Labels: …` chip line (via new
+  `_thread_label_chips`) using `_label_display_name`, same idiom as
+  `_thread_expanded_text`'s snippet line — user labels only, since system
+  ones (INBOX/UNREAD/CATEGORY_*) aren't shown as chips in Gmail's own UI
+  either. See CHANGELOG.
 - [x] **Date/time shown on Email list rows and the Dashboard MAIL card**
   (`[2026-07-18]`) — appended a formatted date/time (from each thread's raw
   `date` header) to `_email_collapsed_line` and `_populate_dash_mail`'s row
