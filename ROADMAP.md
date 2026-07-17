@@ -7,7 +7,8 @@ just checking it off here, so ROADMAP.md only ever shows what's still open.
 
 ## P1 — Bugs (from 2026-07-17 live-usage testing)
 
-- [ ] **`Ctrl+R` reportedly crashed the app with no visible error.** Every
+- [ ] **BLOCKED — needs a live repro before touching code again.**
+  `Ctrl+R` reportedly crashed the app with no visible error. Every
   unhandled exception is supposed to be caught by `GoogleTUI._handle_exception`
   and logged to `platformdirs.user_log_dir("google-tui")/google-tui.log`
   (`main.py:1441-1454`) before the app exits — checked that file, and there's
@@ -15,29 +16,40 @@ just checking it off here, so ROADMAP.md only ever shows what's still open.
   04:22). Either it wasn't actually `Ctrl+R`, or the failure happened in a
   path that bypasses `_handle_exception` entirely (e.g. a raw crash before/
   after Textual's event loop is pumping — see the comment at `main.py:7074`
-  about exactly that gap). Needs a live repro with the log tailing
-  (`tail -f ~/.local/state/google-tui/log/google-tui.log`) to catch it.
-- [ ] **Reply → archive → reply sequence made a thread disappear from Inbox**
-  even though Roger's follow-up reply should have put it back (Gmail
+  about exactly that gap). Already investigated once (`[2026-07-18]`) with
+  nothing more to find without a live repro — don't re-research this from
+  scratch; wait for `tail -f ~/.local/state/google-tui/log/google-tui.log`
+  running live when it happens again, then come back with whatever that
+  catches (or confirmation the log stayed empty through the crash, which
+  would point at the pre-event-loop gap instead).
+- [ ] **BLOCKED — needs a targeted live repro before touching code again.**
+  Reply → archive → reply sequence made a thread disappear from Inbox even
+  though Roger's follow-up reply should have put it back (Gmail
   auto-restores the INBOX label on any thread that gets a new message).
   Likely interacts with `_run_mutation`'s optimistic cache handling for
-  trash/archive (`main.py:5967-6039`) and the transient network errors above
-  hitting mid-refresh — a refresh that fails partway through (as the SSL/
-  timeout errors above show does happen) could leave `self._threads_cache`
-  in a stale post-archive state that a later successful refresh doesn't
-  correct if the correction logic assumes the cache was left consistent.
-  Needs a targeted repro (archive a thread, have the other party reply, then
-  `Ctrl+R`) with log capture.
-- [ ] **Forwarded email from Roger didn't show the inline quoted original.**
+  trash/archive (`main.py:5967-6039`) and the transient network errors
+  (see the label-refresh-retry fix, `[2026-07-18]`) hitting mid-refresh — a
+  refresh that fails partway through could leave `self._threads_cache` in a
+  stale post-archive state that a later successful refresh doesn't correct
+  if the correction logic assumes the cache was left consistent. Already
+  investigated once (`[2026-07-18]`) with nothing more to find without a
+  repro; don't re-research this from scratch — reproduce it deliberately
+  (archive a thread, have the other party reply, then `Ctrl+R`) with log
+  capture running, then come back with what actually happened to
+  `_threads_cache` across that sequence.
+- [ ] **BLOCKED — needs a real raw-MIME sample before touching code again.**
+  Forwarded email from Roger didn't show the inline quoted original.
   `gauth._extract_body`/`_extract_html_body` (`gauth.py:334-368`) recurse
   through ordinary `multipart/alternative`/`multipart/mixed` nesting fine,
   but neither one has any special case for a `message/rfc822` MIME part —
   the way some mail clients (not Gmail's own web "Forward," which inlines
   the original as quoted plain text/HTML in the normal body) attach a
   forwarded original as a genuine nested message. That part's content would
-  fall through both extractors' loops and get silently dropped. Needs a
-  real sample (export the raw message via `messages().get(format="raw")`
-  to see its actual MIME tree) before writing a fix blind.
+  fall through both extractors' loops and get silently dropped. Already
+  investigated once (`[2026-07-18]`) with nothing more to find without a
+  sample; don't re-research this from scratch — export the raw message via
+  `messages().get(format="raw")` to see its actual MIME tree, then come
+  back with that before writing a fix.
 
 ## P2 — Email
 
