@@ -5,6 +5,220 @@ Update this file as items are completed — move the completed item's entry
 into CHANGELOG.md under a new dated section (`## [YYYY-MM-DD]`) instead of
 just checking it off here, so ROADMAP.md only ever shows what's still open.
 
+## P1 — Bugs (from 2026-07-17 live-usage testing)
+
+- [ ] **`(1)` shown after every single-message thread's subject.**
+  `_email_collapsed_line` (`main.py:635-639`) appends `({th['count']})`
+  unconditionally — should only append when `count > 1`, matching how
+  `_thread_expanded_text`'s "(N messages)" note is already conditional.
+- [ ] **`Ctrl+R` reportedly crashed the app with no visible error.** Every
+  unhandled exception is supposed to be caught by `GoogleTUI._handle_exception`
+  and logged to `platformdirs.user_log_dir("google-tui")/google-tui.log`
+  (`main.py:1441-1454`) before the app exits — checked that file, and there's
+  no crash logged anywhere near when this was reported (2026-07-17, after
+  04:22). Either it wasn't actually `Ctrl+R`, or the failure happened in a
+  path that bypasses `_handle_exception` entirely (e.g. a raw crash before/
+  after Textual's event loop is pumping — see the comment at `main.py:7074`
+  about exactly that gap). Needs a live repro with the log tailing
+  (`tail -f ~/.local/state/google-tui/log/google-tui.log`) to catch it.
+- [ ] **"Label refresh error" notify after replying/archiving.** Confirmed in
+  the log — real, transient network errors (`IncompleteRead(0 bytes read)`,
+  `[SSL: RECORD_LAYER_FAILURE]`, "The read operation timed out") surfacing
+  raw from `_refresh_email_for_label` (`main.py:2571-2587`), the handler for
+  `email-label-select`'s `Select.Changed` (i.e. switching which
+  label/mailbox view is current — this is the same widget the `l` key opens,
+  see the Labels item below). No retry, and the raw exception string is shown
+  to the user instead of a friendlier "couldn't refresh, still showing
+  cached list" — worth at least one retry-once-on-timeout before surfacing.
+- [ ] **Reply → archive → reply sequence made a thread disappear from Inbox**
+  even though Roger's follow-up reply should have put it back (Gmail
+  auto-restores the INBOX label on any thread that gets a new message).
+  Likely interacts with `_run_mutation`'s optimistic cache handling for
+  trash/archive (`main.py:5967-6039`) and the transient network errors above
+  hitting mid-refresh — a refresh that fails partway through (as the SSL/
+  timeout errors above show does happen) could leave `self._threads_cache`
+  in a stale post-archive state that a later successful refresh doesn't
+  correct if the correction logic assumes the cache was left consistent.
+  Needs a targeted repro (archive a thread, have the other party reply, then
+  `Ctrl+R`) with log capture.
+- [ ] **`LabelPickerModal` ("L" in `ThreadModal`) doesn't show already-applied
+  labels, and applying labels doesn't visibly "stick."** The first half is a
+  known, documented limitation — the class docstring (`main.py:5650-5660`)
+  explains `gauth.get_thread` doesn't return per-thread `labelIds`, so there's
+  nothing to pre-check. The second half may not be an actual save failure:
+  `_on_labels_result` → `_run_mutation` (`main.py:5993-6039`) calls
+  `gauth.modify_labels` for real and only fails silently-to-the-user if an
+  exception is swallowed somewhere, but with `close=False` the modal stays
+  open and nothing in the UI ever reflects the newly-applied label — combined
+  with the "can't show already-applied" gap above, a successful apply and a
+  silent failure look identical to the user. Fix: have `get_thread` also
+  return `labelIds` (Gmail's `threads().get` already includes them per-message
+  in the full payload — no extra API call needed) so `LabelPickerModal` can
+  pre-check current labels AND the thread list can show label chips (see the
+  Email feature list below), which would make a successful apply visibly
+  confirmed instead of trusting a toast alone.
+- [ ] **Drive/Mail preview panes don't start scrolled to the top on longer
+  content.** For Drive: `#drive-preview-text` is a `RichLog` (`main.py:1792`),
+  which defaults to `auto_scroll=True` — every `.write()` in
+  `_apply_drive_preview` (`main.py:4617-4619`) jumps it straight to the
+  bottom. Fix: construct with `auto_scroll=False` (or call
+  `.scroll_home(animate=False)` right after `.write()`). For Mail/Browser/
+  News: `DocumentView.watch_document` (`render.py:1078+`) never resets
+  scroll position when a new `Document` is assigned, so the pane can retain
+  whatever offset the previous (possibly longer) document was scrolled to.
+  Fix: add `self.scroll_home(animate=False)` at the end of `watch_document`.
+- [ ] **`Alt+Right` doesn't move focus into the preview column** on Mail or
+  Drive. Per AGENTS.md §2, `Alt+Left/Right` already means something
+  context-specific on the Dashboard (adjacent pane), Browser (back/forward),
+  and Settings (cycle sub-tab) — but on Mail/Drive it's currently unbound,
+  so there's no keyboard way to move focus from the list into `#right`/
+  `#drive-preview-col` at all (mouse click or repeated `Tab` only). Wire it
+  the same way the other tabs do, scoped to Mail/Drive.
+- [ ] **Forwarded email from Roger didn't show the inline quoted original.**
+  `gauth._extract_body`/`_extract_html_body` (`gauth.py:334-368`) recurse
+  through ordinary `multipart/alternative`/`multipart/mixed` nesting fine,
+  but neither one has any special case for a `message/rfc822` MIME part —
+  the way some mail clients (not Gmail's own web "Forward," which inlines
+  the original as quoted plain text/HTML in the normal body) attach a
+  forwarded original as a genuine nested message. That part's content would
+  fall through both extractors' loops and get silently dropped. Needs a
+  real sample (export the raw message via `messages().get(format="raw")`
+  to see its actual MIME tree) before writing a fix blind.
+
+## P2 — Email
+
+- [ ] **Default to Inbox, not All Mail — for the Email tab AND Dashboard.**
+  `Settings.default_label_id` defaults to `"INBOX"` (`settings.py:21`) and
+  already drives both surfaces — `_fetch_mail_data` (`main.py:2492-2493`)
+  filters by `self._current_label_id` for the Email tab, and
+  `_populate_dash_mail` (`main.py:3484-3500`) is fed the SAME filtered
+  `threads` list, further narrowed to unread. That's one shared setting,
+  which is probably the actual bug here: once you switch the Email tab's
+  view to "All Mail" or a custom label (via `email-label-select`, the same
+  widget `l` opens), the Dashboard's MAIL card silently follows along too,
+  since there's no separate "Dashboard always means Inbox" concept. Likely
+  fix: decouple the Dashboard MAIL card from `_current_label_id` and always
+  fetch/filter it against INBOX specifically, regardless of what the Email
+  tab happens to be browsing.
+- [ ] **Date/time-received columns on the Email list and Dashboard MAIL
+  card, sorted newest-first by default.** Currently `_email_collapsed_line`
+  (`main.py:635-639`) is one flat string (sender/subject only, no date) in a
+  plain `ListView`/`Label`, not a `DataTable` — real columns would mean
+  either switching the Email pane to a `DataTable` (bigger change, would also
+  need to preserve lightbar-style `Enter`/`Space` row actions) or appending a
+  formatted date to the existing string (cheaper, but not a real sortable
+  column). Gmail thread order from `list_threads` is already newest-first by
+  internal date, so "sorted newest first by default" may already hold —
+  confirm before assuming it needs a sort change too.
+- [ ] **Show applied labels under/after the subject** in the Email list —
+  needs `get_thread`/`list_threads` to actually return `labelIds` first (see
+  the P1 LabelPickerModal item above); once that data exists, add a
+  `_label_display_name`-formatted chip line under the subject the same way
+  `_thread_expanded_text` adds the snippet line today.
+- [ ] **Searchable/filterable label list** — `email-label-select` and
+  `LabelPickerModal`'s `SelectionList` are both flat, unfiltered lists today;
+  a Gmail account with many labels (nested categories, auto-created ones)
+  gets unwieldy. Filter-as-you-type, same idiom as Contacts'
+  `_fuzzy_filter_contacts` (`main.py`, `rapidfuzz`-based).
+- [ ] **Quote the last message below new reply text** (toggleable in
+  Settings) — helps recall what was being replied to. `ComposeModal`'s
+  reply/reply-all path (`main.py:6062+`) would need to prepend a `"> "`-
+  quoted rendering of the prior message's body, gated by a new
+  `Settings.quote_on_reply` (default on, since Gmail's own web client does
+  this by default too).
+
+## P2 — Calendar
+
+- [ ] **Highlight today's date** on the Month grid — `#cal-grid`
+  (`_apply_cal_month`, `main.py:4051+`) has no special styling for the
+  current day's cell today.
+- [ ] **Better multi-day event display** — Week view currently repeats an
+  event's summary text into every hour row it spans (a text-cell
+  approximation, see AGENTS.md §1), which doesn't read well for all-day/
+  multi-day spans specifically; consider a dedicated all-day row above the
+  hour grid instead (how Google Calendar's own web week view does it).
+- [ ] **Background-color events by their source calendar** — `list_events`
+  would need to also return each event's calendar id/color
+  (`colorId`/calendar's own color), threaded through `_apply_cal_month`/
+  `_apply_cal_week`'s cell-building so each event's `DataTable` cell/segment
+  gets a per-calendar background style.
+- [ ] **Size the Month grid's day squares to better fill the terminal** —
+  `#cal-grid` currently has a fixed row/column sizing regardless of terminal
+  dimensions; investigate `DataTable` cell-height/column-width options for
+  filling available space more completely, similar in spirit to the P4
+  sub-hour week-view item already on this list.
+
+## P2 — Drive
+
+- [ ] **Better binary-vs-image detection in the file preview**, instead of
+  the current single "(binary/image file — no text preview)" message for
+  everything `_is_previewable()` (`main.py:925-926`) says no to. Split the
+  message (and eventually the handling) by mimetype: an actual image
+  (`image/*`) vs. a real binary (executables, archives, etc.) are different
+  situations for a user, even though neither gets a text preview today. Full
+  in-terminal image rendering is the bigger P4 item below (needs
+  `textual-image`); this is just the smaller "say what kind of file it is"
+  fix using the mimetype already fetched via `gauth.get_file_metadata`.
+- [ ] **Download a Drive file to the local filesystem** — no such action
+  exists today; `gauth.read_drive_text`/`get_file_metadata` only read for
+  in-app preview. Would need a new `gauth` download helper (`files().get_media`
+  for binary, `files().export_media` for native Google Docs/Sheets/Slides —
+  same `_MIME_EXPORT` table `gauth.py:633+` already uses for text preview)
+  and a destination-path prompt, likely reusing whatever prompt/modal pattern
+  Navigation's `_export_itinerary` (`main.py:~350`) already established for
+  "write a file to `user_documents_dir()`."
+
+## P2 — General UI
+
+- [ ] **Drop the underline on clickable/link text** — makes it harder to
+  read, not easier. Best candidate found: `render._LINK_STYLE = "underline
+  bright_cyan"` (`render.py:1023`), used for every numbered `[N]` link in
+  `DocumentView` (Browser pages, Gopher/Gemini menus, search results, News
+  entries, HTML email bodies) — try `bright_cyan` alone, no underline, and
+  confirm that's the element being reported (vs. e.g. a `Button` label)
+  before changing it.
+
+## P3 — Browser
+
+- [ ] **`Alt+H` → plain `H`** for jumping to the configured home URL — frees
+  up a modifier chord for a single keystroke, consistent with the `B`
+  bookmarks binding below. Update `bindings.py`'s `ActionSpec` for whichever
+  action currently owns `alt+h`.
+- [ ] **`B` reopens the bookmarks/new-tab page** — today `_BROWSER_BOOKMARKS`
+  (`main.py:966-978`) is only shown before the first page load/search of the
+  session and then hidden permanently (`self._browser_started`,
+  `main.py:3927`); there's no way back to it once you've navigated away.
+  `B` should re-show it (or push a dedicated bookmarks view — see below).
+- [ ] **Settings → General: start-page preference** (home URL vs. bookmarks
+  list) for the Browser tab on launch — new `Settings` field alongside the
+  existing `browser_home_url`.
+- [ ] **Bookmarks as a lightbar-selectable list with folders**, not buttons —
+  `_BROWSER_BOOKMARKS` is currently a flat list of `Button`s
+  (`main.py:1800-1802`). Rework into a `ListView`-based screen with folder
+  nesting, reusing the Drive tab's folder-navigation pattern (arrow keys +
+  Enter to descend, "up" to go back) rather than inventing a new nav idiom.
+- [ ] **`Ctrl+B` bookmarks the current page** — once `B` is a real bookmarks
+  view (above), add the current `#browser-url` value as a new user bookmark
+  (persisted in `Settings`, not the hardcoded `_BROWSER_BOOKMARKS` starter
+  list).
+- [ ] **Color-code or folderize bookmarks by protocol** (web/Gopher/Gemini) —
+  a column or icon per protocol, once bookmarks are a real list widget
+  rather than buttons; exact treatment is a UI/UX call to make once the list
+  view above exists, not before.
+- [ ] **Pull synced Chrome/Android bookmarks** — investigate whether any
+  Google API exposes a user's synced Chrome bookmarks (there is no public
+  "Chrome Sync" API for third-party apps as of this writing — likely a hard
+  no without an unofficial/reverse-engineered approach, which this app
+  should avoid; confirm before spending real time on it).
+- [ ] **FTP/SFTP/SCP browser** — new protocol clients alongside the existing
+  HTTP/Gopher/Gemini ones in `fetchers.py`, supporting anonymous connections
+  and saved credentials (prompt on first connection, saved credentials
+  living in a new Settings sub-tab), plus download-to-local-filesystem
+  (shares the destination-path-prompt need with the Drive download item
+  above). *(Suggested model: Opus — new protocol clients, credential
+  storage, and Settings UI; comparable in scope to the existing Usenet P4
+  item below.)*
+
 ## P4 — Nice-to-have
 
 - [ ] **Week view sub-hour granularity** (30/15-minute rows) — the current
