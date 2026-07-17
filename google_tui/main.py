@@ -636,7 +636,8 @@ def _email_collapsed_line(th: dict, show_sender_address: bool = False) -> str:
     mark = "•" if th["unread"] else " "
     subj = th["subject"] or "(no subject)"
     frm = _format_sender(th["from"], show_sender_address)
-    return f"{mark} {frm[:36]:<36} {subj[:60]}  ({th['count']})"
+    count_note = f"  ({th['count']})" if th["count"] > 1 else ""
+    return f"{mark} {frm[:36]:<36} {subj[:60]}{count_note}"
 
 
 def _thread_expanded_text(th: dict, msgs: list[dict], show_sender_address: bool = False) -> str:
@@ -2570,22 +2571,31 @@ class GoogleTUI(App):
 
     def _refresh_email_for_label(self) -> None:
         label_id = self._current_label_id
-        try:
-            label_ids = None if label_id in (None, "ALL") else [label_id]
-            # Same historyId revalidation as _fetch_mail_data: switching back to
-            # a label you've already opened re-reads it from cache rather than
-            # re-pulling 80 thread summaries from Gmail.
-            threads, next_page_token = gauth.list_threads(
-                self.svc, max_results=80, label_ids=label_ids,
-                known=self._cached_thread_summaries(label_id))
-            # Switching labels means "Load more" (if any) now applies to
-            # THIS label's next page, not whatever label was active before.
-            self._email_next_page_token = next_page_token
-            if self._cache:
-                self._cache.put_many(f"thread_summary:{label_id}", {t["threadId"]: t for t in threads})
-        except Exception as e:
-            self.call_from_thread(self.notify, f"Label refresh error: {e}", severity="error")
-            return
+        label_ids = None if label_id in (None, "ALL") else [label_id]
+        known = self._cached_thread_summaries(label_id)
+        # One retry before giving up: the errors seen in practice here
+        # (IncompleteRead, SSL record-layer failures, read timeouts) are
+        # transient network blips, not real failures — worth one quiet
+        # retry before bothering the user with an error.
+        for attempt in range(2):
+            try:
+                threads, next_page_token = gauth.list_threads(
+                    self.svc, max_results=80, label_ids=label_ids, known=known)
+                break
+            except Exception:
+                if attempt == 0:
+                    time.sleep(1.5)
+                    continue
+                self.call_from_thread(
+                    self.notify,
+                    "Couldn't refresh mail — still showing the cached list.",
+                    severity="warning")
+                return
+        # Switching labels means "Load more" (if any) now applies to
+        # THIS label's next page, not whatever label was active before.
+        self._email_next_page_token = next_page_token
+        if self._cache:
+            self._cache.put_many(f"thread_summary:{label_id}", {t["threadId"]: t for t in threads})
         self.call_from_thread(self._apply_email_list, threads)
 
     def action_load_more_email(self) -> None:
@@ -2845,20 +2855,50 @@ class GoogleTUI(App):
     def action_goto_pane_hermes(self): self._goto_pane("hermes")
 
     def action_switch_left(self):
-        if self._main_tabs().active == "tab-browser":
+        active = self._main_tabs().active
+        if active == "tab-browser":
             self._browser_back()
-        elif self._main_tabs().active == "tab-settings":
+        elif active == "tab-settings":
             self._cycle_settings_tab(-1)
+        elif active in ("tab-mail", "tab-drive"):
+            self._focus_list_column(active)
         else:
             self._adjacent("left")
 
     def action_switch_right(self):
-        if self._main_tabs().active == "tab-browser":
+        active = self._main_tabs().active
+        if active == "tab-browser":
             self._browser_forward()
-        elif self._main_tabs().active == "tab-settings":
+        elif active == "tab-settings":
             self._cycle_settings_tab(1)
+        elif active in ("tab-mail", "tab-drive"):
+            self._focus_preview_column(active)
         else:
             self._adjacent("right")
+
+    # Mail/Drive have no adjacent-pane grid (that's Dashboard's DASH_
+    # ADJACENCY concept) but each still has a two-column list/preview
+    # layout -- Alt+Left/Right moves focus between them, same idiom as
+    # Dashboard's pane-to-pane movement, gated on the preview actually
+    # being visible (the "p" toggle) so there's nothing to focus into
+    # when it's hidden.
+    def _focus_preview_column(self, active_tab: str) -> None:
+        if active_tab == "tab-mail":
+            if not self._email_preview_visible:
+                self.notify("Preview pane is hidden — press \"p\" to show it.", severity="warning")
+                return
+            self.query_one("#email-preview-doc").focus()
+        else:
+            if not self._drive_preview_visible:
+                self.notify("Preview pane is hidden — press \"p\" to show it.", severity="warning")
+                return
+            self.query_one("#drive-preview-text").focus()
+
+    def _focus_list_column(self, active_tab: str) -> None:
+        if active_tab == "tab-mail":
+            self.query_one("#email-list").focus()
+        else:
+            self.query_one("#drive-list").focus()
 
     def action_switch_up(self):    self._adjacent("up")
     def action_switch_down(self):  self._adjacent("down")
@@ -4618,6 +4658,7 @@ class GoogleTUI(App):
         text_widget.clear()
         if body:
             text_widget.write(body)
+        text_widget.scroll_home(animate=False)
 
     # ---- news tab (P1 M3) ----
     def _fetch_news_data(self) -> list[dict]:
@@ -5649,24 +5690,25 @@ class UnlockModal(ModalScreen):
 
 class LabelPickerModal(ModalScreen):
     """Multi-select label picker for ThreadModal's "L" action. Presents the
-    account's user labels as a checklist; dismisses with the list of selected
-    label ids to ADD to the thread (or None on cancel).
+    account's user labels as a checklist, pre-checked for whichever labels
+    the thread already carries (`applied_ids`, from the union of each
+    message's `label_ids` — see gauth.get_thread); dismisses with the list
+    of NEWLY selected label ids to ADD to the thread (or None on cancel).
+    Already-applied ids are excluded from the add-list since they're
+    already on the thread — this stays assign-only (no removal), matching
+    what the ROADMAP asked for."""
 
-    Deliberately assign-only (add), not a full add/remove editor: the thread
-    body fetch (gauth.get_thread) doesn't return per-thread labelIds, so we
-    can't pre-check "already applied" labels to offer removal without an extra
-    round-trip. "Assign labels" is what the ROADMAP asked for; a
-    remove/toggle editor is a reasonable future extension (see CHANGELOG)."""
-
-    def __init__(self, labels: list[dict]):
+    def __init__(self, labels: list[dict], applied_ids: frozenset[str] = frozenset()):
         super().__init__()
         self._labels = labels
+        self._applied_ids = applied_ids
 
     def compose(self) -> ComposeResult:
         with Container(id="labelpick-box", classes="pane"):
             yield Label("ASSIGN LABELS", classes="pane-title-text")
             yield SelectionList(
-                *[(_label_display_name(l), l["id"]) for l in self._labels],
+                *[(_label_display_name(l), l["id"], l["id"] in self._applied_ids)
+                  for l in self._labels],
                 id="labelpick-list")
             with Horizontal(classes="btnrow"):
                 yield Button("Apply", id="labelpick-apply")
@@ -5674,7 +5716,8 @@ class LabelPickerModal(ModalScreen):
 
     def on_button_pressed(self, e: Button.Pressed) -> None:
         if e.button.id == "labelpick-apply":
-            self.dismiss(list(self.query_one("#labelpick-list", SelectionList).selected))
+            selected = set(self.query_one("#labelpick-list", SelectionList).selected)
+            self.dismiss(list(selected - self._applied_ids))
         else:
             self.dismiss(None)
 
@@ -5745,10 +5788,16 @@ class ThreadModal(ModalScreen):
         self._search_targets: list[tuple[DocumentView, str]] = []
         self._search_matches: list[DocumentView] = []
         self._search_pos: int = -1
+        # Union of every message's label_ids (gauth.get_thread) — lets
+        # LabelPickerModal pre-check already-applied labels, and the
+        # "Labels: …" line below make an apply visibly confirmed instead of
+        # trusting the toast alone (see ROADMAP P1 LabelPickerModal item).
+        self._label_ids: set[str] = set()
 
     def compose(self) -> ComposeResult:
         with Container(id="thread-box", classes="pane"):
             yield Label("THREAD", classes="pane-title-text", id="thread-title")
+            yield Static("", id="thread-labels", classes="muted")
             yield Input(placeholder="Find in thread… (Enter = next)",
                         id="thread-search", classes="hidden")
             with VerticalScroll(id="thread-messages"):
@@ -5827,6 +5876,10 @@ class ThreadModal(ModalScreen):
         # fire-and-forget `.mount()` races it. call_from_thread awaits a
         # coroutine callback via `invoke()`, so returning one here is safe.
         self._update_title()
+        self._label_ids = set()
+        for m in msgs:
+            self._label_ids.update(m.get("label_ids") or [])
+        self._update_labels_line()
         # A fresh thread body invalidates the previous message's search hits.
         self._search_targets = []
         self._search_matches = []
@@ -5877,6 +5930,15 @@ class ThreadModal(ModalScreen):
             title.update(f"THREAD  ({self.index + 1}/{len(self.thread_ids)})")
         else:
             title.update("THREAD")
+
+    def _update_labels_line(self) -> None:
+        try:
+            widget = self.query_one("#thread-labels", Static)
+        except Exception:
+            return
+        by_id = {l["id"]: l for l in getattr(self.app, "_labels_cache", [])}
+        names = sorted(_label_display_name(by_id[lid]) for lid in self._label_ids if lid in by_id)
+        widget.update(f"Labels: {', '.join(names)}" if names else "")
 
     def _apply_error(self, error: Exception) -> None:
         container = self.query_one("#thread-messages", VerticalScroll)
@@ -5991,12 +6053,16 @@ class ThreadModal(ModalScreen):
         if not pickable:
             self.app.notify("No labels available to assign", severity="warning")
             return
-        self.app.push_screen(LabelPickerModal(pickable), self._on_labels_result)
+        self.app.push_screen(
+            LabelPickerModal(pickable, applied_ids=frozenset(self._label_ids)),
+            self._on_labels_result)
 
     def _on_labels_result(self, add_ids) -> None:
         if not add_ids:
             return
         if not self.app._online:
+            self._label_ids.update(add_ids)
+            self._update_labels_line()
             self._queue_mutation(
                 {"type": "modify_labels", "thread_id": self.thread_id, "add": list(add_ids)},
                 f"Offline — queued {len(add_ids)} label(s), will apply once reconnected.",
@@ -6004,7 +6070,12 @@ class ThreadModal(ModalScreen):
             return
         self._run_mutation(
             lambda: gauth.modify_labels(self.svc, self.thread_id, add=list(add_ids)),
-            f"Applied {len(add_ids)} label(s)", close=False)
+            f"Applied {len(add_ids)} label(s)", close=False,
+            on_success=lambda: self._confirm_labels_applied(add_ids))
+
+    def _confirm_labels_applied(self, add_ids) -> None:
+        self._label_ids.update(add_ids)
+        self._update_labels_line()
 
     def _queue_mutation(self, mutation: dict, msg: str, close: bool = True) -> None:
         """Offline counterpart to _run_mutation: enqueue for replay instead of
@@ -6023,11 +6094,14 @@ class ThreadModal(ModalScreen):
         if close:
             self.dismiss("queued")
 
-    def _run_mutation(self, fn, success_msg: str, close: bool = True) -> None:
+    def _run_mutation(self, fn, success_msg: str, close: bool = True, on_success=None) -> None:
         """Run a mutating gauth call on a worker thread (fetch/apply split),
         then notify + (optionally) dismiss with "refresh" so the Email pane
         drops/updates the thread. `close=False` keeps the modal open (used for
-        label changes, which don't remove the thread from view)."""
+        label changes, which don't remove the thread from view). `on_success`,
+        if given, runs on the UI thread right before the notify — used by the
+        labels flow to reflect the newly-applied labels immediately instead of
+        trusting the toast alone (see LabelPickerModal/action_labels)."""
         def work() -> None:
             try:
                 fn()
@@ -6035,10 +6109,12 @@ class ThreadModal(ModalScreen):
                 self.app.call_from_thread(self.app.notify, f"Action failed: {e}",
                                           severity="error")
                 return
-            self.app.call_from_thread(self._after_mutation, success_msg, close)
+            self.app.call_from_thread(self._after_mutation, success_msg, close, on_success)
         self.run_worker(work, thread=True, exclusive=True)
 
-    def _after_mutation(self, msg: str, close: bool) -> None:
+    def _after_mutation(self, msg: str, close: bool, on_success=None) -> None:
+        if on_success:
+            on_success()
         self.app.notify(msg)
         if close:
             self.dismiss("refresh")

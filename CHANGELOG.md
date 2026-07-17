@@ -3,6 +3,59 @@
 Format: keep newest at top. One entry per meaningful change. Reference files
 touched and any breaking notes.
 
+## [2026-07-18] — P1 bug batch from the 2026-07-17 live-usage testing pass
+
+Five of the eight P1 bugs from that testing pass, all reproducible/fixable
+without a live repro session (the other three — the reported `Ctrl+R` crash,
+the reply→archive→reply thread-disappears sequence, and the dropped
+forwarded-message body — stay open on the ROADMAP pending a live repro or a
+real raw-MIME sample).
+
+**`(1)` no longer shown after single-message threads.**
+`_email_collapsed_line` (`main.py`) appended `({th['count']})`
+unconditionally; now only when `count > 1`, matching `_thread_expanded_text`'s
+already-conditional "(N messages)" note.
+
+**Label refresh retries once before surfacing a network error.**
+`_refresh_email_for_label` (`main.py`) now retries the `list_threads` call
+once after a 1.5s pause before giving up — the errors seen in practice here
+(`IncompleteRead`, SSL record-layer failures, read timeouts) are transient
+network blips, not real failures. On a second failure it shows "Couldn't
+refresh mail — still showing the cached list" instead of the raw exception
+string.
+
+**Drive/Mail preview panes start scrolled to the top.** `_apply_drive_preview`
+(`main.py`) now calls `.scroll_home(animate=False)` on `#drive-preview-text`
+after writing; `DocumentView.watch_document` (`render.py`) does the same at
+the end of every re-render, fixing the same gap for Mail/Browser/News
+(anywhere `DocumentView` is used) — previously a new, shorter document could
+inherit whatever scroll offset a longer previous one was left at.
+
+**`Alt+Right`/`Alt+Left` move focus into/out of the preview column on Mail
+and Drive.** Previously unbound on those two tabs (`_adjacent`, the
+Dashboard-only adjacency walk, silently no-op'd there). `action_switch_right`/
+`action_switch_left` (`main.py`) now special-case `tab-mail`/`tab-drive`,
+moving focus to `#email-preview-doc`/`#drive-preview-text` and back to
+`#email-list`/`#drive-list`; moving into a hidden preview pane (the "p"
+toggle) notifies instead of focusing nothing.
+
+**`LabelPickerModal` pre-checks already-applied labels; applying labels is
+now visibly confirmed.** `gauth.get_thread` (`gauth.py`) now includes each
+message's `label_ids` (Gmail's `threads().get` already returns `labelIds` per
+message — no extra API call). `ThreadModal` (`main.py`) computes the
+thread's label set as the union across messages, shows it as a new
+"Labels: …" line under the title, pre-checks those ids in
+`LabelPickerModal`'s `SelectionList` (which now takes `applied_ids` and only
+returns newly-*added* ids, staying assign-only), and updates the line
+immediately on a successful `modify_labels` call — a successful apply and a
+silent failure no longer look identical.
+
+Files: `google_tui/main.py`, `google_tui/gauth.py`, `google_tui/render.py`,
+`google_tui/bindings.py`. Verified via an isolated, fully-mocked `run_test`
+pilot (platformdirs redirected to a temp dir, no live API calls): the `(1)`
+suffix logic, Alt+Right/Left focus transitions on both tabs (including the
+hidden-preview no-op case), and the label pre-check/confirm round trip.
+
 ## [2026-07-18] — Ctrl+K Hermes quick-ask popup + Dashboard card enable/disable
 
 Two additions on top of `[2026-07-17]`'s Dashboard rebuild:

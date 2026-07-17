@@ -332,7 +332,9 @@ MAIL TAB
   p toggles a preview pane on the right showing the highlighted thread's
   latest message (hidden by default — Settings → General to change the
   default) — while visible, it live-updates as you move the highlight,
-  Outlook-reading-pane style; press p again to hide it.
+  Outlook-reading-pane style; press p again to hide it. Alt+Right moves
+  focus into the preview pane (Alt+Left back to the thread list) once it's
+  visible.
 
   Thread view (opened via Enter): R/A/F Reply / Reply All / Forward — same
   keys as the Email pane, now with visible button hints — Esc/Close closes.
@@ -368,6 +370,8 @@ DRIVE TAB
                 (not the whole Drive tree)
   p             Toggle the preview/info column — hide it to give the file
                 list the full width
+  Alt+Right     Move focus into the preview column (Alt+Left back to the
+                file list) once it's visible
 
 BROWSER TAB
   Enter (address bar)    Load URL, or run a search (bare text w/ no scheme searches)

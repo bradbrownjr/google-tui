@@ -7,10 +7,6 @@ just checking it off here, so ROADMAP.md only ever shows what's still open.
 
 ## P1 — Bugs (from 2026-07-17 live-usage testing)
 
-- [ ] **`(1)` shown after every single-message thread's subject.**
-  `_email_collapsed_line` (`main.py:635-639`) appends `({th['count']})`
-  unconditionally — should only append when `count > 1`, matching how
-  `_thread_expanded_text`'s "(N messages)" note is already conditional.
 - [ ] **`Ctrl+R` reportedly crashed the app with no visible error.** Every
   unhandled exception is supposed to be caught by `GoogleTUI._handle_exception`
   and logged to `platformdirs.user_log_dir("google-tui")/google-tui.log`
@@ -21,15 +17,6 @@ just checking it off here, so ROADMAP.md only ever shows what's still open.
   after Textual's event loop is pumping — see the comment at `main.py:7074`
   about exactly that gap). Needs a live repro with the log tailing
   (`tail -f ~/.local/state/google-tui/log/google-tui.log`) to catch it.
-- [ ] **"Label refresh error" notify after replying/archiving.** Confirmed in
-  the log — real, transient network errors (`IncompleteRead(0 bytes read)`,
-  `[SSL: RECORD_LAYER_FAILURE]`, "The read operation timed out") surfacing
-  raw from `_refresh_email_for_label` (`main.py:2571-2587`), the handler for
-  `email-label-select`'s `Select.Changed` (i.e. switching which
-  label/mailbox view is current — this is the same widget the `l` key opens,
-  see the Labels item below). No retry, and the raw exception string is shown
-  to the user instead of a friendlier "couldn't refresh, still showing
-  cached list" — worth at least one retry-once-on-timeout before surfacing.
 - [ ] **Reply → archive → reply sequence made a thread disappear from Inbox**
   even though Roger's follow-up reply should have put it back (Gmail
   auto-restores the INBOX label on any thread that gets a new message).
@@ -41,39 +28,6 @@ just checking it off here, so ROADMAP.md only ever shows what's still open.
   correct if the correction logic assumes the cache was left consistent.
   Needs a targeted repro (archive a thread, have the other party reply, then
   `Ctrl+R`) with log capture.
-- [ ] **`LabelPickerModal` ("L" in `ThreadModal`) doesn't show already-applied
-  labels, and applying labels doesn't visibly "stick."** The first half is a
-  known, documented limitation — the class docstring (`main.py:5650-5660`)
-  explains `gauth.get_thread` doesn't return per-thread `labelIds`, so there's
-  nothing to pre-check. The second half may not be an actual save failure:
-  `_on_labels_result` → `_run_mutation` (`main.py:5993-6039`) calls
-  `gauth.modify_labels` for real and only fails silently-to-the-user if an
-  exception is swallowed somewhere, but with `close=False` the modal stays
-  open and nothing in the UI ever reflects the newly-applied label — combined
-  with the "can't show already-applied" gap above, a successful apply and a
-  silent failure look identical to the user. Fix: have `get_thread` also
-  return `labelIds` (Gmail's `threads().get` already includes them per-message
-  in the full payload — no extra API call needed) so `LabelPickerModal` can
-  pre-check current labels AND the thread list can show label chips (see the
-  Email feature list below), which would make a successful apply visibly
-  confirmed instead of trusting a toast alone.
-- [ ] **Drive/Mail preview panes don't start scrolled to the top on longer
-  content.** For Drive: `#drive-preview-text` is a `RichLog` (`main.py:1792`),
-  which defaults to `auto_scroll=True` — every `.write()` in
-  `_apply_drive_preview` (`main.py:4617-4619`) jumps it straight to the
-  bottom. Fix: construct with `auto_scroll=False` (or call
-  `.scroll_home(animate=False)` right after `.write()`). For Mail/Browser/
-  News: `DocumentView.watch_document` (`render.py:1078+`) never resets
-  scroll position when a new `Document` is assigned, so the pane can retain
-  whatever offset the previous (possibly longer) document was scrolled to.
-  Fix: add `self.scroll_home(animate=False)` at the end of `watch_document`.
-- [ ] **`Alt+Right` doesn't move focus into the preview column** on Mail or
-  Drive. Per AGENTS.md §2, `Alt+Left/Right` already means something
-  context-specific on the Dashboard (adjacent pane), Browser (back/forward),
-  and Settings (cycle sub-tab) — but on Mail/Drive it's currently unbound,
-  so there's no keyboard way to move focus from the list into `#right`/
-  `#drive-preview-col` at all (mouse click or repeated `Tab` only). Wire it
-  the same way the other tabs do, scoped to Mail/Drive.
 - [ ] **Forwarded email from Roger didn't show the inline quoted original.**
   `gauth._extract_body`/`_extract_html_body` (`gauth.py:334-368`) recurse
   through ordinary `multipart/alternative`/`multipart/mixed` nesting fine,
@@ -111,10 +65,12 @@ just checking it off here, so ROADMAP.md only ever shows what's still open.
   internal date, so "sorted newest first by default" may already hold —
   confirm before assuming it needs a sort change too.
 - [ ] **Show applied labels under/after the subject** in the Email list —
-  needs `get_thread`/`list_threads` to actually return `labelIds` first (see
-  the P1 LabelPickerModal item above); once that data exists, add a
-  `_label_display_name`-formatted chip line under the subject the same way
-  `_thread_expanded_text` adds the snippet line today.
+  `gauth.get_thread` returns per-message `label_ids` now (`[2026-07-18]`,
+  used by `ThreadModal`'s "Labels: …" line and `LabelPickerModal`'s
+  pre-check), but `list_threads`/the thread-summary dicts the Email list
+  itself renders from still don't carry `labelIds`; needs that piece too
+  before adding a `_label_display_name`-formatted chip line under the
+  subject the same way `_thread_expanded_text` adds the snippet line today.
 - [ ] **Searchable/filterable label list** — `email-label-select` and
   `LabelPickerModal`'s `SelectionList` are both flat, unfiltered lists today;
   a Gmail account with many labels (nested categories, auto-created ones)
@@ -312,6 +268,17 @@ just checking it off here, so ROADMAP.md only ever shows what's still open.
 
 ## Done
 
+- [x] **P1 bug batch from the 2026-07-17 live-usage testing pass**
+  (`[2026-07-18]`) — five of eight: the `(1)` suffix on single-message
+  threads, retry-once-on-timeout for the label refresh error, Drive/Mail
+  preview panes scrolling to top on new content, `Alt+Right`/`Alt+Left`
+  focus movement into/out of the Mail/Drive preview columns, and
+  `LabelPickerModal` pre-checking already-applied labels (`gauth.get_thread`
+  now returns per-message `label_ids`) with a new "Labels: …" line in
+  `ThreadModal` confirming a successful apply. The other three (`Ctrl+R`
+  crash, reply→archive→reply thread disappearing, dropped forwarded-message
+  body) stay open above — each needs a live repro or a real raw-MIME sample
+  before a blind fix. See CHANGELOG.
 - [x] **Ctrl+K Hermes quick-ask popup + Dashboard card enable/disable**
   (`[2026-07-18]`) — `HermesAskModal` pops up the configured AI provider's
   ask box from any tab; the Dashboard's own Hermes card now names the

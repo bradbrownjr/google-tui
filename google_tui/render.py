@@ -1105,6 +1105,7 @@ class DocumentView(VerticalScroll):
         body_widget.update(
             Group(*self._render_blocks(document.blocks, content_links)) if document.blocks else ""
         )
+        self.scroll_home(animate=False)
 
     # -- rendering helpers --------------------------------------------------
 

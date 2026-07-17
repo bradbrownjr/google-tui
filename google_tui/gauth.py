@@ -327,6 +327,10 @@ def get_thread(svc, thread_id: str) -> list[dict]:
             # — ask.py's build_ctx() and other callers rely on it staying a
             # plain-text string; html_body is purely additive.
             "html_body": html_body,
+            # Per-message labelIds, straight from the full payload — no
+            # extra API call needed. Thread-level "current labels" is the
+            # union of these across every message (LabelPickerModal).
+            "label_ids": m.get("labelIds", []),
         })
     return msgs
 
