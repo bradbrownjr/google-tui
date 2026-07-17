@@ -230,33 +230,53 @@ Other tabs:
     who/what/where/when: `fields="id,name,mimeType,size,owners,
     modifiedTime,createdTime,parents,webViewLink"`.
 - **Browser tab** (`Ctrl+4`, P1 M2): address bar (`Input#browser-url`) + a
-  mode badge (`Static#browser-mode`: WEB/GOPHER/GEMINI/SEARCH) + a
+  mode badge (`Static#browser-mode`: WEB/GOPHER/GEMINI/FTP/SEARCH) + a
   `render.DocumentView` (`#browser-doc`) rendering whatever came back. A
-  "new tab page" row of starter-destination buttons (`Horizontal
-  #browser-bookmarks`, between `#browser-bar` and `#browser-doc`) — module-
-  level `_BROWSER_BOOKMARKS` list (Google/Wikipedia/Gopherpedia/Gemini
-  Protocol, one per non-search protocol) — is visible until the first
-  successful page load or search of the session, then gets `.hidden`'d
-  permanently (`self._browser_started: bool`, flipped inside
-  `_browser_apply_document`) and never reappears; clicking a bookmark
-  (`on_button_pressed`'s `browser-bookmark-<i>` branch) navigates exactly
-  like typed address-bar input. Address-bar submission is classified by
-  `_classify_address()` (omnibox heuristic: explicit
-  `http(s)://`/`gopher://`/`gemini://` wins; a single dotted-word-with-no-
-  space gets `https://` prepended; everything else, including any text
-  containing a space, is a web search via `fetchers.run_search` — see
-  below). Fetching lives in `google_tui/fetchers.py`
-  (`fetch_http`/`fetch_gopher`/`fetch_gemini`/`run_search` and its three
-  backends), never in `render.py` (which stays I/O-free) or `main.py`
-  directly — every `fetch_*`/search call is blocking and run via
-  `self.run_worker(fn, thread=True, exclusive=True, group="browser-fetch")`,
-  same fetch/apply split as the rest of the app. History is an in-memory
-  `list[BrowserHistoryEntry]` (already-fetched `Document`s, not just URLs —
-  Back/Forward never re-fetches) — session-lifetime only, no SQLite cache
-  category for page content. `Alt+Left/Right` are back/forward (not `[`/`]`)
-  when the Browser tab is active; `Alt+H` (P2, 2026-07-15) jumps to
-  `Settings.browser_home_url` (default `https://www.google.com`, editable in
-  Settings → General) the same way clicking a bookmark button does; `Tab`/
+  bookmarks `ListView` (`#browser-bookmarks`, between `#browser-bar` and
+  `#browser-doc`, P3 2026-07-18 — was a flat row of starter-destination
+  `Button`s until then) backed by persisted, user-editable
+  `Settings.browser_bookmarks` (list of `{"type": "bookmark", label, url}` /
+  `{"type": "folder", label, children}` dicts; same starter 4 entries as the
+  old hardcoded default). `GoogleTUI._bookmarks_render` (fire-and-forget via
+  `run_worker` + a generation counter — see the `ListView.clear()` NOTE
+  below, this hit the exact same trap) renders the current folder, each row
+  icon/color-coded by protocol (`_bookmark_scheme_style`). Folder descend/
+  ascend mirrors Drive's folder-stack idiom (`_bookmark_current_list`/
+  `_bookmark_parent_stack`, synthetic `"bm-up"` row) over plain Python lists
+  — nothing to fetch, unlike Drive. Visible on the Browser tab's first
+  activation each session when `Settings.browser_start_page == "bookmarks"`
+  (the default — `"home"` auto-navigates instead, see
+  `on_tabbed_content_tab_activated`'s `tab-browser` branch), hidden on every
+  successful navigation, `B` (`action_browser_show_bookmarks`) re-shows it
+  at the root at any point in the session (not just before first
+  navigation), `Ctrl+B` (`action_browser_bookmark_page` +
+  `BookmarkLabelModal`) adds the current `#browser-url` as a new top-level
+  bookmark. Address-bar submission is classified by `_classify_address()`
+  (omnibox heuristic: explicit `http(s)://`/`gopher://`/`gemini://`/`ftp://`
+  wins; a single dotted-word-with-no-space gets `https://` prepended;
+  everything else, including any text containing a space, is a web search
+  via `fetchers.run_search` — see below). Fetching lives in
+  `google_tui/fetchers.py` (`fetch_http`/`fetch_gopher`/`fetch_gemini`/
+  `fetch_ftp`/`run_search` and its three backends), never in `render.py`
+  (which stays I/O-free) or `main.py` directly — every `fetch_*`/search call
+  is blocking and run via `self.run_worker(fn, thread=True, exclusive=True,
+  group="browser-fetch")`, same fetch/apply split as the rest of the app.
+  `fetch_ftp` (P3, 2026-07-18, plain FTP only — SFTP/SCP still open, needs a
+  new `paramiko` dependency) tries anonymous login by default; a login
+  failure raises `FtpAuthRequired` (distinct from `BrowserFetchError`) so
+  `_browser_fetch_thread` can pop `FtpLoginModal` instead of just erroring,
+  and a successful login can be saved via `ftp_creds.py` (Fernet-encrypted
+  with the same key `Settings → General`'s cache encrypt-at-rest uses,
+  tracked in `GoogleTUI._encrypt_key`; stored in its own file, deliberately
+  NOT as `Cache` rows, so "Clear Cache" can't wipe a saved login). History is
+  an in-memory `list[BrowserHistoryEntry]` (already-fetched `Document`s, not
+  just URLs — Back/Forward never re-fetches) — session-lifetime only, no
+  SQLite cache category for page content. `Alt+Left/Right` are back/forward
+  (not `[`/`]`) when the Browser tab is active; `H` (P2 2026-07-15 as
+  `Alt+H`, rekeyed P3 2026-07-18 — like Mail's `r`/`a`/`f`/`c`, only fires
+  when the address bar `Input` doesn't have focus to consume it as typed
+  text first, unlike the old `Alt+H`) jumps to `Settings.browser_home_url`
+  (default `https://www.google.com`, editable in Settings → General); `Tab`/
   `Shift+Tab` toggle focus between the address bar and the page. `Page Up/
   Down/Home/End` inside `DocumentView` scroll instantly — see `render.py`'s
   `action_page_up`/`action_page_down`/`action_scroll_home`/`action_scroll_end`
@@ -375,9 +395,13 @@ Other tabs:
   `TabbedContent`):
   - `TabPane#settings-tab-general`: `Button#settings-reauth-google` (in-app
     Google OAuth re-authorization — see below) + `Input#settings-browser-home-url`
-    / `Button#settings-save-browser-home` (Browser tab's `Alt+H` home URL,
+    / `Button#settings-save-browser-home` (Browser tab's `H` home URL,
     P2, 2026-07-15 — backs `Settings.browser_home_url`, same
     Input+save-button pattern as the Nous/Routes API key rows) +
+    `Select#settings-browser-start-page` (bookmarks-vs-home on first Browser
+    tab visit each session, P3 2026-07-18 — backs `Settings.browser_start_page`)
+    + `ListView#settings-ftp-hosts-list` / `Button#settings-remove-ftp-host`
+    (saved FTP logins, view/remove only — see `ftp_creds.py`) +
     `Switch#settings-encrypt-switch`
     (encrypt-at-rest on/off) + `RadioSet#settings-key-method` (passphrase
     vs. keyfile, hidden via `.hidden` CSS class when encryption is off) + a
@@ -588,7 +612,9 @@ App-level `r`/`a`/`f` bindings never reached it.
 | `Ctrl+Left/Right` | cycle tabs — the universal fallback if neither `F1..F8` nor `Ctrl+1..8` reaches the app (see caveat below) |
 | `Alt+1..4` | jump to a **pane**: 1 Email (Mail tab), 2/3/4 Today/Tasks/Hermes (Dashboard tab); switches tab first if needed. The Dashboard's Mail/News cards have no digit — Tab/arrows only |
 | `Alt+Left/Right/Up/Down` | move to the adjacent Dashboard pane (see `DASH_ADJACENCY` below — a disabled card is skipped transparently, not a dead keypress) on the Dashboard tab; back/forward through session history on the Browser tab; cycle Settings sub-tabs (General/AI Provider/News Feeds/Search/Navigation/Dashboard) on the Settings tab (`Alt+Up/Down` still only does Dashboard-pane adjacency — no vertical cycling defined for Settings) |
-| `Alt+H` | Browser tab: jump to the configured home URL (`Settings.browser_home_url`, Settings → General) — no-op elsewhere |
+| `H` | Browser tab: jump to the configured home URL (`Settings.browser_home_url`, Settings → General) — no-op elsewhere. Was `Alt+H` until P3 (2026-07-18); like `r`/`a`/`f`/`c` below, only fires when the address bar `Input` isn't focused |
+| `B` | Browser tab: (re-)show the bookmarks list at its root folder, at any point in the session — no-op elsewhere. Same address-bar-focus caveat as `H` |
+| `Ctrl+B` | Browser tab: bookmark the current page (prompts for a label) — no-op elsewhere. Unaffected by address-bar focus (a control chord, not captured as typed text) |
 | `Tab` / `Shift+Tab` | cycle Dashboard panes, **enabled ones only** (Settings → Dashboard; no-op outside the Dashboard tab) |
 | `Ctrl+K` | pop up `HermesAskModal` — a quick-ask for the configured AI provider (Settings → AI Provider) from ANY tab, no navigation needed. Fresh conversation each open, no shared history with the Dashboard's own Hermes card. Dead while another modal is already on top (binding-chain truncation at the modal boundary, same as everywhere else in this app) |
 | `p` | toggle a preview pane: Mail tab (highlighted thread's latest message, hidden by default) or Drive tab (file preview column, visible by default) |

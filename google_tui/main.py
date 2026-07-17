@@ -52,6 +52,7 @@ from . import ask
 from .ask import needs_agent
 from . import setup_instructions
 from . import fetchers
+from . import ftp_creds
 from . import render
 from . import updater
 from .render import DocumentView
@@ -189,6 +190,10 @@ _CACHE_SIZE_CHOICES = [
     ("250 MB", 250),
     ("500 MB", 500),
     ("1 GB", 1024),
+]
+_BROWSER_START_PAGE_CHOICES = [
+    ("Bookmarks", "bookmarks"),
+    ("Home page", "home"),
 ]
 
 # Friendly names for the cache categories in the size breakdown — the raw table
@@ -1011,7 +1016,7 @@ def _is_previewable(mime: str) -> bool:
 # general protocol parsing. See ROADMAP M2 design notes.
 # ---------------------------------------------------------------------------
 
-_SCHEME_PREFIXES = ("http://", "https://", "gopher://", "gemini://")
+_SCHEME_PREFIXES = ("http://", "https://", "gopher://", "gemini://", "ftp://")
 _BARE_DOMAIN_RE = re.compile(
     r"^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?)+(:\d+)?(/\S*)?$"
 )
@@ -1034,6 +1039,8 @@ def _classify_address(raw: str) -> tuple[str, str]:
         return "gopher", raw
     if raw.startswith("gemini://"):
         return "gemini", raw
+    if raw.startswith("ftp://"):
+        return "ftp", raw
     if raw.startswith("search:"):
         return "search", raw[len("search:"):].strip()
     if " " not in raw and _BARE_DOMAIN_RE.match(raw):
@@ -1041,16 +1048,21 @@ def _classify_address(raw: str) -> tuple[str, str]:
     return "search", raw
 
 
-# Browser tab "new tab page" bookmarks — starter destinations covering all
-# three non-search protocols this tab speaks (see fetchers.py). Shown as a
-# button row under the address bar until the user navigates anywhere (first
-# successful page load or search), then hidden for the rest of the session.
-_BROWSER_BOOKMARKS = [
-    ("Google", "https://www.google.com"),
-    ("Wikipedia", "https://en.wikipedia.org"),
-    ("Gopherpedia", "gopher://gopher.floodgap.com"),
-    ("Gemini Protocol", "gemini://geminiprotocol.net/"),
-]
+# Browser tab bookmarks list — per-protocol icon + color so folder contents
+# are scannable at a glance (ROADMAP P3 "color-code bookmarks by protocol").
+# Bookmark data itself now lives in Settings.browser_bookmarks, editable via
+# the ListView built by GoogleTUI._bookmarks_render.
+_BOOKMARK_PROTOCOL_STYLE = {
+    "http": ("🌐", "cyan"), "https": ("🌐", "cyan"),
+    "gopher": ("🕳", "magenta"),
+    "gemini": ("♊", "green"),
+    "ftp": ("📁", "yellow"),
+}
+
+
+def _bookmark_scheme_style(url: str) -> tuple[str, str]:
+    scheme = url.split("://", 1)[0].lower() if "://" in url else ""
+    return _BOOKMARK_PROTOCOL_STYLE.get(scheme, ("🔗", "white"))
 
 
 @dataclass
@@ -1198,8 +1210,7 @@ class GoogleTUI(App):
     #browser-mode { width: 10; color: $accent; text-style: bold; content-align: center middle; }
     #browser-url { width: 1fr; }
     #browser-status { width: auto; color: $text-muted; margin-left: 1; }
-    #browser-bookmarks { height: 3; align: left middle; }
-    #browser-bookmarks Button { min-width: 3; width: auto; height: 3; margin-right: 1; }
+    #browser-bookmarks { height: auto; max-height: 12; border: round $panel-darken-1; margin-bottom: 1; }
     #browser-doc { height: 1fr; border: round $panel-darken-1; padding: 0 1; }
     #news-search { width: 1fr; }
     #news-list { height: 1fr; }
@@ -1215,6 +1226,7 @@ class GoogleTUI(App):
     #help-bar { height: auto; background: $panel; padding: 0 1; }
     #help-context { color: $text; }
     #help-global { color: $text-muted; }
+    #settings-ftp-hosts-list { height: auto; max-height: 8; border: round $panel-darken-1; margin-bottom: 1; }
     .settings-row { height: 3; align: left middle; }
     .settings-row Label { width: auto; margin-right: 2; }
     #settings-nous-key { width: 40; margin-right: 2; }
@@ -1442,7 +1454,24 @@ class GoogleTUI(App):
         self._browser_history: list[BrowserHistoryEntry] = []
         self._browser_hist_pos: int = -1
         self._browser_tofu: fetchers.GeminiTofuStore | None = None
+        # Mirrors whatever key self._cache was last constructed/rekeyed with
+        # (None if encrypt-at-rest is off) — kept alongside it so ftp_creds.py
+        # can reuse the SAME derived key without re-deriving/re-prompting,
+        # without ftp_creds needing to know anything about Cache/UnlockModal.
+        self._encrypt_key: bytes | None = None
+        # True once the Browser tab's first-activation-this-session logic
+        # (auto-navigate home, or just render the bookmarks list) has run —
+        # see on_tabbed_content_tab_activated.
         self._browser_started: bool = False
+        # Bookmarks are nested (folders can contain bookmarks or more
+        # folders — see Settings.browser_bookmarks). These track which list
+        # is currently shown in the "#browser-bookmarks" ListView, mirroring
+        # Drive's folder-stack idiom (_drive_folder_stack) but over plain
+        # Python lists instead of fetched folder ids, since there's nothing
+        # to fetch. Reset to the root list whenever "B" is pressed.
+        self._bookmark_current_list: list[dict] = self.settings.browser_bookmarks
+        self._bookmark_parent_stack: list[list[dict]] = []
+        self._bookmark_render_gen: int = 0
         # See _ESCAPE_ALT_ARROW_ACTIONS above / on_key below: timestamp of the
         # most recent bare "escape" Key event, used to detect the terminals
         # that encode Alt+Arrow as a double-ESC sequence Textual's parser
@@ -1889,9 +1918,7 @@ class GoogleTUI(App):
                         yield TabCyclingInput(placeholder="URL, or type to search…", id="browser-url")
                         yield Button("Go", id="browser-go")
                         yield Static("", id="browser-status")
-                    with Horizontal(id="browser-bookmarks"):
-                        for i, (label, _url) in enumerate(_BROWSER_BOOKMARKS):
-                            yield Button(label, id=f"browser-bookmark-{i}")
+                    yield ListView(id="browser-bookmarks")
                     yield DocumentView(id="browser-doc")
             with TabPane(_tab_label("News", 6, self.settings.ascii_mode), id="tab-news"):
                 with Container(id="news-section", classes="section"):
@@ -1974,11 +2001,26 @@ class GoogleTUI(App):
                                 )
                                 yield Label("Browser", classes="pane-title-text")
                                 with Horizontal(classes="settings-row"):
-                                    yield Label("Home page (Alt+H)")
+                                    yield Label("Home page (H)")
                                     yield Input(value=self.settings.browser_home_url,
                                                 placeholder="https://www.google.com",
                                                 id="settings-browser-home-url")
                                     yield Button("Save", id="settings-save-browser-home")
+                                with Horizontal(classes="settings-row"):
+                                    yield Label("Start page (first Browser-tab visit each session)")
+                                    yield Select(
+                                        _BROWSER_START_PAGE_CHOICES,
+                                        value=self.settings.browser_start_page,
+                                        allow_blank=False, id="settings-browser-start-page",
+                                    )
+                                yield Static(
+                                    "Saved FTP logins (added via the login prompt when an FTP site "
+                                    "refuses an anonymous connection):",
+                                    classes="muted",
+                                )
+                                yield ListView(id="settings-ftp-hosts-list")
+                                with Horizontal(classes="btnrow"):
+                                    yield Button("Remove selected host", id="settings-remove-ftp-host")
                                 with Horizontal(classes="settings-row"):
                                     yield Label("Encrypt local cache at rest")
                                     yield Switch(value=self.settings.encrypt_at_rest, id="settings-encrypt-switch")
@@ -2216,6 +2258,7 @@ class GoogleTUI(App):
         self.call_after_refresh(self._start_after_unlock, key, reset)
 
     def _start_after_unlock(self, key: bytes | None, reset: bool = False) -> None:
+        self._encrypt_key = key
         self._cache = Cache(key)
         self._browser_tofu = fetchers.GeminiTofuStore(self._cache)
         if reset:
@@ -2673,6 +2716,12 @@ class GoogleTUI(App):
             save_settings(self.settings)
             self._prune_cache()
             return
+        if event.select.id == "settings-browser-start-page":
+            if event.value == self.settings.browser_start_page:
+                return
+            self.settings.browser_start_page = event.value
+            save_settings(self.settings)
+            return
         if event.select.id != "email-label-select":
             return
         new_id = event.value
@@ -2932,12 +2981,24 @@ class GoogleTUI(App):
             self._apply_drive_preview_visibility()
         elif tab_id == "tab-browser":
             self.query_one("#browser-url").focus()
+            if not self._browser_started:
+                self._browser_started = True
+                if self.settings.browser_start_page == "home":
+                    url = self.settings.browser_home_url or "https://www.google.com"
+                    try:
+                        self.query_one("#browser-url", Input).value = url
+                    except Exception:
+                        pass
+                    self._browser_navigate(url, push_history=True)
+                else:
+                    self._bookmarks_render()
         elif tab_id == "tab-news":
             self.query_one("#news-list").focus()
         elif tab_id == "tab-navigation":
             self.query_one("#nav-origin").focus()
         elif tab_id == "tab-settings":
             self._update_settings_cache_info()
+            self._refresh_ftp_hosts_list()
             self.query_one("#settings-encrypt-switch").focus()
         elif tab_id == "tab-contacts":
             self.query_one("#contacts-search").focus()
@@ -3025,7 +3086,7 @@ class GoogleTUI(App):
     def action_switch_down(self):  self._adjacent("down")
 
     def action_browser_home(self) -> None:
-        """Alt+H: jump the Browser tab to the configured home URL.
+        """H: jump the Browser tab to the configured home URL.
 
         Browser-tab-only, like ``[``/``]`` on the Calendar tab — a no-op
         everywhere else.
@@ -3038,6 +3099,47 @@ class GoogleTUI(App):
         except Exception:
             pass
         self._browser_navigate(url, push_history=True)
+
+    def action_browser_show_bookmarks(self) -> None:
+        """B: (re)show the Browser tab's bookmarks list at the root folder,
+        at any point in the session — not just before the first navigation.
+        Browser-tab-only, same guard as action_browser_home.
+        """
+        if self._main_tabs().active != "tab-browser":
+            return
+        self._bookmark_parent_stack = []
+        self._bookmark_current_list = self.settings.browser_bookmarks
+        self._bookmarks_render()
+        try:
+            lv = self.query_one("#browser-bookmarks", ListView)
+            lv.remove_class("hidden")
+            lv.focus()
+        except Exception:
+            pass
+
+    def action_browser_bookmark_page(self) -> None:
+        """Ctrl+B: save the Browser tab's currently-loaded URL as a new
+        top-level bookmark (prompting for a label). Browser-tab-only.
+        """
+        if self._main_tabs().active != "tab-browser":
+            return
+        try:
+            url = self.query_one("#browser-url", Input).value.strip()
+        except Exception:
+            url = ""
+        if not url:
+            self.notify("No page loaded to bookmark", severity="warning")
+            return
+        default_label = urllib.parse.urlparse(url).netloc or url
+        self.push_screen(BookmarkLabelModal(default_label),
+                          lambda label: self._browser_bookmark_save(url, label))
+
+    def _browser_bookmark_save(self, url: str, label: str | None) -> None:
+        if not label:
+            return
+        self.settings.browser_bookmarks.append({"type": "bookmark", "label": label, "url": url})
+        save_settings(self.settings)
+        self.notify(f"Bookmarked: {label}")
 
     def on_key(self, event: events.Key) -> None:
         """Compensate for a terminal-encoding gap that swallows Alt+Arrow.
@@ -3748,6 +3850,8 @@ class GoogleTUI(App):
                     self._on_task_modal_result)
         elif cid.startswith("d-") or cid == "d-up":
             self._drive_open_selected()
+        elif cid.startswith("bm-") or cid == "bm-up":
+            self._bookmark_open_selected()
         elif cid.startswith("n-"):
             entry = self._news_by_cid.get(cid)
             if entry:
@@ -3955,6 +4059,74 @@ class GoogleTUI(App):
         return "\n\n".join(parts) or "(no context available)"
 
     # ---- browser tab (M2: Web / Gopher / Gemini / Search) ----
+
+    def _bookmarks_render(self) -> None:
+        """(Re)populate #browser-bookmarks from self._bookmark_current_list —
+        called on entering/leaving a folder and whenever "B" resets to root.
+        Fire-and-forget: schedules _bookmarks_render_async as a worker (see
+        its docstring for why a bare ListView.clear() can't be used here).
+        """
+        self._bookmark_render_gen += 1
+        gen = self._bookmark_render_gen
+        self.run_worker(self._bookmarks_render_async(gen), exclusive=True, group="bookmarks-apply")
+
+    async def _bookmarks_render_async(self, gen: int) -> None:
+        # ListView.clear() returns an AwaitRemove -- removal isn't synchronous
+        # (AGENTS.md §2's ListView.clear() NOTE, same trap _apply_news_data /
+        # _apply_drive_files_async hit: a fire-and-forget clear() followed by
+        # an immediate re-populate using the same "bm-<idx>" ids intermittently
+        # raises DuplicateIds because the old items haven't finished being
+        # removed yet). Awaiting it here, plus the generation-counter guard
+        # below, is that same established fix.
+        try:
+            lv = self.query_one("#browser-bookmarks", ListView)
+        except Exception:
+            return
+        await lv.clear()
+        if gen != self._bookmark_render_gen:
+            return  # superseded by a newer _bookmarks_render call
+        items = []
+        if self._bookmark_parent_stack:
+            items.append(ListItem(Label("📂 .. (up)"), id="bm-up"))
+        for i, entry in enumerate(self._bookmark_current_list):
+            if entry.get("type") == "folder":
+                items.append(ListItem(Label(f"📂 {entry.get('label') or '(folder)'}"), id=f"bm-{i}"))
+            else:
+                icon, color = _bookmark_scheme_style(entry.get("url", ""))
+                label = entry.get("label") or entry.get("url", "")
+                items.append(ListItem(Label(f"[{color}]{icon} {label}[/{color}]"), id=f"bm-{i}"))
+        lv.extend(items)
+
+    def _bookmark_open_selected(self) -> None:
+        lst = self.query_one("#browser-bookmarks", ListView)
+        if lst.highlighted_child is None:
+            return
+        cid = lst.highlighted_child.id or ""
+        if cid == "bm-up":
+            if self._bookmark_parent_stack:
+                self._bookmark_current_list = self._bookmark_parent_stack.pop()
+            self._bookmarks_render()
+            return
+        if not cid.startswith("bm-"):
+            return
+        idx = int(cid.removeprefix("bm-"))
+        if idx >= len(self._bookmark_current_list):
+            return
+        entry = self._bookmark_current_list[idx]
+        if entry.get("type") == "folder":
+            self._bookmark_parent_stack.append(self._bookmark_current_list)
+            self._bookmark_current_list = entry.get("children") or []
+            self._bookmarks_render()
+            return
+        url = entry.get("url", "")
+        if not url:
+            return
+        try:
+            self.query_one("#browser-url", Input).value = url
+        except Exception:
+            pass
+        self._browser_navigate(url, push_history=True)
+
     def _browser_submit(self, event: Input.Submitted) -> None:
         raw = event.value.strip()
         if not raw:
@@ -4033,6 +4205,10 @@ class GoogleTUI(App):
             return fetchers.fetch_gopher(target)
         if mode == "gemini":
             return fetchers.fetch_gemini(target, self._browser_tofu)
+        if mode == "ftp":
+            host = urllib.parse.urlparse(target).hostname or ""
+            saved = ftp_creds.get(self._encrypt_key, host)
+            return fetchers.fetch_ftp(target, credentials=saved)
         return fetchers.run_search(target, self.settings)
 
     def _browser_fetch_thread(self, mode: str, target: str, display_url: str, push_history: bool) -> None:
@@ -4043,6 +4219,9 @@ class GoogleTUI(App):
             return
         except fetchers.GeminiRedirectConfirm as e:
             self.call_from_thread(self._browser_confirm_redirect, e, push_history)
+            return
+        except fetchers.FtpAuthRequired as e:
+            self.call_from_thread(self._browser_prompt_ftp_login, e, target, display_url, push_history)
             return
         except fetchers.BrowserFetchError as e:
             self.call_from_thread(self._browser_apply_error, str(e))
@@ -4086,12 +4265,10 @@ class GoogleTUI(App):
         except Exception:
             pass
 
-        if not self._browser_started:
-            self._browser_started = True
-            try:
-                self.query_one("#browser-bookmarks").add_class("hidden")
-            except Exception:
-                pass
+        try:
+            self.query_one("#browser-bookmarks").add_class("hidden")
+        except Exception:
+            pass
 
     def _browser_prompt_gemini_input(self, exc: fetchers.GeminiInputRequired, push_history: bool) -> None:
         try:
@@ -4116,6 +4293,45 @@ class GoogleTUI(App):
             f"{exc.url}?{urllib.parse.quote(result, safe='')}",
             push_history=push_history,
         )
+
+    def _browser_prompt_ftp_login(self, exc: fetchers.FtpAuthRequired, target: str, display_url: str,
+                                   push_history: bool) -> None:
+        try:
+            self.query_one("#browser-status", Static).update("")
+        except Exception:
+            pass
+        self.push_screen(
+            FtpLoginModal(exc.host),
+            lambda result: self._browser_resume_ftp_login(target, display_url, push_history, result),
+        )
+
+    def _browser_resume_ftp_login(self, target: str, display_url: str, push_history: bool, result) -> None:
+        if result is None:
+            self.notify("Cancelled", severity="warning")
+            return
+        username, password, save = result
+        host = urllib.parse.urlparse(target).hostname or ""
+        if save and host:
+            ftp_creds.set(self._encrypt_key, host, username, password)
+        self.run_worker(
+            lambda: self._browser_ftp_retry_thread(target, display_url, push_history, username, password),
+            thread=True, exclusive=True, group="browser-fetch",
+        )
+
+    def _browser_ftp_retry_thread(self, target: str, display_url: str, push_history: bool,
+                                   username: str, password: str) -> None:
+        try:
+            doc = fetchers.fetch_ftp(target, credentials=(username, password))
+        except fetchers.FtpAuthRequired as e:
+            self.call_from_thread(self._browser_apply_error, f"FTP login to {e.host} failed: {e.detail}")
+            return
+        except fetchers.BrowserFetchError as e:
+            self.call_from_thread(self._browser_apply_error, str(e))
+            return
+        except Exception as e:
+            self.call_from_thread(self._browser_apply_error, f"Unexpected error: {e}")
+            return
+        self.call_from_thread(self._browser_apply_document, doc, "ftp", display_url, push_history)
 
     def _browser_confirm_redirect(self, exc: fetchers.GeminiRedirectConfirm, push_history: bool) -> None:
         try:
@@ -5293,6 +5509,25 @@ class GoogleTUI(App):
         if isinstance(self.screen, OnboardingWizardModal):
             self.screen.dismiss("resolved")
 
+    def _refresh_ftp_hosts_list(self) -> None:
+        try:
+            lv = self.query_one("#settings-ftp-hosts-list", ListView)
+        except Exception:
+            return
+        lv.clear()
+        hosts = sorted(ftp_creds.load_all(self._encrypt_key).keys())
+        if not hosts:
+            lv.append(ListItem(Label("(no saved FTP logins)")))
+            return
+        for host in hosts:
+            # Same "_mk_id for a sanitized widget id, raw value stashed as a
+            # plain attribute" pattern _feed_list_item uses -- a hostname
+            # isn't reversible from a Textual widget id either (dots aren't
+            # a valid id character).
+            item = ListItem(Label(host, markup=False), id=_mk_id("ftphost", host))
+            item.ftp_host = host
+            lv.append(item)
+
     def _update_settings_cache_info(self) -> None:
         """Disk usage readout under the cache buttons: total on disk, then the
         breakdown by what's actually using it, biggest first — the point being
@@ -5427,6 +5662,7 @@ class GoogleTUI(App):
             if self._cache:
                 self._cache.clear_all()
                 self._cache.rekey(None)
+            self._encrypt_key = None
             self.notify("Encryption disabled. Local cache cleared; it will repopulate unencrypted.")
             self._update_settings_cache_info()
             return
@@ -5440,6 +5676,7 @@ class GoogleTUI(App):
             if self._cache:
                 self._cache.clear_all()
                 self._cache.rekey(key)
+            self._encrypt_key = key
             self.notify("Encryption enabled (local key file). Cache cleared and now encrypted.")
             self._update_settings_cache_info()
 
@@ -5488,6 +5725,7 @@ class GoogleTUI(App):
             if self._cache:
                 self._cache.clear_all()
                 self._cache.rekey(key)
+            self._encrypt_key = key
             self.notify("Switched to local key file. Cache cleared and rekeyed.")
             self._update_settings_cache_info()
 
@@ -5528,6 +5766,7 @@ class GoogleTUI(App):
         if self._cache:
             self._cache.clear_all()
             self._cache.rekey(key)
+        self._encrypt_key = key
         self.notify("Encryption enabled (passphrase). Cache cleared and now encrypted.")
         self._update_settings_cache_info()
 
@@ -5564,6 +5803,16 @@ class GoogleTUI(App):
             self._add_feed_url()
         elif event.button.id == "settings-remove-feed":
             self._remove_selected_feed()
+        elif event.button.id == "settings-remove-ftp-host":
+            lst = self.query_one("#settings-ftp-hosts-list", ListView)
+            item = lst.highlighted_child
+            host = getattr(item, "ftp_host", None) if item is not None else None
+            if host is None:
+                self.notify("Select a saved FTP host to remove first", severity="warning")
+                return
+            ftp_creds.remove(self._encrypt_key, host)
+            self._refresh_ftp_hosts_list()
+            self.notify(f"Removed saved FTP login for {host}.")
         elif event.button.id == "settings-save-search":
             key = self.query_one("#settings-google-cse-key", Input).value.strip()
             cx = self.query_one("#settings-google-cse-id", Input).value.strip()
@@ -5573,11 +5822,6 @@ class GoogleTUI(App):
             self.settings.searxng_url = searxng_url or None
             save_settings(self.settings)
             self.notify("Search settings saved.")
-        elif event.button.id is not None and event.button.id.startswith("browser-bookmark-"):
-            idx = int(event.button.id.removeprefix("browser-bookmark-"))
-            _label, url = _BROWSER_BOOKMARKS[idx]
-            self.query_one("#browser-url", Input).value = url
-            self._browser_navigate(url, push_history=True)
         elif event.button.id == "nav-go":
             self._nav_go()
         elif event.button.id == "nav-export":
@@ -7362,6 +7606,88 @@ class GeminiInputModal(ModalScreen):
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "submit":
             self.dismiss(self.query_one("#gemini-input-value", Input).value)
+        else:
+            self.dismiss(None)
+
+    def on_key(self, e) -> None:
+        if e.key == "escape":
+            self.dismiss(None)
+
+
+class BookmarkLabelModal(ModalScreen):
+    """Ctrl+B (Browser tab): prompts for a label for the page being
+    bookmarked, prefilled with its domain. Dismisses with the entered label
+    (falling back to the prefilled default if submitted blank), or None if
+    cancelled.
+    """
+
+    def __init__(self, default_label: str):
+        super().__init__()
+        self._default_label = default_label
+
+    def compose(self) -> ComposeResult:
+        with Container(id="bookmark-label-box", classes="pane"):
+            yield Label("BOOKMARK THIS PAGE", classes="pane-title-text")
+            yield Input(value=self._default_label, id="bookmark-label-value")
+        with Horizontal(classes="btnrow"):
+            yield Button("Save", id="save")
+            yield Button("Cancel", id="cancel")
+
+    def on_mount(self) -> None:
+        self.query_one("#bookmark-label-value", Input).focus()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        self.dismiss(event.value.strip() or self._default_label)
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "save":
+            self.dismiss(self.query_one("#bookmark-label-value", Input).value.strip() or self._default_label)
+        else:
+            self.dismiss(None)
+
+    def on_key(self, e) -> None:
+        if e.key == "escape":
+            self.dismiss(None)
+
+
+class FtpLoginModal(ModalScreen):
+    """Browser tab: prompts for FTP credentials after an anonymous (or
+    previously-saved) login attempt is refused (``fetchers.FtpAuthRequired``).
+    Dismisses with ``(username, password, save: bool)``, or None if cancelled.
+    """
+
+    def __init__(self, host: str):
+        super().__init__()
+        self._host = host
+
+    def compose(self) -> ComposeResult:
+        with Container(id="ftp-login-box", classes="pane"):
+            yield Label("FTP LOGIN REQUIRED", classes="pane-title-text")
+            yield Static(self._host, id="ftp-login-host", classes="muted")
+            yield Input(placeholder="Username", id="ftp-login-user")
+            yield Input(placeholder="Password", password=True, id="ftp-login-pass")
+            with Horizontal(classes="settings-row"):
+                yield Label("Save these credentials")
+                yield Switch(value=True, id="ftp-login-save")
+        with Horizontal(classes="btnrow"):
+            yield Button("Connect", id="connect")
+            yield Button("Cancel", id="cancel")
+
+    def on_mount(self) -> None:
+        self.query_one("#ftp-login-user", Input).focus()
+
+    def _submit(self) -> None:
+        user = self.query_one("#ftp-login-user", Input).value.strip()
+        password = self.query_one("#ftp-login-pass", Input).value
+        save = self.query_one("#ftp-login-save", Switch).value
+        self.dismiss((user, password, save))
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        self._submit()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "connect":
+            self._submit()
         else:
             self.dismiss(None)
 

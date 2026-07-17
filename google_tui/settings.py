@@ -28,7 +28,25 @@ class Settings:
     google_cse_id: str | None = None  # Programmable Search Engine ID ("cx")
     searxng_url: str | None = None  # base URL of a SearXNG instance, e.g. https://searx.example.org
     routes_api_key: str | None = None  # Google Routes API key (Navigation tab, M6)
-    browser_home_url: str = "https://www.google.com"  # Browser tab's Alt+H home destination
+    browser_home_url: str = "https://www.google.com"  # Browser tab's H home destination
+    # Browser tab bookmarks: a list of {"type": "bookmark", "label", "url"} or
+    # {"type": "folder", "label", "children": [...]} dicts, editable via the
+    # Browser tab's bookmarks ListView ("B" to show, Ctrl+B to add the current
+    # page). Default matches the app's original hardcoded starter list.
+    browser_bookmarks: list[dict] = field(default_factory=lambda: [
+        {"type": "bookmark", "label": "Google", "url": "https://www.google.com"},
+        {"type": "bookmark", "label": "Wikipedia", "url": "https://en.wikipedia.org"},
+        {"type": "bookmark", "label": "Gopherpedia", "url": "gopher://gopher.floodgap.com"},
+        {"type": "bookmark", "label": "Gemini Protocol", "url": "gemini://geminiprotocol.net/"},
+    ])
+    # "bookmarks" | "home" -- what the Browser tab shows the first time it's
+    # activated each session. Defaults to "bookmarks" to match the app's
+    # original (pre-this-setting) behavior.
+    browser_start_page: str = "bookmarks"
+    # Saved FTP host credentials are NOT stored here -- see ftp_creds.py's
+    # module docstring for why (Settings is plaintext; credentials need the
+    # same optional encryption the local cache uses, in their own file so
+    # Settings' "Clear Cache" button can't wipe them).
     check_for_updates: bool = True  # fast-forward the git checkout on launch (see updater.py)
     ascii_mode: bool = False  # ASCII-safe rendering (plain borders/digits/arrows/punctuation) for terminals that mangle Unicode
     # Cache limits (Outlook-style). Both are opt-in; 0 == no limit. Enforced on

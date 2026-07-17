@@ -88,7 +88,9 @@ GLOBAL_ACTIONS: list[ActionSpec] = [
     ActionSpec("focus_label_select", "l", "Labels"),
     ActionSpec("focus_search", "/", "Search"),
     ActionSpec("context_space", "space", "Context"),
-    ActionSpec("browser_home", "alt+h", "Home"),
+    ActionSpec("browser_home", "h", "Home"),
+    ActionSpec("browser_show_bookmarks", "b", "Bookmarks"),
+    ActionSpec("browser_bookmark_page", "ctrl+b", "Bookmark Page"),
     ActionSpec("cal_prev", "[", "Prev"),
     ActionSpec("cal_next", "]", "Next"),
     ActionSpec("new_event", "n", "New Event"),
@@ -184,7 +186,7 @@ CONTEXT_HELP: dict[str, str] = {
     "pane:hermes": "Enter Ask",
     "tab:tab-calendar": "[ / ] Prev/Next Month or Week   Enter Day Detail   n New Event",
     "tab:tab-drive": "Enter Open Folder / Reload Preview   / Search (this folder)   p Toggle Preview",
-    "tab:tab-browser": "Enter Load/Search   Alt+←/→ Back/Forward   Alt+H Home   Tab Toggle Focus   0-9+Enter Link",
+    "tab:tab-browser": "Enter Load/Search   Alt+←/→ Back/Forward   H Home   B Bookmarks   Ctrl+B Bookmark Page   Tab Toggle Focus   0-9+Enter Link",
     "tab:tab-news": "Enter/Space Open Entry   / Search",
     "tab:tab-navigation": "Enter/Go Compute Route   Export Save Itinerary To File",
     "tab:tab-settings": "Alt+←/→ Switch Section   Toggle encryption   Choose key method   Clear local cache   "
@@ -239,7 +241,9 @@ _CLICK_ACTIONS: dict[str, dict[str, str]] = {
         "n New Event": "new_event",
     },
     "tab:tab-browser": {
-        "Alt+H Home": "browser_home",
+        "H Home": "browser_home",
+        "B Bookmarks": "browser_show_bookmarks",
+        "Ctrl+B Bookmark Page": "browser_bookmark_page",
     },
     "tab:tab-news": {
         "/ Search": "focus_search",
@@ -375,14 +379,20 @@ DRIVE TAB
 
 BROWSER TAB
   Enter (address bar)    Load URL, or run a search (bare text w/ no scheme searches)
-  Bookmark buttons       Starter destinations (Google/Wikipedia/Gopherpedia/
-                         Gemini Protocol) shown until you navigate anywhere,
-                         then hidden for the rest of the session
+  Bookmarks list         A folder-nested list (arrow keys + Enter to descend,
+                         "up" row to go back) of saved destinations across
+                         web/Gopher/Gemini/FTP, color-coded by protocol. Shown
+                         on first Browser-tab visit if Settings -> General's
+                         start page is "Bookmarks" (the default); B re-shows
+                         it any time; Ctrl+B saves the current page into it.
   Alt+Left / Alt+Right   Back / forward through this session's history
-  Alt+H                  Go to your configured home page (Settings -> General)
+  H                      Go to your configured home page (Settings -> General)
   Tab                    Toggle focus: address bar <-> page content
   0-9 then Enter (page)  Jump to numbered link
   Esc (page)             Cancel a pending number entry
+  ftp:// URL             Browse an FTP site (anonymous by default; prompts
+                         for a login if that's refused, with an option to
+                         save it). SFTP/SCP aren't supported yet.
 
 NEWS TAB
   Enter/Space   Open the selected entry (rendered via the shared Document view)

@@ -3,6 +3,83 @@
 Format: keep newest at top. One entry per meaningful change. Reference files
 touched and any breaking notes.
 
+## [2026-07-18] — Plain FTP browsing (`ftp://`)
+
+Last `## P3 — Browser` item, scoped down to plain FTP only (no SFTP/SCP —
+that needs a new dependency, `paramiko`, and stays open as a future item;
+`ftplib` is stdlib, so this adds nothing to `pyproject.toml`).
+
+New `fetchers.fetch_ftp(url, credentials=None, timeout=15)` connects via
+`ftplib.FTP`, tries anonymous login by default, and returns a
+`render.Document` — a directory listing as `menu_item` blocks/`Link`s
+(mirroring `fetch_gopher`'s shape) or, if the path is a file, a bounded
+(200 KB) text preview. Directory listings prefer `FTP.mlsd()` (RFC 3659) but
+fall back to parsing classic Unix `ls -l`-style `LIST` output when a server
+doesn't support it — confirmed live against `ftp.gnu.org`, which refuses
+MLSD outright ("500 Unknown command"); a bare `NLST` fallback was tried
+first and rejected because it carries no file-vs-directory info at all,
+which is common enough in the wild to matter. A login failure raises the
+new `fetchers.FtpAuthRequired` (distinct from `BrowserFetchError`) so
+`main.py` can offer an interactive retry instead of just erroring out.
+
+`main.py`: `_classify_address` and `_browser_fetch_dispatch` gained `ftp`
+branches; an `FtpAuthRequired` during `_browser_fetch_thread` pops the new
+`FtpLoginModal` (username/password/"save credentials"), and a successful
+retry goes through the new `_browser_ftp_retry_thread`. Saved credentials
+live in a new `ftp_creds.py` — Fernet-encrypted with the *same* key material
+`Settings → General`'s encrypt-at-rest cache already uses (reusing
+`cache.py`'s `derive_key_from_passphrase`/`read_or_create_keyfile`, tracked
+in a new `GoogleTUI._encrypt_key` set alongside every place the app already
+establishes/rekeys that key), plaintext otherwise — but stored in their own
+file, deliberately NOT as `Cache` rows, so Settings' "Clear Cache" button and
+retention-day/size-cap pruning can never silently delete a saved login.
+Settings → General gained a minimal "Saved FTP hosts" list (view/remove).
+
+## [2026-07-18] — Browser bookmarks: real list view with folders, `H`/`B`/`Ctrl+B`, start-page setting
+
+Six `## P3 — Browser` items, all sharing one foundation. Before this,
+`_BROWSER_BOOKMARKS` was a hardcoded 4-item `(label, url)` list rendered as a
+flat row of `Button`s, shown only before the first navigation each session
+and then hidden for good (`self._browser_started`) — no folders, no way
+back, not user-editable.
+
+Bookmarks now live in `Settings.browser_bookmarks` (persisted, user-editable,
+same starter 4 entries as the default) as a list of `{"type": "bookmark",
+label, url}` or `{"type": "folder", label, children}` dicts. `#browser-bookmarks`
+is a `ListView` now, not a button row: `GoogleTUI._bookmarks_render`
+(scheduled via `run_worker` + a generation counter — `ListView.clear()` is
+async, see AGENTS.md §2's NOTE, the same trap `_apply_news_data`/
+`_apply_drive_files_async` already worked around) renders the current
+folder, each bookmark row colored/iconed by protocol (🌐 web, 🕳 gopher, ♊
+gemini, 📁 ftp). Folder descend/ascend mirrors Drive's folder-stack idiom
+(`_bookmark_current_list`/`_bookmark_parent_stack`, a synthetic `"bm-up"`
+row) but over plain Python lists, since there's nothing to fetch.
+
+New bindings (`bindings.py`): `Alt+H` → plain `H` (frees the modifier,
+matching `B`); `B` (`action_browser_show_bookmarks`) re-shows the bookmarks
+list at the root folder at any point in the session, not just before first
+navigation; `Ctrl+B` (`action_browser_bookmark_page`) saves the current
+`#browser-url` as a new top-level bookmark via the new `BookmarkLabelModal`
+label prompt. Note: `H`/`B` are plain unmodified keys, so — like Mail's
+`r`/`a`/`f`/`c` — they only fire when a text `Input` doesn't have focus to
+consume the keystroke as typed text first; the Browser tab's address bar has
+focus by default on tab activation, so (unlike the old `Alt+H`, which worked
+from anywhere) these two need focus moved off it first — press `Tab`, or
+they're available for free right after any navigation (which already
+focuses the document view). `Ctrl+B` is unaffected (control chords aren't
+captured as text input).
+
+New `Settings.browser_start_page` (`"bookmarks"` | `"home"`, Settings →
+General `Select`) controls what the Browser tab shows on its first
+activation each session — default `"bookmarks"` preserves the old behavior
+exactly for existing users.
+
+Also resolved, investigate-only, no code: **pulling synced Chrome/Android
+bookmarks** is a won't-do. Confirmed there is no public API for a
+third-party standalone app to read a user's Chrome-synced bookmarks — only
+`chrome.bookmarks`, which requires running as an actual Chrome extension
+inside the browser, not applicable here.
+
 ## [2026-07-18] — Month grid day-squares stretch to fill the terminal
 
 Fourth and final `## P2 — Calendar` item. Before this, `#cal-grid` used

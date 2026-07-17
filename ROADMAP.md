@@ -83,44 +83,14 @@ just checking it off here, so ROADMAP.md only ever shows what's still open.
 
 ## P3 — Browser
 
-- [ ] **`Alt+H` → plain `H`** for jumping to the configured home URL — frees
-  up a modifier chord for a single keystroke, consistent with the `B`
-  bookmarks binding below. Update `bindings.py`'s `ActionSpec` for whichever
-  action currently owns `alt+h`.
-- [ ] **`B` reopens the bookmarks/new-tab page** — today `_BROWSER_BOOKMARKS`
-  (`main.py:966-978`) is only shown before the first page load/search of the
-  session and then hidden permanently (`self._browser_started`,
-  `main.py:3927`); there's no way back to it once you've navigated away.
-  `B` should re-show it (or push a dedicated bookmarks view — see below).
-- [ ] **Settings → General: start-page preference** (home URL vs. bookmarks
-  list) for the Browser tab on launch — new `Settings` field alongside the
-  existing `browser_home_url`.
-- [ ] **Bookmarks as a lightbar-selectable list with folders**, not buttons —
-  `_BROWSER_BOOKMARKS` is currently a flat list of `Button`s
-  (`main.py:1800-1802`). Rework into a `ListView`-based screen with folder
-  nesting, reusing the Drive tab's folder-navigation pattern (arrow keys +
-  Enter to descend, "up" to go back) rather than inventing a new nav idiom.
-- [ ] **`Ctrl+B` bookmarks the current page** — once `B` is a real bookmarks
-  view (above), add the current `#browser-url` value as a new user bookmark
-  (persisted in `Settings`, not the hardcoded `_BROWSER_BOOKMARKS` starter
-  list).
-- [ ] **Color-code or folderize bookmarks by protocol** (web/Gopher/Gemini) —
-  a column or icon per protocol, once bookmarks are a real list widget
-  rather than buttons; exact treatment is a UI/UX call to make once the list
-  view above exists, not before.
-- [ ] **Pull synced Chrome/Android bookmarks** — investigate whether any
-  Google API exposes a user's synced Chrome bookmarks (there is no public
-  "Chrome Sync" API for third-party apps as of this writing — likely a hard
-  no without an unofficial/reverse-engineered approach, which this app
-  should avoid; confirm before spending real time on it).
-- [ ] **FTP/SFTP/SCP browser** — new protocol clients alongside the existing
-  HTTP/Gopher/Gemini ones in `fetchers.py`, supporting anonymous connections
-  and saved credentials (prompt on first connection, saved credentials
-  living in a new Settings sub-tab), plus download-to-local-filesystem
-  (shares the destination-path-prompt need with the Drive download item
-  above). *(Suggested model: Opus — new protocol clients, credential
-  storage, and Settings UI; comparable in scope to the existing Usenet P4
-  item below.)*
+- [ ] **SFTP/SCP** — the FTP/SFTP/SCP browser item shipped `[2026-07-18]`
+  scoped down to plain FTP only (see Done below); SFTP/SCP still need a new
+  dependency (`paramiko` — nothing like it is in `pyproject.toml` today) and
+  are unbuilt. Also still open: **download a Drive/FTP file to the local
+  filesystem** — no such action exists for either protocol yet (shares the
+  destination-path-prompt need with the `## P2 — Drive` download item
+  above); `fetch_ftp` (`fetchers.py`) only reads for in-app preview, same
+  gap `gauth.read_drive_text` has for Drive.
 
 ## P4 — Nice-to-have
 
@@ -215,6 +185,26 @@ just checking it off here, so ROADMAP.md only ever shows what's still open.
 
 ## Done
 
+- [x] **Plain FTP browsing** (`[2026-07-18]`) — new `fetchers.fetch_ftp`
+  (`ftplib`, stdlib) browses `ftp://` directories (MLSD, falling back to
+  parsing classic Unix `LIST` output) and previews files, wired into the
+  Browser tab's address bar/link-follow like HTTP/Gopher/Gemini. Anonymous
+  by default; an auth failure pops a login prompt (`FtpLoginModal`), with
+  credentials optionally saved (Fernet-encrypted with the same key the local
+  cache's encrypt-at-rest uses, in their own file — not cache rows — so
+  "Clear Cache" can't wipe them; new `ftp_creds.py`). Settings → General
+  gained a "Saved FTP hosts" view/remove list. SFTP/SCP deliberately
+  deferred — still open above. See CHANGELOG.
+- [x] **Browser bookmarks: real list view with folders, `H`/`B`/`Ctrl+B`,
+  start-page setting** (`[2026-07-18]`) — the flat 4-`Button` starter row is
+  now a `ListView` backed by persisted, user-editable `Settings.
+  browser_bookmarks` (folders supported), color/icon-coded by protocol.
+  `Alt+H` → plain `H`; new `B` (re-show bookmarks any time, not just before
+  first navigation) and `Ctrl+B` (bookmark the current page) bindings; new
+  `Settings.browser_start_page` (Settings → General) picks bookmarks-vs-home
+  as the Browser tab's first-activation view each session. Also resolved,
+  won't-do: pulling synced Chrome/Android bookmarks — no public API exists
+  for a third-party standalone app to read them. See CHANGELOG.
 - [x] **Size the Month grid's day squares to better fill the terminal**
   (`[2026-07-18]`) — `#cal-grid`'s 7 day columns now get explicit widths that
   split the widget's actual size evenly (instead of narrow auto-sized
