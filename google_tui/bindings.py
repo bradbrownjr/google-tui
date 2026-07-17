@@ -73,6 +73,13 @@ GLOBAL_ACTIONS: list[ActionSpec] = [
     ActionSpec("goto_pane_events", "alt+2", "Events"),
     ActionSpec("goto_pane_tasks", "alt+3", "Tasks"),
     ActionSpec("goto_pane_hermes", "alt+4", "Hermes"),
+    # Pops up a small quick-ask modal for the configured AI provider
+    # (Settings -> AI Provider) from ANY tab/screen, without navigating to
+    # the Dashboard tab the way Alt+4 does -- see HermesAskModal. Ctrl+<letter>
+    # is a real ASCII control code every terminal transmits reliably (same
+    # reasoning already established for Ctrl+R/Ctrl+H/Ctrl+Q/Ctrl+P below),
+    # unlike the Ctrl+<digit>/F9+ caveats noted elsewhere in this file.
+    ActionSpec("hermes_popup", "ctrl+k", "Ask"),
     ActionSpec("reply", "r", "Reply"),
     ActionSpec("reply_all", "a", "Reply All"),
     ActionSpec("forward", "f", "Forward"),
@@ -158,7 +165,7 @@ def ascii_safe(text: str) -> str:
 
 
 HELP_GLOBAL_TEXT = (
-    "F1-F8,Ctrl+9 Tab   Alt+# Pane   Alt+←→↑↓ Move Pane   "
+    "F1-F8,Ctrl+9 Tab   Alt+# Pane   Alt+←→↑↓ Move Pane   Ctrl+K Ask   "
     "Ctrl+P Commands   F12 Mouse   Ctrl+H Help   Ctrl+Q Quit"
 )
 
@@ -181,7 +188,7 @@ CONTEXT_HELP: dict[str, str] = {
     "tab:tab-news": "Enter/Space Open Entry   / Search",
     "tab:tab-navigation": "Enter/Go Compute Route   Export Save Itinerary To File",
     "tab:tab-settings": "Alt+←/→ Switch Section   Toggle encryption   Choose key method   Clear local cache   "
-                         "Manage feeds   Search provider   Routes API key",
+                         "Manage feeds   Search provider   Routes API key   Enable/disable Dashboard cards",
     "tab:tab-contacts": "Type to search (or / from elsewhere in the tab)   Enter/Space Detail (compose to contact)   Refresh",
     # ThreadModal's own contextual help row (P2 2026-07-15). Rendered as a
     # clickable help bar via help_markup() below — each "Key Label" pair
@@ -301,8 +308,12 @@ GLOBAL
   Alt+1..4         Jump to a pane: 1 Email (Mail tab), 2/3/4 Today/Tasks/
                    Hermes (Dashboard tab). The Dashboard's Mail and News
                    cards have no digit — reach them with Tab or Alt+arrows.
-  Alt+arrows       Move to the adjacent Dashboard card (2x2 grid + Hermes)
-  Tab / Shift+Tab  Cycle Dashboard cards
+  Alt+arrows       Move to the adjacent Dashboard card (2x2 grid + Hermes;
+                   skips over any card disabled in Settings → Dashboard)
+  Tab / Shift+Tab  Cycle Dashboard cards (enabled ones only)
+  Ctrl+K           Quick-ask the configured AI assistant (Settings → AI
+                   Provider) from anywhere — pops up a small modal, Esc closes.
+                   Doesn't share history with the Dashboard's Hermes card.
   Ctrl+R           Reconnect / refresh live data
   Ctrl+P           Command palette
   Ctrl+H           This help
@@ -328,7 +339,8 @@ MAIL TAB
 
 DASHBOARD TAB (2x2 card grid + Hermes; Google-native cards, 2026-07-17.
 Weather / stocks / dictionary / Wikipedia cards are the remaining half of
-this feature, not yet built)
+this feature, not yet built. Settings → Dashboard lets you enable/disable
+any card — that checklist is the "library" this will grow into.)
   Today card:   today's events (all-day + timed); Enter/Space open detail,
                 n new event, / search (live filter over summary/description)
   Tasks card:   tasks grouped Overdue / Due today / Upcoming / No due date /
@@ -337,7 +349,10 @@ this feature, not yet built)
                 the thread (or, on the count header, jumps to the Mail tab)
   News card:    top headlines from your subscribed feeds, rotating; Enter/
                 Space opens the entry
-  Hermes card:  type a question, Enter to ask
+  Hermes card:  type a question, Enter to ask. Its title always shows the
+                currently configured AI provider (Settings → AI Provider),
+                e.g. "CLAUDE CODE ASK". Also reachable as a Ctrl+K popup
+                from anywhere — see GLOBAL above.
 
 CALENDAR TAB
   [ / ]         Previous / next month (or week, in Week view)
@@ -379,9 +394,9 @@ NAVIGATION TAB
   Needs a Routes API key, set in Settings -> Navigation.
 
 SETTINGS TAB
-  Sub-tabs      General / AI Provider / News Feeds / Search / Navigation —
-                Alt+Left/Right cycles between them while the Settings tab
-                is active
+  Sub-tabs      General / AI Provider / News Feeds / Search / Navigation /
+                Dashboard — Alt+Left/Right cycles between them while the
+                Settings tab is active
   Switch        Show the Mail tab's preview pane by default at launch —
                 "p" still toggles it per-session either way (General)
   Switch        Toggle encrypt-at-rest for the local cache (General)
@@ -397,6 +412,8 @@ SETTINGS TAB
                 SearXNG instance URL, then save (Search)
   Input+Button  Set/save the Routes API key used by the Navigation tab
                 (Navigation)
+  Checklist     Enable/disable Dashboard cards (Today/Tasks/Mail/News/
+                Hermes) — at least one stays enabled (Dashboard)
 
 CONTACTS TAB
   Type to search    Live fuzzy filter (name or email) over your fetched

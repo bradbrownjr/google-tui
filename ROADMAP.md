@@ -66,20 +66,26 @@ just checking it off here, so ROADMAP.md only ever shows what's still open.
   `[2026-07-17]` (see CHANGELOG / the Done list below): a 2×2 card grid —
   TODAY (today's events), TASKS (grouped overdue/today/upcoming/unscheduled),
   MAIL (unread count + top unread), NEWS (top rotating headlines from the
-  subscribed feeds) — plus the Hermes Ask card full-width below. Still to
-  build, the remaining half: **weather**, **stocks** (symbols configurable in
-  Settings), **dictionary word of the day**, **Wikipedia picture of the day**.
-  Each needs a new fetcher (Open-Meteo / a stocks API / a dictionary API /
-  Wikipedia REST `featured` endpoint) plus its own Settings rows (weather
-  location, stock symbols, on/off toggles) and a new card slot in the grid
-  (the layout mechanism — `#dashboard-body` Grid, `DASH_PANE_IDS`,
-  `DASH_ADJACENCY`, `_apply_narrow_layout` — is already in place; adding a
-  card is: a `Container` in `compose()`, an id in `DASH_PANE_IDS`, an
-  adjacency entry, a `_fetch_*`/`_apply_*` split per AGENTS.md §8, and the
-  fetcher). The news-headline card currently pulls from ALL subscribed feeds
-  newest-first, not "top-5 by RSS category" — per-category selection is a
-  possible refinement if the flat list proves too noisy. *(Suggested model:
-  Opus for the fetchers + Settings; the grid wiring is now mechanical.)*
+  subscribed feeds) — plus the Hermes Ask card full-width below. Card enable/
+  disable (Settings → Dashboard) shipped `[2026-07-18]`, making `DASH_
+  PANE_IDS` a real "card library" rather than a fixed 5 — see AGENTS.md's
+  `DASH_ADJACENCY` NOTE. Still to build, the remaining half: **weather**,
+  **stocks** (symbols configurable in Settings), **dictionary word of the
+  day**, **Wikipedia picture of the day**. Each needs a new fetcher
+  (Open-Meteo / a stocks API / a dictionary API / Wikipedia REST `featured`
+  endpoint) plus its own Settings rows (weather location, stock symbols) and
+  a new card slot (the layout + enable/disable mechanism — `#dashboard-body`
+  Grid, `DASH_PANE_IDS`, `DASH_ADJACENCY`, `_apply_narrow_layout`,
+  `_apply_dashboard_panes_enabled` — is already in place; adding a card is:
+  a `Container` in `compose()`, an id in `DASH_PANE_IDS` + `PANE_TITLES`
+  [auto-appears in the Settings checklist], an adjacency entry, a `_fetch_*`/
+  `_apply_*` split per AGENTS.md §8, and the fetcher — no separate on/off
+  toggle to wire per-card, the checklist already covers any id in `DASH_
+  PANE_IDS`). The news-headline card currently pulls from ALL subscribed
+  feeds newest-first, not "top-5 by RSS category" — per-category selection
+  is a possible refinement if the flat list proves too noisy. *(Suggested
+  model: Opus for the fetchers + Settings; the grid/enable-disable wiring is
+  now mechanical.)*
 - [ ] **RSS subscription list.** Categorized checklist of popular feeds to
   toggle on/off, plus add-your-own custom feed URL (Settings already has a
   feed list at `#settings-feed-list`, `main.py:569` — extend it rather than
@@ -92,6 +98,14 @@ just checking it off here, so ROADMAP.md only ever shows what's still open.
 
 ## Done
 
+- [x] **Ctrl+K Hermes quick-ask popup + Dashboard card enable/disable**
+  (`[2026-07-18]`) — `HermesAskModal` pops up the configured AI provider's
+  ask box from any tab; the Dashboard's own Hermes card now names the
+  configured provider too (was hardcoded "Hermes"). Settings → Dashboard
+  lets you enable/disable any card, at least one always on — the first step
+  toward a real card library. Also fixed a shipped-but-broken `Alt+4`
+  (silently jumped to the Mail card instead of Hermes since the `[2026-07-17]`
+  grid grew past 3 cards). See CHANGELOG.
 - [x] **Dashboard tab: Google-native cards** (`[2026-07-17]`) — the 2×2 card
   grid (TODAY / TASKS grouped / MAIL unread / NEWS rotating headlines) + the
   full-width Hermes Ask card, replacing the interim Events/Tasks/Hermes stack.

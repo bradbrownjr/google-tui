@@ -38,6 +38,14 @@ class Settings:
     cache_retention_days: int = 0  # drop cached items not seen in this many days
     cache_max_mb: int = 0  # evict least-recently-seen items to stay under this
     email_preview_default_visible: bool = False  # Mail tab's "p"-toggled preview pane, on launch
+    # Dashboard tab card library (2026-07-18, Settings -> Dashboard): which of
+    # the Dashboard's cards are enabled. Default is every currently-shipped
+    # card (matches pre-toggle behavior). Ids match main.py's DASH_PANE_IDS --
+    # a stale id here (from a since-removed card) is filtered out defensively
+    # by GoogleTUI._apply_dashboard_panes_enabled, not here, since settings.py
+    # doesn't know about main.py's card registry.
+    dashboard_panes_enabled: list[str] = field(
+        default_factory=lambda: ["events", "tasks", "dash-mail", "dash-news", "hermes"])
 
 
 def load_settings() -> Settings:

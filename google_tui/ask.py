@@ -211,6 +211,16 @@ def get_provider(provider_id: str, *, nous_api_key: str | None = None) -> AIProv
     return cls()
 
 
+def display_name(provider_id: str) -> str:
+    """Short display label for a provider id -- e.g. "Hermes", "Claude Code",
+    "opencode", "Gemini CLI". PROVIDER_CHOICES' labels carry extra
+    parenthetical text ("Hermes (Nous LLM + agent)") meant for the Settings
+    RadioSet, not compact enough for a pane title or an Input placeholder
+    (the Dashboard's Hermes card, the Ctrl+K quick-ask popup). Reads
+    `display_name` straight off the class -- no instantiation needed."""
+    return PROVIDER_CLASSES.get(provider_id, HermesProvider).display_name
+
+
 def any_provider_reachable(nous_api_key: str | None = None) -> bool:
     return any(get_provider(pid, nous_api_key=nous_api_key).is_reachable()
               for pid in PROVIDER_CLASSES)

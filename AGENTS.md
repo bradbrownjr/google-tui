@@ -184,7 +184,18 @@ feed caches — no dashboard-specific fetcher:
 - **HERMES ASK** (container id `hermes`, full-width bottom row): type
   question, `Enter`. General questions answered by the Nous LLM
   (`tencent/hy3:free`) with live Google context injected; action-style
-  questions delegate to the full Hermes agent.
+  questions delegate to the full Hermes agent. Despite the fixed "Hermes"
+  name, the actual backend is whatever `Settings.ai_provider` is set to
+  (Settings → AI Provider: Hermes/Claude Code/opencode/Gemini CLI) — the
+  card's TITLE and Input placeholder both name the configured provider
+  (`ask.display_name`, e.g. "CLAUDE CODE ASK"), kept live via `GoogleTUI.
+  _update_hermes_labels()` (called at startup and whenever the provider
+  changes). `2026-07-18`: also reachable as a `Ctrl+K` popup
+  (`HermesAskModal`) from ANY tab, not just here — see the keybinding table
+  in §2. The popup is a fresh, unshared conversation each time it opens; both
+  surfaces submit through the same `GoogleTUI._hermes_submit`/`_hermes_thread`
+  (now parameterized on the target `RichLog`, not hardcoded to `#hermes-log`),
+  so there's exactly one LLM-calling code path, not two.
 
 Other tabs:
 - **Calendar tab**: nested `TabbedContent#cal-tabs` (Month/Week), unrelated
@@ -352,13 +363,13 @@ Other tabs:
   Configured in a new Settings sub-tab (`settings-tab-navigation`,
   `Input#settings-routes-key` + `Button#settings-save-routes`, backing
   `Settings.routes_api_key`) — see the Settings tab entry below.
-- **Settings tab** (`Ctrl+7`): nested `TabbedContent#settings-tabs` (mirrors
-  the Calendar tab's `#cal-tabs` Month/Week pattern), five sub-tabs,
+- **Settings tab** (`Ctrl+9`): nested `TabbedContent#settings-tabs` (mirrors
+  the Calendar tab's `#cal-tabs` Month/Week pattern), six sub-tabs,
   `Alt+Left/Right` cycles between them while the Settings tab is active
   (`_cycle_settings_tab`, modeled on `_cycle_tab`, targets
   `SETTINGS_TAB_ORDER = ["settings-tab-general", "settings-tab-ai",
-  "settings-tab-feeds", "settings-tab-search", "settings-tab-navigation"]`
-  instead of `TAB_ORDER`).
+  "settings-tab-feeds", "settings-tab-search", "settings-tab-navigation",
+  "settings-tab-dashboard"]` instead of `TAB_ORDER`).
   Each sub-tab's content is wrapped in its own `VerticalScroll` (independent
   scrolling per section, not one giant outer scroll around the whole
   `TabbedContent`):
@@ -399,6 +410,17 @@ Other tabs:
     `Static` note points at SETUP.md §6 (Cloud Billing must be linked for
     the Routes API — it's part of paid Google Maps Platform, unlike the
     Workspace APIs the rest of this app uses).
+  - `TabPane#settings-tab-dashboard` (Dashboard card enable/disable,
+    `2026-07-18`): a single `SelectionList#settings-dashboard-panes`, one
+    row per `DASH_PANE_IDS` entry (`(PANE_TITLES[pid], pid, currently
+    enabled)` 3-tuples — Textual's checkbox-list widget, same one
+    `LabelPickerModal` uses for thread labels), backing `Settings.
+    dashboard_panes_enabled`. Live-applied on every toggle via
+    `on_selection_list_selected_changed` → `GoogleTUI.
+    _apply_dashboard_panes_enabled()` — no Save button, unlike most of this
+    tab's Input+Button rows. See the `DASH_ADJACENCY` NOTE in §2 for the
+    full mechanism (the `_dash_active`-as-id-string rework this enable/
+    disable feature needed, and the `Alt+4` bug it fixed along the way).
 - **Contacts tab** (`Ctrl+8`, P1 M5): `Input#contacts-search` + `Button
   #contacts-refresh` in a `Horizontal #contacts-bar`, above `ListView
   #contacts-list` (lightbar, same pattern as Email/News/Tasks). The
@@ -565,9 +587,10 @@ App-level `r`/`a`/`f` bindings never reached it.
 | `Ctrl+9` | switch to **Settings** — no F-key alias (see "F2 was already taken" below, now updated for the 9th tab) |
 | `Ctrl+Left/Right` | cycle tabs — the universal fallback if neither `F1..F8` nor `Ctrl+1..8` reaches the app (see caveat below) |
 | `Alt+1..4` | jump to a **pane**: 1 Email (Mail tab), 2/3/4 Today/Tasks/Hermes (Dashboard tab); switches tab first if needed. The Dashboard's Mail/News cards have no digit — Tab/arrows only |
-| `Alt+Left/Right/Up/Down` | move to the adjacent Dashboard pane (see `DASH_ADJACENCY` below) on the Dashboard tab; back/forward through session history on the Browser tab; cycle Settings sub-tabs (General/AI Provider/News Feeds/Search/Navigation) on the Settings tab (`Alt+Up/Down` still only does Dashboard-pane adjacency — no vertical cycling defined for Settings) |
+| `Alt+Left/Right/Up/Down` | move to the adjacent Dashboard pane (see `DASH_ADJACENCY` below — a disabled card is skipped transparently, not a dead keypress) on the Dashboard tab; back/forward through session history on the Browser tab; cycle Settings sub-tabs (General/AI Provider/News Feeds/Search/Navigation/Dashboard) on the Settings tab (`Alt+Up/Down` still only does Dashboard-pane adjacency — no vertical cycling defined for Settings) |
 | `Alt+H` | Browser tab: jump to the configured home URL (`Settings.browser_home_url`, Settings → General) — no-op elsewhere |
-| `Tab` / `Shift+Tab` | cycle Dashboard panes (no-op outside the Dashboard tab) |
+| `Tab` / `Shift+Tab` | cycle Dashboard panes, **enabled ones only** (Settings → Dashboard; no-op outside the Dashboard tab) |
+| `Ctrl+K` | pop up `HermesAskModal` — a quick-ask for the configured AI provider (Settings → AI Provider) from ANY tab, no navigation needed. Fresh conversation each open, no shared history with the Dashboard's own Hermes card. Dead while another modal is already on top (binding-chain truncation at the modal boundary, same as everywhere else in this app) |
 | `p` | toggle a preview pane: Mail tab (highlighted thread's latest message, hidden by default) or Drive tab (file preview column, visible by default) |
 | `l` | focus + open `Select#email-label-select`'s dropdown (Email/Mail tab only — no-op elsewhere) |
 | `c` | compose new (Mail tab only — no-op elsewhere; blank `ComposeModal(mode="new")`, same as the old `contacts-compose-new` button, which moved here) |
@@ -666,13 +689,43 @@ double-ESC encoding.
 `2026-07-16` Mail/Dashboard split — see CHANGELOG): with the `2026-07-17`
 card grid it's a real 2-D map again (`{"right": ..., "down": ...}`), matching
 the layout `[events][tasks]` / `[dash-mail][dash-news]` / `[hermes full
-width]`. Still an explicit `{pane: {direction: pane}}` map, not arithmetic.
+width]`. Still an explicit `{pane: {direction: pane}}` map, not arithmetic —
+and, since it's fixed grid GEOMETRY, unaffected by which cards are enabled/
+disabled (see below); `_adjacent()` walks it in the given direction, skipping
+any disabled card it lands on, until it finds an enabled one or runs out.
 `PANE_IDS` is now just `["email"]` (Mail tab has nothing to switch to);
 `DASH_PANE_IDS = ["events", "tasks", "dash-mail", "dash-news", "hermes"]` is
-the Dashboard's own list, in `Tab`/`Shift+Tab` cycle order — `Alt+2/3/4` map
-to events/tasks/hermes (unchanged meaning), Mail/News are `Tab`/arrows-only.
-If you add another card, update `DASH_PANE_IDS` + `DASH_ADJACENCY` + `_focus_
-dash_pane`'s targets map, not a formula.
+the Dashboard's own **library** — every card that CAN appear, in `Tab`/
+`Shift+Tab` cycle order — `Alt+2/3/4` map to events/tasks/hermes (unchanged
+meaning), Mail/News are `Tab`/arrows-only. If you add another card, update
+`DASH_PANE_IDS` + `DASH_ADJACENCY` + `_focus_dash_pane`'s targets map + the
+`Container` in `compose()` — that's the whole surface area now.
+
+**Dashboard card enable/disable** (`2026-07-18`, Settings → Dashboard,
+`Settings.dashboard_panes_enabled: list[str]`, default all five): the first
+step toward the "library of dashboard panes" the ROADMAP's external-cards
+item (weather/stocks/dictionary/Wikipedia) will grow into. `GoogleTUI.
+_dash_active` changed from a positional INDEX into `DASH_PANE_IDS` to the
+active card's **id string directly** — this was a deliberate rework (not
+just plumbing for the toggle), since indexing into a library that can now be
+a filtered subset was exactly the kind of position-vs-identity bug that had
+already silently broken `Alt+4`: a prior version's `_goto_pane` did `DASH_
+PANE_IDS[idx - 1]`-style arithmetic that was correct only for the original
+3-card Dashboard, and silently pointed at "dash-mail" instead of "hermes"
+once the grid grew to 5 cards — fixed as part of this rework by having every
+pane-switching path (`_focus_dash_pane`, `_goto_pane`, `_cycle_dash_pane`,
+`_adjacent`) take/compare card ids, never positions.
+`GoogleTUI._apply_dashboard_panes_enabled()` (called at startup and from
+`on_selection_list_selected_changed` whenever the Settings checklist
+changes) recomputes `self._dash_enabled_ids` (library-ordered, filtered to
+`Settings.dashboard_panes_enabled`, defensively dropping any id no longer in
+`DASH_PANE_IDS`) and toggles a `.dash-pane-disabled` CSS class (`display:
+none`, same class-toggle idiom as `.narrow-hidden`) on each disabled card's
+`Container`. Never allows an empty result — falls back to `["hermes"]` — an
+empty Dashboard would leave `Tab`/`Alt`-arrows nowhere to land; the Settings
+handler enforces the same floor by re-selecting "hermes" if the user
+unchecks every box (converges in two `SelectionList.SelectedChanged`
+dispatches, not a loop, since the second one is non-empty).
 
 NOTE on Textual selection model: `ListView.Highlighted` (capital H) is the
 cursor index setter; `ListView.highlighted_child` (read-only) is the selected

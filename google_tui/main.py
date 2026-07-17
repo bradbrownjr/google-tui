@@ -104,7 +104,7 @@ REFRESH_COOLDOWN_SECONDS = 5.0
 TAB_ORDER = ["tab-dashboard", "tab-mail", "tab-calendar", "tab-drive", "tab-browser", "tab-news", "tab-navigation",
              "tab-contacts", "tab-settings"]
 SETTINGS_TAB_ORDER = ["settings-tab-general", "settings-tab-ai", "settings-tab-feeds", "settings-tab-search",
-                       "settings-tab-navigation"]
+                       "settings-tab-navigation", "settings-tab-dashboard"]
 
 # Narrow-terminal responsive layout (P2, 2026-07-15). Textual 8.2.8 has no
 # CSS media-query/container-query feature scoped to an arbitrary container,
@@ -1130,6 +1130,7 @@ class GoogleTUI(App):
     #settings-key-method { height: auto; margin: 1 0; }
     #settings-cache-info { margin-top: 1; }
     #settings-feed-list { height: 8; border: round $panel-darken-1; margin-bottom: 1; }
+    #settings-dashboard-panes { height: auto; max-height: 12; border: round $panel-darken-1; margin-top: 1; }
     #settings-feed-url { width: 1fr; margin-right: 2; }
     #settings-google-cse-key, #settings-google-cse-id, #settings-searxng-url { width: 40; margin-right: 2; }
     #settings-google-group, #settings-searxng-group { height: auto; }
@@ -1139,6 +1140,18 @@ class GoogleTUI(App):
     #c-to-suggestions { height: auto; max-height: 6; border: round $panel-darken-1; }
     #unlock-box { height: auto; }
     #onboarding-box { width: 90%; height: 80%; }
+    /* Ctrl+K quick-ask popup (HermesAskModal) -- deliberately NO explicit
+       width/height on #hermes-popup-box: every other ModalScreen in this app
+       (ContactModal, GeminiInputModal, TaskModal, ...) relies on bare `.pane`
+       (height: 1fr, width defaults to fill) for a clean full-screen-panel
+       render with no gap. A tried `width: 80%; height: 70%` here left an
+       uncovered strip that visibly bled through to the screen underneath
+       (confirmed via a side-by-side screenshot against GeminiInputModal,
+       which has no such gap) -- reverted rather than chasing that down,
+       since matching the established convention is simpler and proven-good.
+    */
+    #hermes-popup-log { height: 1fr; border: round $panel-darken-1; margin-top: 1; }
+    #hermes-popup-input { dock: bottom; }
     /* The re-auth box grew a Copy URL / Save to file row; give it room to
        scroll rather than pushing the paste Input off the bottom of the screen
        on a short terminal. The URL itself is ~400 chars and must wrap, not be
@@ -1208,6 +1221,13 @@ class GoogleTUI(App):
     Screen.-narrow #dashboard-body { grid-size: 1; grid-rows: 1fr; }
     Screen.-narrow #hermes { column-span: 1; }
 
+    /* Settings -> Dashboard checklist (2026-07-18): a disabled card is
+       hidden the same way (display: none) regardless of narrow/normal --
+       independent of .narrow-hidden above (a card can be both, or just
+       this one; either alone is enough to hide it). See
+       GoogleTUI._apply_dashboard_panes_enabled. */
+    .dash-pane-disabled { display: none; }
+
     /* Mail tab: Email's list+preview split stacks (doesn't hide) when
        narrow, same rationale as Drive's list+preview column -- a preview
        is still genuinely useful at 80 columns. Only relevant when the "p"
@@ -1241,7 +1261,12 @@ class GoogleTUI(App):
     def __init__(self):
         super().__init__()
         self.active = 0
-        self._dash_active = 0  # which of DASH_PANE_IDS is focused on tab-dashboard
+        self._dash_active = "events"  # which DASH_PANE_IDS card is focused on tab-dashboard
+        # Enabled Dashboard cards, library order, filtered/defaulted from
+        # Settings.dashboard_panes_enabled by _apply_dashboard_panes_enabled
+        # (called from on_mount, and again whenever the Settings -> Dashboard
+        # checklist changes) -- empty here only until that first runs.
+        self._dash_enabled_ids: list[str] = []
         self._tasklists = []
         now = dt.datetime.now()
         self._cal_year, self._cal_month = now.year, now.month
@@ -1435,11 +1460,13 @@ class GoogleTUI(App):
         return gauth.services()
 
     # ---- pane helpers (Mail tab) ----
-    def _pane_title_row(self, text: str, num: int) -> Horizontal:
+    def _pane_title_row(self, text: str, num: int, *, text_id: str | None = None) -> Horizontal:
         # num == 0 means "no Alt-digit shortcut" (the Dashboard's MAIL/NEWS
         # cards, reachable via Tab/arrows only) -- omit the number label
-        # entirely rather than render a misleading "0".
-        children = [Label(text, classes="pane-title-text")]
+        # entirely rather than render a misleading "0". text_id lets a caller
+        # re-target the title Label later (e.g. the Hermes card's title
+        # tracks Settings.ai_provider live -- see _update_hermes_labels).
+        children = [Label(text, id=text_id, classes="pane-title-text")]
         if num:
             children.append(Label(str(num), classes="pane-title-num"))
         return Horizontal(*children, classes="pane-title-row")
@@ -1463,17 +1490,22 @@ class GoogleTUI(App):
         self._apply_narrow_layout()
         self._update_help_bar()
 
-    def _focus_dash_pane(self, idx: int) -> None:
+    def _focus_dash_pane(self, pane_id: str) -> None:
         """Dashboard-tab counterpart to _focus_pane, for its five cards
         (Today/Tasks/Mail/News/Hermes -- see DASH_PANE_IDS and the compose()
-        comment on tab-dashboard)."""
-        self._dash_active = idx % len(DASH_PANE_IDS)
+        comment on tab-dashboard). Takes the pane's id directly (not an index
+        into DASH_PANE_IDS) so callers never need to reason about position
+        within the ENABLED subset -- falls back to the first enabled card
+        (or "hermes" if literally none are, which _apply_dashboard_panes_
+        enabled already prevents) if asked to focus a disabled/unknown one."""
+        if pane_id not in self._dash_enabled_ids:
+            pane_id = self._dash_enabled_ids[0] if self._dash_enabled_ids else "hermes"
+        self._dash_active = pane_id
         for pid in DASH_PANE_IDS:
             try:
                 self.query_one(f"#{pid}").remove_class("pane-active")
             except Exception:
                 pass
-        pane_id = DASH_PANE_IDS[self._dash_active]
         try:
             self.query_one(f"#{pane_id}").add_class("pane-active")
         except Exception:
@@ -1510,12 +1542,38 @@ class GoogleTUI(App):
         except Exception:
             return
         narrow = self._narrow
-        active_pane = DASH_PANE_IDS[self._dash_active] if narrow else None
+        active_pane = self._dash_active if narrow else None
         for pid in DASH_PANE_IDS:
             try:
                 self.query_one(f"#{pid}").set_class(narrow and pid != active_pane, "narrow-hidden")
             except Exception:
                 pass
+
+    def _apply_dashboard_panes_enabled(self) -> None:
+        """Settings -> Dashboard checklist (Settings.dashboard_panes_enabled)
+        made real: toggles ``.dash-pane-disabled`` (display: none, same class-
+        toggle idiom as narrow-hidden above) on each of the five card
+        Containers, and recomputes self._dash_enabled_ids -- the library-
+        ordered list every Tab-cycle / Alt-arrow-adjacency / Alt-digit-jump
+        / help-scope lookup now walks instead of the fixed DASH_PANE_IDS.
+        Filters defensively against DASH_PANE_IDS (a stale settings.json
+        naming a since-removed card is just dropped, not an error) and never
+        allows an empty result -- an empty Dashboard would leave Tab/Alt-
+        arrows with nowhere to land -- falling back to ["hermes"] alone,
+        the single broadest-purpose card. Called at startup (on_mount) and
+        every time the checklist changes (on_selection_list_selected_changed).
+        """
+        enabled = set(self.settings.dashboard_panes_enabled)
+        self._dash_enabled_ids = [pid for pid in DASH_PANE_IDS if pid in enabled] or ["hermes"]
+        for pid in DASH_PANE_IDS:
+            try:
+                self.query_one(f"#{pid}").set_class(pid not in self._dash_enabled_ids, "dash-pane-disabled")
+            except Exception:
+                pass
+        if self._dash_active not in self._dash_enabled_ids:
+            self._focus_dash_pane(self._dash_enabled_ids[0])
+        else:
+            self._apply_narrow_layout()
 
     def _narrow_wrap(self, text: str) -> str:
         """Word-wrap help-bar text to the current terminal width when
@@ -1549,15 +1607,24 @@ class GoogleTUI(App):
         # Mail tab has nothing to move to now -- Email is its only pane.
         if self._main_tabs().active != "tab-dashboard":
             return
-        current_id = DASH_PANE_IDS[self._dash_active]
-        target_id = DASH_ADJACENCY.get(current_id, {}).get(direction)
-        if target_id:
-            self._focus_dash_pane(DASH_PANE_IDS.index(target_id))
+        # Walk DASH_ADJACENCY's FIXED grid-position map (unaffected by which
+        # cards are enabled) in `direction` until landing on an enabled card
+        # or running out of moves -- so a disabled card in between is
+        # transparently skipped rather than a dead keypress. `seen` bounds
+        # the walk (DASH_ADJACENCY has no cycles today, but costs nothing to
+        # guard against one being introduced later).
+        target_id = DASH_ADJACENCY.get(self._dash_active, {}).get(direction)
+        seen: set[str] = set()
+        while target_id and target_id not in self._dash_enabled_ids and target_id not in seen:
+            seen.add(target_id)
+            target_id = DASH_ADJACENCY.get(target_id, {}).get(direction)
+        if target_id and target_id in self._dash_enabled_ids:
+            self._focus_dash_pane(target_id)
 
     # ---- help bar ----
     def _context_help_scope(self) -> str:
         tab = self._main_tabs().active
-        return f"pane:{DASH_PANE_IDS[self._dash_active]}" if tab == "tab-dashboard" else f"tab:{tab}"
+        return f"pane:{self._dash_active}" if tab == "tab-dashboard" else f"tab:{tab}"
 
     def _context_help_text(self) -> str:
         """Plain (non-clickable) context help text. Used only as the basis
@@ -1674,9 +1741,10 @@ class GoogleTUI(App):
                         yield self._pane_title_row("NEWS  (top headlines)", 0)
                         yield ListView(id="dash-news-list")
                     with Container(id="hermes", classes="pane"):
-                        yield self._pane_title_row("HERMES ASK  (type a question, Enter)", 4)
+                        yield self._pane_title_row(self._hermes_ask_title(), 4, text_id="hermes-pane-title")
                         yield RichLog(id="hermes-log", markup=False, wrap=True)
-                        yield Input(placeholder="Ask Hermes about your Google stuff…", id="hermes-input")
+                        yield Input(placeholder=f"Ask {ask.display_name(self.settings.ai_provider)} "
+                                                 f"about your Google stuff…", id="hermes-input")
             with TabPane(_tab_label("Mail", 2, self.settings.ascii_mode), id="tab-mail"):
                 with Horizontal(id="body"):
                     with Vertical(id="left"):
@@ -1935,6 +2003,20 @@ class GoogleTUI(App):
                                 yield Static("Requires Cloud Billing linked to your Google Cloud project "
                                               "(SETUP.md §6) -- free up to 10,000 calls/month.",
                                               id="settings-routes-note", classes="muted")
+                        with TabPane("Dashboard", id="settings-tab-dashboard"):
+                            with VerticalScroll(id="settings-dashboard-scroll"):
+                                yield Label("Dashboard cards", classes="pane-title-text")
+                                yield Static(
+                                    "Choose which cards appear on the Dashboard tab's 2x2 grid + "
+                                    "Hermes row. This is the start of a growing library -- more "
+                                    "cards (weather, stocks, word of the day, Wikipedia picture "
+                                    "of the day) will show up here as they ship. At least one "
+                                    "card must stay enabled.",
+                                    id="settings-dashboard-note", classes="muted")
+                                yield SelectionList(
+                                    *[(PANE_TITLES[pid], pid, pid in self.settings.dashboard_panes_enabled)
+                                      for pid in DASH_PANE_IDS],
+                                    id="settings-dashboard-panes")
         with Vertical(id="help-bar"):
             yield Static("", id="help-context")
             yield Static(HELP_GLOBAL, id="help-global")
@@ -1949,12 +2031,18 @@ class GoogleTUI(App):
         # on the first actual resize.
         self._narrow = self.size.width < NARROW_WIDTH_THRESHOLD
         self._focus_pane(0)
+        # Applies Settings.dashboard_panes_enabled (Settings -> Dashboard) --
+        # must run before anything reads self._dash_active/_dash_enabled_ids,
+        # since it's what first populates _dash_enabled_ids and can move
+        # _dash_active off its __init__ default if that card's disabled.
+        self._apply_dashboard_panes_enabled()
         # Dashboard NEWS card rotation — cycles the visible headline window
         # (see _rotate_dash_news, which no-ops while the card is focused or
         # when there aren't enough entries to rotate).
         self.set_interval(self._DASH_NEWS_ROTATE_SECONDS, self._rotate_dash_news)
         self._apply_email_preview_visibility()  # applies Settings.email_preview_default_visible
         self._apply_ascii_mode()  # applies whatever Settings.ascii_mode loaded from disk; also updates the help bar
+        self._update_hermes_labels()  # applies whatever Settings.ai_provider loaded from disk
         problems = self._diagnose_setup()
         if problems:
             self.push_screen(OnboardingWizardModal(self, problems), self._on_onboarding_result)
@@ -2732,21 +2820,29 @@ class GoogleTUI(App):
         self._update_help_bar()
 
     # ---- pane switching (Alt+1..4) ----
-    def _goto_pane(self, idx: int) -> None:
-        """idx 0 (Email) stays on the Mail tab; idx 1/2/3 (Events/Tasks/
-        Hermes) now live on the Dashboard tab (`2026-07-16` split) — same
-        keys (Alt+1..4), same muscle memory, new target tab for 3 of them."""
-        if idx == 0:
+    def _goto_pane(self, pane_id: str) -> None:
+        """pane_id "email" stays on the Mail tab; "events"/"tasks"/"hermes"
+        (Alt+2/3/4) live on the Dashboard tab (`2026-07-16` split). Takes the
+        id directly (not a positional index -- a prior version indexed into
+        DASH_PANE_IDS by `idx - 1`, which silently broke Alt+4 the moment a
+        4th/5th Dashboard card was added between Hermes and position 3; fixed
+        2026-07-18 alongside the enable/disable rework). A card disabled in
+        Settings -> Dashboard still switches to the Dashboard tab but lands
+        on the first enabled card instead, with a notify explaining why."""
+        if pane_id == "email":
             self._goto_tab("tab-mail")
             self._focus_pane(0)
-        else:
-            self._goto_tab("tab-dashboard")
-            self._focus_dash_pane(idx - 1)
+            return
+        self._goto_tab("tab-dashboard")
+        if pane_id not in self._dash_enabled_ids:
+            self.notify(f"{PANE_TITLES.get(pane_id, pane_id)} is disabled — "
+                       f"enable it in Settings → Dashboard.", severity="warning")
+        self._focus_dash_pane(pane_id)
 
-    def action_goto_pane_email(self):  self._goto_pane(0)
-    def action_goto_pane_events(self): self._goto_pane(1)
-    def action_goto_pane_tasks(self):  self._goto_pane(2)
-    def action_goto_pane_hermes(self): self._goto_pane(3)
+    def action_goto_pane_email(self):  self._goto_pane("email")
+    def action_goto_pane_events(self): self._goto_pane("events")
+    def action_goto_pane_tasks(self):  self._goto_pane("tasks")
+    def action_goto_pane_hermes(self): self._goto_pane("hermes")
 
     def action_switch_left(self):
         if self._main_tabs().active == "tab-browser":
@@ -2816,10 +2912,20 @@ class GoogleTUI(App):
             event.prevent_default()
             getattr(self, action_name)()
 
+    def _cycle_dash_pane(self, step: int) -> None:
+        """Tab/Shift+Tab (step +-1) over ENABLED cards only -- walks
+        self._dash_enabled_ids, not the fixed DASH_PANE_IDS, so a disabled
+        card is simply never a stop on the cycle."""
+        ids = self._dash_enabled_ids
+        if not ids:
+            return
+        i = ids.index(self._dash_active) if self._dash_active in ids else 0
+        self._focus_dash_pane(ids[(i + step) % len(ids)])
+
     def action_cycle(self):
         tab = self._main_tabs().active
         if tab == "tab-dashboard":
-            self._focus_dash_pane((self._dash_active + 1) % len(DASH_PANE_IDS))
+            self._cycle_dash_pane(1)
         elif tab == "tab-browser":
             self._browser_toggle_focus()
         else:
@@ -2830,7 +2936,7 @@ class GoogleTUI(App):
     def action_cycle_back(self):
         tab = self._main_tabs().active
         if tab == "tab-dashboard":
-            self._focus_dash_pane((self._dash_active - 1) % len(DASH_PANE_IDS))
+            self._cycle_dash_pane(-1)
         elif tab == "tab-browser":
             self._browser_toggle_focus()
         else:
@@ -2849,6 +2955,15 @@ class GoogleTUI(App):
         self.run_worker(self._live_refresh_thread, thread=True, exclusive=True)
 
     def action_help(self): self.push_screen(HelpModal())
+
+    def action_hermes_popup(self) -> None:
+        """Ctrl+K: pop up a quick-ask modal for the configured AI provider
+        from ANY tab, without navigating to the Dashboard tab the way Alt+4
+        does. Dead (never dispatched) while another ModalScreen is already
+        on top -- Textual truncates the binding-chain walk at a modal
+        boundary (AGENTS.md §2), which is the right default here too: we
+        don't want this stacking on top of e.g. ComposeModal or ThreadModal."""
+        self.push_screen(HermesAskModal())
 
     def action_toggle_mouse(self) -> None:
         """Release/recapture the mouse (F12).
@@ -3003,7 +3118,7 @@ class GoogleTUI(App):
         if tab == "tab-mail":
             self._show_pane_search("email-search")
         elif tab == "tab-dashboard":
-            pane = DASH_PANE_IDS[self._dash_active]
+            pane = self._dash_active
             if pane == "tasks":
                 self._show_pane_search("tasks-search")
             elif pane == "events":
@@ -3421,7 +3536,7 @@ class GoogleTUI(App):
             return
         if tab != "tab-dashboard":
             return
-        pane = DASH_PANE_IDS[self._dash_active]
+        pane = self._dash_active
         if pane == "tasks":
             self.action_toggle_task()
         elif pane == "events":
@@ -3596,12 +3711,40 @@ class GoogleTUI(App):
             self._news_search_timer = self.set_timer(
                 _NEWS_SEARCH_DEBOUNCE, self._refresh_news_list)
 
-    def _hermes_submit(self, event: Input.Submitted) -> None:
+    def _hermes_ask_title(self) -> str:
+        """Dashboard Hermes card title / HermesAskModal heading -- always
+        names the currently configured AI provider (Settings -> AI Provider),
+        not a hardcoded "Hermes", since ai_provider can be claude_code/
+        opencode/gemini_cli too. See ask.display_name."""
+        return f"{ask.display_name(self.settings.ai_provider).upper()} ASK  (type a question, Enter)"
+
+    def _update_hermes_labels(self) -> None:
+        """Keeps every always-mounted Hermes-Ask surface in sync with
+        Settings -> AI Provider: the Dashboard card's title Label and its
+        Input placeholder. Called at startup and whenever the provider
+        changes (on_radio_set_changed's settings-ai-provider branch).
+        HermesAskModal builds its own title/placeholder fresh every time
+        it's opened, so it never goes stale and needs no update call here."""
+        name = ask.display_name(self.settings.ai_provider)
+        try:
+            self.query_one("#hermes-pane-title", Label).update(self._hermes_ask_title())
+        except Exception:
+            pass
+        try:
+            self.query_one("#hermes-input", Input).placeholder = f"Ask {name} about your Google stuff…"
+        except Exception:
+            pass
+
+    def _hermes_submit(self, event: Input.Submitted, log: RichLog | None = None) -> None:
+        """log defaults to the Dashboard card's own #hermes-log; HermesAskModal
+        passes its own #hermes-popup-log so the two share this one submit/
+        LLM-calling path (_hermes_thread) instead of duplicating it."""
         q = event.value.strip()
         if not q:
             return
         event.input.value = ""
-        log = self.query_one("#hermes-log")
+        if log is None:
+            log = self.query_one("#hermes-log", RichLog)
         log.write(f"You: {q}")
         self.run_worker(lambda: self._hermes_thread(q, log), thread=True,
                         exclusive=False, group="hermes")
@@ -4097,7 +4240,7 @@ class GoogleTUI(App):
         tab = self._main_tabs().active
         if tab == "tab-calendar":
             default_date = self._cal_default_day()
-        elif tab == "tab-dashboard" and DASH_PANE_IDS[self._dash_active] == "events":
+        elif tab == "tab-dashboard" and self._dash_active == "events":
             default_date = dt.date.today()
         else:
             return
@@ -4574,9 +4717,9 @@ class GoogleTUI(App):
         repopulating (same reused-id race as above). Driven by a set_interval
         started in on_mount."""
         entries = self._news_entries_cache
-        if len(entries) <= self._DASH_NEWS_WINDOW:
+        if len(entries) <= self._DASH_NEWS_WINDOW or "dash-news" not in self._dash_enabled_ids:
             return
-        if (DASH_PANE_IDS[self._dash_active] == "dash-news"
+        if (self._dash_active == "dash-news"
                 and self._main_tabs().active == "tab-dashboard"):
             return
         self._dash_news_offset += self._DASH_NEWS_WINDOW
@@ -5037,6 +5180,7 @@ class GoogleTUI(App):
                 return
             self.settings.ai_provider = pid
             save_settings(self.settings)
+            self._update_hermes_labels()  # Dashboard card title/placeholder + any open HermesAskModal is unaffected (built fresh per-open)
             label = next(l for l, v in ask.PROVIDER_CHOICES if v == pid)
             self.notify(f"AI provider set to {label}")
             return
@@ -5076,6 +5220,27 @@ class GoogleTUI(App):
                 self._cache.rekey(key)
             self.notify("Switched to local key file. Cache cleared and rekeyed.")
             self._update_settings_cache_info()
+
+    def on_selection_list_selected_changed(self, event: SelectionList.SelectedChanged) -> None:
+        """Settings -> Dashboard's card checklist, live-applied (see
+        _apply_dashboard_panes_enabled). SelectionList.SelectedChanged carries
+        no per-item info -- event.selection_list.selected is always the FULL
+        current selection, so this just re-reads and re-applies it wholesale.
+        """
+        if event.selection_list.id != "settings-dashboard-panes":
+            return
+        selected = list(event.selection_list.selected)
+        if not selected:
+            # An empty Dashboard has nothing for Tab/Alt-arrows to land on.
+            # re-selecting "hermes" fires this handler again (non-empty this
+            # time), so it converges in two dispatches, not a loop.
+            self.notify("At least one Dashboard card must stay enabled — keeping Hermes Ask on.",
+                       severity="warning")
+            event.selection_list.select("hermes")
+            return
+        self.settings.dashboard_panes_enabled = selected
+        save_settings(self.settings)
+        self._apply_dashboard_panes_enabled()
 
     def _on_settings_passphrase_result(self, key: bytes | None) -> None:
         # See the NOTE on push_screen callbacks in _on_startup_unlock_result:
@@ -6787,6 +6952,42 @@ class HelpModal(ModalScreen):
     def on_button_pressed(self, e):
         self.dismiss(None)
     def on_key(self, e):
+        if e.key == "escape":
+            self.dismiss(None)
+
+
+class HermesAskModal(ModalScreen):
+    """Ctrl+K quick-ask popup (GoogleTUI.action_hermes_popup) -- lets you ask
+    the configured AI provider (Settings -> AI Provider) a question from ANY
+    tab without navigating to the Dashboard. Title and Input placeholder both
+    name the provider (ask.display_name), matching the Dashboard Hermes
+    card's own title (GoogleTUI._hermes_ask_title / _update_hermes_labels).
+
+    Submission reuses GoogleTUI._hermes_submit/_hermes_thread wholesale --
+    those already take the target RichLog as a parameter, so this modal's own
+    #hermes-popup-log is a drop-in, no duplicated provider/context/LLM-calling
+    logic. This is a FRESH conversation every time the modal opens -- it does
+    not share history with the Dashboard card's #hermes-log, and nothing here
+    is persisted once closed. Esc closes.
+    """
+
+    def compose(self) -> ComposeResult:
+        with Container(id="hermes-popup-box", classes="pane"):
+            yield Label(self.app._hermes_ask_title(), id="hermes-popup-title",
+                       classes="pane-title-text")
+            yield RichLog(id="hermes-popup-log", markup=False, wrap=True)
+            yield Input(placeholder=f"Ask {ask.display_name(self.app.settings.ai_provider)} "
+                                     f"about your Google stuff…",
+                       id="hermes-popup-input")
+
+    def on_mount(self) -> None:
+        self.query_one("#hermes-popup-input", Input).focus()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        if event.input.id == "hermes-popup-input":
+            self.app._hermes_submit(event, log=self.query_one("#hermes-popup-log", RichLog))
+
+    def on_key(self, e) -> None:
         if e.key == "escape":
             self.dismiss(None)
 
