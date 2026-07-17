@@ -3,6 +3,49 @@
 Format: keep newest at top. One entry per meaningful change. Reference files
 touched and any breaking notes.
 
+## [2026-07-18] — Quote the original message in Reply/Reply All
+
+ROADMAP's last open P2 — Email item: replying gave you a blank compose box
+with no reminder of what you were actually responding to. Gmail's own web
+client quotes the prior message below the cursor by default, so this does
+the same, gated by a new opt-out setting.
+
+`Settings.quote_on_reply: bool = True` (`settings.py`) — a Switch in
+Settings -> General ("Quote original message in replies",
+`settings-quote-on-reply-switch`) right under the existing preview-pane
+toggle, wired through `on_switch_changed` the same way every other General
+switch here is (flip + `save_settings`, no restart needed).
+
+New `gauth.quote_for_reply(payload, sender, date) -> str` builds the
+`"On <date>, <sender> wrote:\n> line\n> line..."` block from a message's
+payload, reusing the existing `_extract_body` (the same plain-text extractor
+`get_thread`/`forward` already use) and prefixing every line with `"> "`. A
+body that fails to extract still gets the bare `"On ... wrote:"` line — that
+attribution alone is still useful context, so it isn't suppressed.
+
+`ComposeModal.on_mount`'s online reply/reply-all branch used to fetch the
+thread with `format="metadata"` (headers only — Gmail's metadata format
+never includes body content). Switched to `format="full"` so the same
+single API call now carries the last message's body too, no second round
+trip needed. When `quote_on_reply` is on, `#c-body`'s `TextArea` is
+pre-populated with `"\n\n"` + the quote block, then `move_cursor((0, 0))`
+puts the cursor above the blank lines — so typing the reply lands where the
+roadmap item asked for it (above the quote, i.e. "below the reply text").
+`_send_now` needed no changes at all: it already just sends whatever text is
+currently in `#c-body`, quote included.
+
+Offline replies degrade the same way they always have: `self.app._threads_cache`
+only ever stored subject/from (never body — `list_threads` doesn't fetch
+message bodies), so there's nothing to quote from there. Quoting is simply
+skipped in the offline branch rather than faked from partial data.
+
+Verified with a new scratchpad pilot: mocked `svc["gmail"].users().threads()
+.get().execute()` to return a fake full-format thread, pushed `ComposeModal`
+in `mode="reply"`, and confirmed the quote block renders correctly with the
+cursor at `(0, 0)`; then flipped `Settings.quote_on_reply` to `False` and
+confirmed `#c-body` comes up empty instead. Files: `google_tui/settings.py`,
+`google_tui/gauth.py`, `google_tui/main.py`.
+
 ## [2026-07-18] — Filter-as-you-type in the label picker's checklist
 
 ROADMAP's P2 — Email item flagged two label pickers as flat/unfiltered:

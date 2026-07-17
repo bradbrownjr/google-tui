@@ -383,6 +383,18 @@ def _decode(data: str) -> str:
     return base64.urlsafe_b64decode(data).decode("utf-8", "replace")
 
 
+def quote_for_reply(payload: dict, sender: str, date: str) -> str:
+    """Formats a "> "-quoted rendering of a prior message's body for
+    ComposeModal's reply/reply-all quote-on-reply (Settings.quote_on_reply,
+    default on to match Gmail's own web client). A blank/unextractable body
+    still renders the bare "On ... wrote:" attribution line rather than
+    returning "", since that line alone is still useful context."""
+    original = _extract_body(payload)
+    quoted_lines = "\n".join(f"> {line}" for line in original.splitlines())
+    header = f"On {date}, {sender} wrote:"
+    return f"{header}\n{quoted_lines}" if quoted_lines else header
+
+
 def send_message(svc, to: str, subject: str, body: str,
                  in_reply_to: str | None = None, references: str | None = None,
                  thread_id: str | None = None) -> dict:

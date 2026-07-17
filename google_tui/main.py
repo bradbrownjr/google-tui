@@ -1933,6 +1933,10 @@ class GoogleTUI(App):
                                     yield Switch(value=self.settings.email_preview_default_visible,
                                                  id="settings-email-preview-default-switch")
                                 with Horizontal(classes="settings-row"):
+                                    yield Label("Quote original message in replies")
+                                    yield Switch(value=self.settings.quote_on_reply,
+                                                 id="settings-quote-on-reply-switch")
+                                with Horizontal(classes="settings-row"):
                                     yield Label("Check for updates on launch")
                                     yield Switch(value=self.settings.check_for_updates,
                                                  id="settings-update-check-switch")
@@ -5261,6 +5265,10 @@ class GoogleTUI(App):
             save_settings(self.settings)
             self._apply_email_list(list(self._threads_cache.values()))
             return
+        if event.switch.id == "settings-quote-on-reply-switch":
+            self.settings.quote_on_reply = event.value
+            save_settings(self.settings)
+            return
         if event.switch.id == "settings-email-preview-default-switch":
             # Persisted DEFAULT only -- like the other switches here, this
             # doesn't touch the CURRENT session's self._email_preview_visible
@@ -6312,8 +6320,9 @@ class ComposeModal(ModalScreen):
                                 severity="warning")
         else:
             g = self.svc["gmail"]
-            th = g.users().threads().get(userId="me", id=self.thread_id, format="metadata",
-                                         metadataHeaders=["From", "To", "Cc", "Subject"]).execute()
+            # format="full" (not "metadata") so the last message's payload
+            # carries body parts too -- needed below for quote_on_reply.
+            th = g.users().threads().get(userId="me", id=self.thread_id, format="full").execute()
             last = th["messages"][-1]
             hdrs = {h["name"].lower(): h["value"] for h in last.get("payload", {}).get("headers", [])}
             subj = hdrs.get("subject", "")
@@ -6326,6 +6335,14 @@ class ComposeModal(ModalScreen):
             else:  # forward
                 to = ""
                 subject = subj if subj.lower().startswith("fwd:") else "Fwd: " + subj
+            if self.mode in ("reply", "reply_all") and self.app.settings.quote_on_reply:
+                quote = gauth.quote_for_reply(last.get("payload", {}), hdrs.get("from", ""), hdrs.get("date", ""))
+                body_area = self.query_one("#c-body", TextArea)
+                body_area.text = "\n\n" + quote
+                # Cursor at the very top, above the quote, so typing starts
+                # the new reply text where the roadmap item asked for it --
+                # "below" the reply text, i.e. above the quote block.
+                body_area.move_cursor((0, 0))
         self.query_one("#c-to").value = to
         self.query_one("#c-subject").value = subject
         if self.mode == "new" and not to:

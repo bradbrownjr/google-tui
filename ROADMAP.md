@@ -51,15 +51,6 @@ just checking it off here, so ROADMAP.md only ever shows what's still open.
   `messages().get(format="raw")` to see its actual MIME tree, then come
   back with that before writing a fix.
 
-## P2 — Email
-
-- [ ] **Quote the last message below new reply text** (toggleable in
-  Settings) — helps recall what was being replied to. `ComposeModal`'s
-  reply/reply-all path (`main.py:6062+`) would need to prepend a `"> "`-
-  quoted rendering of the prior message's body, gated by a new
-  `Settings.quote_on_reply` (default on, since Gmail's own web client does
-  this by default too).
-
 ## P2 — Calendar
 
 - [ ] **Highlight today's date** on the Month grid — `#cal-grid`
@@ -245,6 +236,16 @@ just checking it off here, so ROADMAP.md only ever shows what's still open.
 
 ## Done
 
+- [x] **Quote the last message below new reply text** (`[2026-07-18]`) —
+  `ComposeModal.on_mount`'s reply/reply-all path now fetches the thread with
+  `format="full"` (was `"metadata"`) and, when the new
+  `Settings.quote_on_reply` (default on, matching Gmail's web client) is set,
+  pre-populates `#c-body` with a blank couple of lines followed by a new
+  `gauth.quote_for_reply`-built `"On <date>, <sender> wrote:\n> ..."` block,
+  cursor placed at the very top so typing the reply doesn't land inside the
+  quote. Offline replies still degrade the same way they already did (cached
+  thread summaries carry no body to quote from), so quoting is simply skipped
+  there. See CHANGELOG.
 - [x] **Filter-as-you-type in `LabelPickerModal`'s label checklist**
   (`[2026-07-18]`) — new `Input#labelpick-search` above the `SelectionList`,
   filtered via new `_fuzzy_filter_labels` (same `_fuzzy_score` idiom as

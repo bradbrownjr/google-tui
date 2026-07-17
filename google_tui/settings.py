@@ -38,6 +38,7 @@ class Settings:
     cache_retention_days: int = 0  # drop cached items not seen in this many days
     cache_max_mb: int = 0  # evict least-recently-seen items to stay under this
     email_preview_default_visible: bool = False  # Mail tab's "p"-toggled preview pane, on launch
+    quote_on_reply: bool = True  # prepend a "> "-quoted prior message to reply/reply-all compose bodies (Gmail's web client does this by default too)
     # Dashboard tab card library (2026-07-18, Settings -> Dashboard): which of
     # the Dashboard's cards are enabled. Default is every currently-shipped
     # card (matches pre-toggle behavior). Ids match main.py's DASH_PANE_IDS --
