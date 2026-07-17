@@ -988,6 +988,18 @@ def _event_in_week(e: dict, week_start: dt.date) -> bool:
     return d is not None and week_start <= d < week_start + dt.timedelta(days=7)
 
 
+def _bg_cell(text: str, color: str | None) -> str | Text:
+    """A single-event Week-view cell (hour or all-day row), background-colored
+    by that event's `_color` (see gauth.events_between). Multi-event cells
+    ("N events") don't call this -- there's no single color to attribute a
+    combined cell to, so those stay plain text."""
+    if not text or not color:
+        return text
+    styled = Text(text)
+    styled.stylize(f"on {color}")
+    return styled
+
+
 def _is_previewable(mime: str) -> bool:
     return mime.startswith(_PREVIEWABLE_PREFIXES) or mime in _PREVIEWABLE_EXTRA
 
@@ -2311,13 +2323,22 @@ class GoogleTUI(App):
             ok = False
             self.call_from_thread(self.notify, f"Labels error: {e}", severity="error")
         try:
-            cal_month = self._fetch_cal_month()
+            # Fetched once and shared below -- month + week both querying
+            # calendarList().list() separately would be a redundant extra
+            # API call per refresh for no benefit (the list rarely changes).
+            calendars = gauth.list_calendars(self.svc)
+        except Exception as e:
+            ok = False
+            self.call_from_thread(self.notify, f"Calendars error: {e}", severity="error")
+            calendars = [{"id": "primary", "backgroundColor": "#039BE5", "selected": True}]
+        try:
+            cal_month = self._fetch_cal_month(calendars=calendars)
             self._cache.put("cal_month", f"{self._cal_year:04d}-{self._cal_month:02d}", cal_month)
         except Exception as e:
             ok = False
             self.call_from_thread(self.notify, f"Calendar error: {e}", severity="error")
         try:
-            cal_week = self._fetch_cal_week()
+            cal_week = self._fetch_cal_week(calendars=calendars)
             self._cache.put("cal_week", self._cal_week_start.isoformat(), cal_week)
         except Exception as e:
             ok = False
@@ -4176,28 +4197,38 @@ class GoogleTUI(App):
 
     def _day_cell_text(self, day: int, events: list[dict], *, is_today: bool = False) -> str | Text:
         lines = [str(day)]
+        colors: list[str | None] = [None]  # parallel list -- colors[i] styles lines[i]
         for e in events[:2]:
             start = _fmt_date(e.get("start", {}).get("dateTime") or e.get("start", {}).get("date", ""))
             time_part = start.split()[-1] if " " in start else ""
             lines.append(f"{time_part} {e.get('summary','')[:14]}"[:18])
+            colors.append(e.get("_color"))
         if len(events) > 2:
             lines.append(f"+{len(events) - 2} more")
+            colors.append(None)
         while len(lines) < 4:
             lines.append("")
+            colors.append(None)
         joined = "\n".join(lines)
-        if not is_today:
+        if not is_today and not any(colors):
             return joined
         # "reverse" swaps whatever fg/bg the cell already has rather than a
         # hardcoded color, so today's highlight still works under any theme.
         # stylize() (not the Text(..., style=...) constructor) is required
-        # here so the span covers only the day-number line, not the whole
+        # here so each span covers only its own line, not the whole
         # multi-line cell -- the constructor's style applies to all text.
         text = Text(joined)
-        text.stylize("bold reverse", 0, len(lines[0]))
+        pos = 0
+        for i, (line, color) in enumerate(zip(lines, colors)):
+            if i == 0 and is_today:
+                text.stylize("bold reverse", pos, pos + len(line))
+            elif color:
+                text.stylize(f"on {color}", pos, pos + len(line))
+            pos += len(line) + 1  # +1 for the "\n" joining this line to the next
         return text
 
-    def _fetch_cal_month(self) -> list[dict]:
-        return gauth.month_events(self.svc, self._cal_year, self._cal_month)
+    def _fetch_cal_month(self, calendars: list[dict] | None = None) -> list[dict]:
+        return gauth.month_events(self.svc, self._cal_year, self._cal_month, calendars=calendars)
 
     def _build_cal_month(self) -> None:
         self._apply_cal_month(self._fetch_cal_month())
@@ -4237,10 +4268,10 @@ class GoogleTUI(App):
                    if d else "" for d in cells[i:i + 7]]
             grid.add_row(*row, height=4)
 
-    def _fetch_cal_week(self) -> list[dict]:
+    def _fetch_cal_week(self, calendars: list[dict] | None = None) -> list[dict]:
         start = dt.datetime.combine(self._cal_week_start, dt.time.min).replace(tzinfo=dt.timezone.utc)
         end = start + dt.timedelta(days=7)
-        return gauth.events_between(self.svc, start, end)
+        return gauth.events_between(self.svc, start, end, calendars=calendars)
 
     def _build_cal_week(self) -> None:
         self._apply_cal_week(self._fetch_cal_week())
@@ -4311,7 +4342,7 @@ class GoogleTUI(App):
             if not evs:
                 allday_row.append("")
             elif len(evs) == 1:
-                allday_row.append(evs[0].get("summary", "")[:16])
+                allday_row.append(_bg_cell(evs[0].get("summary", "")[:16], evs[0].get("_color")))
             else:
                 allday_row.append(f"{len(evs)} events")
         grid.add_row(*allday_row)
@@ -4324,7 +4355,7 @@ class GoogleTUI(App):
                 if not evs:
                     row.append("")
                 elif len(evs) == 1:
-                    row.append(evs[0].get("summary", "")[:16])
+                    row.append(_bg_cell(evs[0].get("summary", "")[:16], evs[0].get("_color")))
                 else:
                     row.append(f"{len(evs)} events")
             grid.add_row(*row)

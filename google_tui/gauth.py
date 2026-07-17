@@ -530,23 +530,78 @@ def list_events(svc, days: int = 14) -> list[dict]:
     return resp.get("items", [])
 
 
-def events_between(svc, start: datetime, end: datetime) -> list[dict]:
+# Google Calendar's fixed, documented per-event color palette (colorId
+# "1".."11" -> hex). Stable across every account, so this is hardcoded rather
+# than spending an extra colors().get() API call on every Calendar refresh.
+_EVENT_COLOR_PALETTE = {
+    "1": "#7986CB",   # Lavender
+    "2": "#33B679",   # Sage
+    "3": "#8E24AA",   # Grape
+    "4": "#E67C73",   # Flamingo
+    "5": "#F6BF26",   # Banana
+    "6": "#F4511E",   # Tangerine
+    "7": "#039BE5",   # Peacock
+    "8": "#616161",   # Graphite
+    "9": "#3F51B5",   # Blueberry
+    "10": "#0B8043",  # Basil
+    "11": "#D50000",  # Tomato
+}
+
+
+def list_calendars(svc) -> list[dict]:
+    """The user's Calendar list (`calendarList().list()`), trimmed to what
+    `events_between`/`month_events` and the Month/Week grids need: which
+    calendars to pull events from, and what background color to paint each
+    one's events with. `selected` mirrors Google Calendar's own web UI
+    "shown calendars" checkboxes -- a calendar unchecked there is skipped
+    here too, same as it would be on calendar.google.com."""
     cal = svc["calendar"]
-    resp = cal.events().list(
-        calendarId="primary",
-        timeMin=start.isoformat(), timeMax=end.isoformat(),
-        orderBy="startTime", singleEvents=True,
-    ).execute()
-    return resp.get("items", [])
+    resp = cal.calendarList().list().execute()
+    return [{"id": c["id"], "summary": c.get("summary", c["id"]),
+             "backgroundColor": c.get("backgroundColor", "#039BE5"),
+             "selected": c.get("selected", True)}
+            for c in resp.get("items", [])]
 
 
-def month_events(svc, year: int, month: int) -> list[dict]:
+def events_between(svc, start: datetime, end: datetime, calendars: list[dict] | None = None) -> list[dict]:
+    """Fetches events from every SELECTED calendar in `calendars` (or, if not
+    given, every selected calendar from a fresh `list_calendars` call) between
+    `start`/`end`, tagging each event with `_calendarId` and `_color` --
+    the event's own `colorId` override (`_EVENT_COLOR_PALETTE`) if set, else
+    its source calendar's `backgroundColor` -- so `_apply_cal_month`/
+    `_apply_cal_week` can background-color each event without needing a
+    second lookup."""
+    cal = svc["calendar"]
+    if calendars is None:
+        calendars = list_calendars(svc)
+    # Filtered here (not just in the auto-fetch branch above) so a caller
+    # like main.py's _live_refresh_thread -- which fetches the full
+    # list_calendars() once and passes it to both month and week -- doesn't
+    # have to remember to pre-filter it itself.
+    calendars = [c for c in calendars if c.get("selected", True)]
+    out = []
+    for c in calendars:
+        resp = cal.events().list(
+            calendarId=c["id"],
+            timeMin=start.isoformat(), timeMax=end.isoformat(),
+            orderBy="startTime", singleEvents=True,
+        ).execute()
+        cal_color = c.get("backgroundColor", "#039BE5")
+        for e in resp.get("items", []):
+            e["_calendarId"] = c["id"]
+            e["_color"] = _EVENT_COLOR_PALETTE.get(e.get("colorId"), cal_color)
+            out.append(e)
+    out.sort(key=lambda e: e.get("start", {}).get("dateTime") or e.get("start", {}).get("date", ""))
+    return out
+
+
+def month_events(svc, year: int, month: int, calendars: list[dict] | None = None) -> list[dict]:
     start = datetime(year, month, 1, tzinfo=timezone.utc)
     if month == 12:
         end = datetime(year + 1, 1, 1, tzinfo=timezone.utc)
     else:
         end = datetime(year, month + 1, 1, tzinfo=timezone.utc)
-    return events_between(svc, start, end)
+    return events_between(svc, start, end, calendars=calendars)
 
 
 def create_event(svc, summary: str, start, end, all_day: bool = False,

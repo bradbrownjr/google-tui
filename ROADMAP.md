@@ -53,11 +53,6 @@ just checking it off here, so ROADMAP.md only ever shows what's still open.
 
 ## P2 — Calendar
 
-- [ ] **Background-color events by their source calendar** — `list_events`
-  would need to also return each event's calendar id/color
-  (`colorId`/calendar's own color), threaded through `_apply_cal_month`/
-  `_apply_cal_week`'s cell-building so each event's `DataTable` cell/segment
-  gets a per-calendar background style.
 - [ ] **Size the Month grid's day squares to better fill the terminal** —
   `#cal-grid` currently has a fixed row/column sizing regardless of terminal
   dimensions; investigate `DataTable` cell-height/column-width options for
@@ -228,6 +223,16 @@ just checking it off here, so ROADMAP.md only ever shows what's still open.
 
 ## Done
 
+- [x] **Background-color events by their source calendar** (`[2026-07-18]`) —
+  new `gauth.list_calendars` (`calendarList().list()`) feeds a new `calendars`
+  kwarg on `events_between`/`month_events`, which now fetch every SELECTED
+  calendar (not just `"primary"`), tagging each event with `_calendarId` and
+  `_color` (the event's own `colorId` override, else its calendar's
+  `backgroundColor`). `_day_cell_text` (Month) and a new `_bg_cell` helper
+  (Week, single-event hour/all-day cells only — a multi-event "N events" cell
+  has no one color to use) background-color each event line/cell via
+  `Text.stylize`. `_live_refresh_thread` fetches the calendar list once per
+  refresh and shares it between the month/week fetches. See CHANGELOG.
 - [x] **Better multi-day event display** (`[2026-07-18]`) — Week view's
   `#cal-week-grid` now has a dedicated "All day" row above the hour grid.
   `_apply_cal_week` routes all-day events (date-only start/end) and

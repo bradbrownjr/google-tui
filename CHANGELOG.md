@@ -3,6 +3,60 @@
 Format: keep newest at top. One entry per meaningful change. Reference files
 touched and any breaking notes.
 
+## [2026-07-18] — Full multi-calendar support + background-color events by source calendar
+
+Third `## P2 — Calendar` item. Before this, `list_events`/`events_between`/
+`month_events` (`gauth.py`) all hardcoded `calendarId="primary"` — there was
+no `calendarList()` call anywhere in the app, so a user with multiple Google
+Calendars (work, personal, a shared family calendar, etc.) only ever saw
+their primary one in google-tui at all, let alone color-coded. Asked the user
+whether to scope this down to just coloring by each event's own `colorId`
+(no new API surface, single-calendar) or build real multi-calendar support;
+they chose the latter.
+
+New `gauth.list_calendars(svc)` wraps `calendarList().list()`, returning each
+calendar's `id`/`summary`/`backgroundColor`/`selected` (`selected` mirrors
+Google Calendar's own web UI "shown calendars" checkboxes). `events_between`
+gained a `calendars: list[dict] | None = None` kwarg: when omitted it calls
+`list_calendars` itself; either way the list is filtered to `c["selected"]`
+before use, so an unchecked calendar is skipped exactly like on
+calendar.google.com — this filter runs unconditionally (not just on the
+auto-fetch path) so a caller that fetches the full list once and reuses it
+across multiple calls (see below) doesn't have to remember to pre-filter.
+Every fetched event is tagged with `_calendarId` and `_color`: the event's own
+`colorId` override (Google Calendar's fixed 11-color per-event palette —
+`_EVENT_COLOR_PALETTE`, hardcoded since it's documented and stable across
+every account, avoiding an extra `colors().get()` call) if set, else its
+source calendar's `backgroundColor`. `month_events` just threads the new
+kwarg through to `events_between`.
+
+`main.py`'s `_live_refresh_thread` fetches `list_calendars` once per refresh
+cycle and passes the result to both `_fetch_cal_month` and `_fetch_cal_week`
+(each gained a matching `calendars` kwarg) — otherwise Month and Week would
+each independently re-fetch the calendar list on every refresh for no
+benefit, since it rarely changes. Other call sites (manual month/week
+navigation) still pass nothing and let `events_between` auto-fetch, since
+those are one-off actions rather than part of the batched refresh path.
+
+Rendering: `_day_cell_text` (Month) now tracks a `colors` list parallel to
+its `lines` list and, for any day with at least one colored event (or that's
+today), builds a `Text` and calls `.stylize(f"on {color}", ...)` per line —
+each event's summary line gets its own background span, independent of the
+existing today-highlight span on the day-number line. A new module-level
+`_bg_cell(text, color)` helper does the same for Week's single-event hour and
+all-day-row cells; a cell showing `"N events"` (more than one event, no
+single color to attribute the cell to) intentionally stays a plain string.
+
+Verified two ways: a unit-level check of `gauth.events_between` (mocked
+`calendarList`/`events().list()` per calendar) confirming multi-calendar
+fetch, `colorId` overriding a calendar's default color, and unselected
+calendars never being queried at all; then an app-level pilot confirming
+`_apply_cal_month` colors an event's line with a `Span(..., 'on #33B679')`
+and `_apply_cal_week` colors a single-event cell but leaves a two-event
+"2 events" cell as a plain string. Re-ran every prior Calendar/Email pilot
+afterward with no regressions. Files: `google_tui/gauth.py`,
+`google_tui/main.py`.
+
 ## [2026-07-18] — Dedicated all-day row in the Calendar Week view
 
 Second `## P2 — Calendar` item. Two related gaps in `_apply_cal_week`
