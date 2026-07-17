@@ -162,16 +162,18 @@ HELP_GLOBAL_TEXT = (
     "Ctrl+P Commands   F12 Mouse   Ctrl+H Help   Ctrl+Q Quit"
 )
 
-# Keyed "pane:<id>" for the Dashboard tab's 3 panes, "tab:<id>" for every
+# Keyed "pane:<id>" for the Dashboard tab's five cards, "tab:<id>" for every
 # other tab (including tab-mail, which is Email-only -- see
-# GoogleTUI._context_help_scope). Dashboard is interim/placeholder content
-# (Events/Tasks/Hermes moved out of the Mail tab, 2026-07-16, to make Email
-# single-purpose) -- pane:events/tasks/hermes keep their pre-move text
-# unchanged, since the sub-pane content itself didn't change.
+# GoogleTUI._context_help_scope). The Dashboard became the real Google-native
+# dashboard 2026-07-17 (a TODAY/TASKS/MAIL/NEWS card grid + Hermes) --
+# pane:events (now "TODAY") and pane:tasks keep their prior text since those
+# cards' interactions didn't change; pane:dash-mail/dash-news are new.
 CONTEXT_HELP: dict[str, str] = {
     "tab:tab-mail": "Enter Open   c Compose   r Reply   a Reply All   f Forward   u Unread   Space Expand   l Labels   / Search   p Toggle Preview",
     "pane:events": "Enter/Space Detail   n New Event   / Search",
     "pane:tasks": "Space Toggle Complete   Enter Detail   / Search",
+    "pane:dash-mail": "Enter/Space Open Thread (header: open Mail tab)",
+    "pane:dash-news": "Enter/Space Open Headline",
     "pane:hermes": "Enter Ask",
     "tab:tab-calendar": "[ / ] Prev/Next Month or Week   Enter Day Detail   n New Event",
     "tab:tab-drive": "Enter Open Folder / Reload Preview   / Search (this folder)   p Toggle Preview",
@@ -296,10 +298,11 @@ GLOBAL
   Ctrl+Left/Right  Cycle tabs (the universal fallback if neither F1..F8 nor
                    Ctrl+1..8 reaches the app — some terminals/multiplexers/
                    browsers swallow both)
-  Alt+1..4         Jump to a pane: 1 Email (Mail tab), 2/3/4 Events/Tasks/
-                   Hermes (Dashboard tab)
-  Alt+arrows       Move to the adjacent Dashboard pane
-  Tab / Shift+Tab  Cycle Dashboard panes
+  Alt+1..4         Jump to a pane: 1 Email (Mail tab), 2/3/4 Today/Tasks/
+                   Hermes (Dashboard tab). The Dashboard's Mail and News
+                   cards have no digit — reach them with Tab or Alt+arrows.
+  Alt+arrows       Move to the adjacent Dashboard card (2x2 grid + Hermes)
+  Tab / Shift+Tab  Cycle Dashboard cards
   Ctrl+R           Reconnect / refresh live data
   Ctrl+P           Command palette
   Ctrl+H           This help
@@ -323,15 +326,18 @@ MAIL TAB
   Thread view (opened via Enter): R/A/F Reply / Reply All / Forward — same
   keys as the Email pane, now with visible button hints — Esc/Close closes.
 
-DASHBOARD TAB (interim — Events/Tasks/Hermes moved here from the old
-4-pane Mail tab so Email could go single-purpose; this becomes the real
-dashboard — weather, stocks, today's events, tasks due, unread count,
-etc. — as that separate feature is built out)
-  Events pane:  Enter/Space open event detail, n new event, / search (live
-                filter over summary/description)
-  Tasks pane:   Space toggle complete, Enter open detail, / search (live
-                filter over title/notes)
-  Hermes pane:  type a question, Enter to ask
+DASHBOARD TAB (2x2 card grid + Hermes; Google-native cards, 2026-07-17.
+Weather / stocks / dictionary / Wikipedia cards are the remaining half of
+this feature, not yet built)
+  Today card:   today's events (all-day + timed); Enter/Space open detail,
+                n new event, / search (live filter over summary/description)
+  Tasks card:   tasks grouped Overdue / Due today / Upcoming / No due date /
+                Done; Space toggle complete, Enter open detail, / search
+  Mail card:    unread count + most-recent unread threads; Enter/Space opens
+                the thread (or, on the count header, jumps to the Mail tab)
+  News card:    top headlines from your subscribed feeds, rotating; Enter/
+                Space opens the entry
+  Hermes card:  type a question, Enter to ask
 
 CALENDAR TAB
   [ / ]         Previous / next month (or week, in Week view)

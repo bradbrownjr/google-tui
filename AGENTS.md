@@ -18,9 +18,13 @@ bar of the outer `TabbedContent#main-tabs`, not a separate status widget):
 (`Ctrl+9` only — no F-key alias, F9+ isn't reliably delivered by every
 terminal). The Mail tab is Email-only (`2026-07-16` — see CHANGELOG),
 with a toggleable preview pane (`p`, hidden by default). The Dashboard tab
-holds three **panes** — Events, Tasks, Hermes — as interim/placeholder
-content until the full dashboard feature (weather, stocks, today's events,
-tasks due, unread count, etc. — ROADMAP P4) replaces it. Tabs and panes are
+(`2026-07-17`) is a 2×2 card **grid** — TODAY (today's events), TASKS
+(grouped overdue/today/upcoming/unscheduled/done), MAIL (unread count + top
+unread threads), NEWS (rotating top headlines from the subscribed feeds) —
+plus the HERMES ASK card full-width below. These five are still "panes" for
+key-nav purposes (`DASH_PANE_IDS`, `Alt+#`, Tab/arrows). Only the Google-
+native half is built; the external cards (weather/stocks/dictionary/
+Wikipedia — ROADMAP P4) are still open. Tabs and panes are
 deliberately different concepts with different key prefixes (`Ctrl+#` for
 tabs, `Alt+#` for panes) — see §2.
 
@@ -142,17 +146,45 @@ Mail-tab panes:
   `_apply_mail_data_async` populate the list; `self._expanded_thread_ids:
   set[str]` tracks which threads are currently expanded and naturally
   resets whenever the list is torn down and repopulated (no persistence).
-- **Events** (right top, renamed from "Calendar" to avoid clashing with the
-  Calendar tab): next ~3 weeks of events (`self._events_window_days`),
-  lightbar, `Enter`/`Space` → detail. A "↓ Load more events…" row
-  (`LOAD_MORE_EVENTS_ID`) at the bottom (hidden while `/`-filtered) widens
-  the window by `_EVENTS_WINDOW_STEP_DAYS` and refetches — see CHANGELOG
-  `[2026-07-16]`.
-- **Tasks** (right middle): all Google Task lists combined, lightbar.
-  `Space` toggles complete (live), `Enter` shows details/subtasks.
-- **Hermes Ask** (right bottom): type question, `Enter`. General questions
-  answered by the Nous LLM (`tencent/hy3:free`) with live Google context
-  injected; action-style questions delegate to the full Hermes agent.
+
+Dashboard-tab cards (`2026-07-17`; a `Grid#dashboard-body`, `grid-size: 2 3`,
+`#hermes` `column-span: 2`; narrow mode collapses to one column, `_apply_
+narrow_layout` shows only the active card). All five reuse existing Google/
+feed caches — no dashboard-specific fetcher:
+- **TODAY** (container id `events`, list `#event-list`): today's events only
+  (all-day + timed, local date), via module-level `_todays_events` +
+  `_append_today_event_items`. Populated from `self._events_cache` in
+  `_apply_mail_data_async` / `_apply_event_list_async` through the shared
+  `_fill_today_events` helper — NOT the old next-3-weeks list, so there's no
+  "Load more" row anymore (the `LOAD_MORE_EVENTS_ID` / `action_load_more_
+  events` machinery is now dead but left in place). `Enter`/`Space` → detail
+  (`_open_event_by_id`), `n` new event, `/` search (hidden `#events-search`
+  bar kept in-DOM). Friendly "No events today" empty state.
+- **TASKS** (container id `tasks`, list `#task-list`): the same combined-
+  tasklist list, now grouped by due status (Overdue / Due today / Upcoming /
+  No due date / Done) with accent header rows — see `_append_task_items`
+  (rewritten to bucket on the `due` date-prefix vs. local ISO date). Task
+  rows keep their `k-` ids so `Space` toggle-complete and `Enter` detail are
+  unchanged; header rows carry no id (a Space/Enter on one no-ops).
+- **MAIL** (container id `dash-mail`, list `#dash-mail-list`): a `📬 N unread`
+  count header (`dm-open` → `Enter` jumps to the Mail tab) + up to six
+  most-recent unread threads (`dm-<threadId>` → `Enter` opens `ThreadModal`).
+  Built by `_populate_dash_mail(threads)` in `_apply_mail_data_async`.
+- **NEWS** (container id `dash-news`, list `#dash-news-list`): top headlines
+  from `self._news_entries_cache` (the News tab's combined-feed list — no new
+  fetch), gently rotating through the list on a `set_interval` (`_rotate_
+  dash_news`, paused while the card is focused or when ≤ one window of
+  entries). Row ids are `dn-<cid>` — a DISTINCT prefix from the News tab's
+  `n-` ids so the same entry can live in both lists without a widget-id
+  collision — mapped via `self._dash_news_by_cid`; `Enter`/`Space` →
+  `NewsEntryModal`. `_populate_dash_news` deliberately does NOT clear the
+  list itself: every caller `await ...clear()`s first, since the reused `dn-`
+  ids would otherwise race `ListView.clear`'s async removal into `DuplicateIds`
+  (§2's clear-is-async trap).
+- **HERMES ASK** (container id `hermes`, full-width bottom row): type
+  question, `Enter`. General questions answered by the Nous LLM
+  (`tencent/hy3:free`) with live Google context injected; action-style
+  questions delegate to the full Hermes agent.
 
 Other tabs:
 - **Calendar tab**: nested `TabbedContent#cal-tabs` (Month/Week), unrelated
@@ -532,7 +564,7 @@ App-level `r`/`a`/`f` bindings never reached it.
 | `F1..F8` | switch **tab** (Dashboard / Mail / Calendar / Drive / Browser / News / Navigation / Contacts) — also bound as `Ctrl+1..8`, a secondary alias (see caveat below) |
 | `Ctrl+9` | switch to **Settings** — no F-key alias (see "F2 was already taken" below, now updated for the 9th tab) |
 | `Ctrl+Left/Right` | cycle tabs — the universal fallback if neither `F1..F8` nor `Ctrl+1..8` reaches the app (see caveat below) |
-| `Alt+1..4` | jump to a **pane**: 1 Email (Mail tab), 2/3/4 Events/Tasks/Hermes (Dashboard tab); switches tab first if needed |
+| `Alt+1..4` | jump to a **pane**: 1 Email (Mail tab), 2/3/4 Today/Tasks/Hermes (Dashboard tab); switches tab first if needed. The Dashboard's Mail/News cards have no digit — Tab/arrows only |
 | `Alt+Left/Right/Up/Down` | move to the adjacent Dashboard pane (see `DASH_ADJACENCY` below) on the Dashboard tab; back/forward through session history on the Browser tab; cycle Settings sub-tabs (General/AI Provider/News Feeds/Search/Navigation) on the Settings tab (`Alt+Up/Down` still only does Dashboard-pane adjacency — no vertical cycling defined for Settings) |
 | `Alt+H` | Browser tab: jump to the configured home URL (`Settings.browser_home_url`, Settings → General) — no-op elsewhere |
 | `Tab` / `Shift+Tab` | cycle Dashboard panes (no-op outside the Dashboard tab) |
@@ -552,7 +584,9 @@ App-level `r`/`a`/`f` bindings never reached it.
 `_tab_label()` appends a `[dim]` superscript digit to each tab title, and
 `_pane_title_row()` renders a two-`Label` row (title `width: 1fr`, number
 `width: auto`, both styled) for the Email pane and the Dashboard tab's
-Events/Tasks/Hermes panes. This is NOT hide-until-modifier-
+Today/Tasks/Hermes cards (it OMITS the number label when passed `num=0` —
+the Dashboard's Mail/News cards, which have no `Alt`-digit shortcut). This
+is NOT hide-until-modifier-
 held: Textual 8.2.8's `events.py` has only one keyboard event class (`Key`,
 press-only) — there is no key-release event and no exposed Kitty-protocol
 modifier tracking, so "numbers appear only while Ctrl/Alt is held" cannot be
@@ -629,15 +663,16 @@ navigation and Settings sub-tab cycling too, on any terminal using the
 double-ESC encoding.
 
 **`DASH_ADJACENCY`** (`main.py`, was `PANE_ADJACENCY` before the
-`2026-07-16` Mail/Dashboard split — see CHANGELOG; replaces an even older
-`active ± 1` / `active ± 2` arithmetic scheme that assumed a symmetric 2x2
-grid): Events/Tasks/Hermes stack in one column on the Dashboard tab, so
-it's just an up/down chain now, no more `left`/`right` (those existed only
-because Email used to be a sibling column). Still an explicit
-`{pane: {direction: pane}}` map, not arithmetic. `PANE_IDS` is now just
-`["email"]` (Mail tab has nothing to switch to); `DASH_PANE_IDS =
-["events", "tasks", "hermes"]` is the Dashboard tab's own list. If you add
-a 4th Dashboard pane, update `DASH_ADJACENCY`, not a formula.
+`2026-07-16` Mail/Dashboard split — see CHANGELOG): with the `2026-07-17`
+card grid it's a real 2-D map again (`{"right": ..., "down": ...}`), matching
+the layout `[events][tasks]` / `[dash-mail][dash-news]` / `[hermes full
+width]`. Still an explicit `{pane: {direction: pane}}` map, not arithmetic.
+`PANE_IDS` is now just `["email"]` (Mail tab has nothing to switch to);
+`DASH_PANE_IDS = ["events", "tasks", "dash-mail", "dash-news", "hermes"]` is
+the Dashboard's own list, in `Tab`/`Shift+Tab` cycle order — `Alt+2/3/4` map
+to events/tasks/hermes (unchanged meaning), Mail/News are `Tab`/arrows-only.
+If you add another card, update `DASH_PANE_IDS` + `DASH_ADJACENCY` + `_focus_
+dash_pane`'s targets map, not a formula.
 
 NOTE on Textual selection model: `ListView.Highlighted` (capital H) is the
 cursor index setter; `ListView.highlighted_child` (read-only) is the selected

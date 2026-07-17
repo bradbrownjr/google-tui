@@ -4,12 +4,13 @@ Top-level layout is nine full-width TABS in the blue bar: Dashboard, Mail,
 Calendar, Drive, Browser, News, Navigation, Contacts, Settings (F1..F8, also
 Ctrl+1..8 -- Settings is the odd one out at Ctrl+9, no F-key alias, since
 F9+ isn't reliably delivered by every terminal). The Mail tab is Email-only
-(list + toggleable preview pane, "p"). The Dashboard tab holds three PANES
---- Events, Tasks, Hermes (Alt+2..4, or Alt+arrows to move relatively) ---
-as interim/placeholder content until the full dashboard feature (weather,
-stocks, etc. -- ROADMAP P4) replaces it; Alt+1 stays on the Mail tab's
-Email. See AGENTS.md for the full keybinding reference and the
-DASH_ADJACENCY rationale.
+(list + toggleable preview pane, "p"). The Dashboard tab (2026-07-17) is a
+2x2 card grid --- TODAY (today's events), TASKS (grouped), MAIL (unread),
+NEWS (rotating headlines) --- plus a full-width HERMES ASK card below; the
+external cards (weather/stocks/dictionary/Wikipedia -- ROADMAP P4) are still
+open. Alt+2/3/4 jump to Today/Tasks/Hermes, Mail/News are Tab/arrows-only;
+Alt+1 stays on the Mail tab's Email. See AGENTS.md for the full keybinding
+reference and the DASH_ADJACENCY rationale.
 """
 from __future__ import annotations
 
@@ -35,7 +36,7 @@ from rapidfuzz import fuzz
 from textual import events
 from textual.actions import SkipAction
 from textual.app import App, ComposeResult
-from textual.containers import Container, Horizontal, Vertical, VerticalScroll
+from textual.containers import Container, Grid, Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
 from textual.widgets import (
     Button, DataTable, Header, Input, Label, ListItem, ListView,
@@ -58,26 +59,39 @@ from . import cache as cache_mod
 from .settings import Settings, load_settings, save_settings
 
 # The Mail tab is single-purpose (Email only, `2026-07-16`) -- Events/Tasks/
-# Hermes moved to their own Dashboard tab (`tab-dashboard`, interim home
-# until the full dashboard feature -- weather/stocks/etc, ROADMAP P4 --
-# replaces this placeholder content). PANE_IDS now covers ONLY Email's own
-# tab, which has nothing to switch to; DASH_PANE_IDS/DASH_ADJACENCY (below)
-# is the separate group for the Dashboard tab's 3 stacked panes.
+# Hermes live on the Dashboard tab (`tab-dashboard`). The Dashboard grew from
+# 3 stacked interim panes into the real Google-native dashboard (`2026-07-17`,
+# ROADMAP P4): a 2x2 card grid -- TODAY (today's events), TASKS (grouped
+# overdue/today/upcoming/unscheduled), MAIL (unread count + top unread), NEWS
+# (top headlines from subscribed feeds) -- with the HERMES ASK pane full-width
+# below it. PANE_IDS now covers ONLY Email's own tab, which has nothing to
+# switch to; DASH_PANE_IDS/DASH_ADJACENCY (below) is the Dashboard's own group.
 PANE_IDS = ["email"]
-DASH_PANE_IDS = ["events", "tasks", "hermes"]
+# Container ids of the Dashboard's five cards, in Tab/Shift+Tab cycle order.
+# "events"/"tasks"/"hermes" keep their pre-2026-07-17 ids (so Alt+2/3/4 and the
+# #event-list/#task-list populate paths are unchanged); dash-mail/dash-news are
+# the two net-new cards, reachable via Tab/Shift+Tab and Alt+arrows only.
+DASH_PANE_IDS = ["events", "tasks", "dash-mail", "dash-news", "hermes"]
 PANE_TITLES = {
     "email": "EMAIL",
-    "events": "EVENTS",
+    "events": "TODAY",
     "tasks": "TASKS",
+    "dash-mail": "MAIL",
+    "dash-news": "NEWS",
     "hermes": "HERMES ASK",
 }
-# Events/Tasks/Hermes stack in one column on the Dashboard tab -- a simple
-# up/down chain, not the left/right map this used to need back when Email
-# was a sibling column (see CHANGELOG 2026-07-16 for the split).
+# The 2x2 card grid + full-width Hermes below drives Alt+arrow adjacency as a
+# real 2-D map now (it was a plain up/down chain while the Dashboard held only
+# 3 stacked panes -- see CHANGELOG 2026-07-16/2026-07-17). Layout:
+#   [ events   ][ tasks    ]
+#   [ dash-mail][ dash-news ]
+#   [    hermes (full width) ]
 DASH_ADJACENCY = {
-    "events": {"down": "tasks"},
-    "tasks":  {"up": "events", "down": "hermes"},
-    "hermes": {"up": "tasks"},
+    "events":    {"right": "tasks", "down": "dash-mail"},
+    "tasks":     {"left": "events", "down": "dash-news"},
+    "dash-mail": {"up": "events", "right": "dash-news", "down": "hermes"},
+    "dash-news": {"up": "tasks", "left": "dash-mail", "down": "hermes"},
+    "hermes":    {"up": "dash-mail"},
 }
 
 # Ctrl+R debounce (see action_refresh): a repeated manual refresh inside this
@@ -693,32 +707,104 @@ _PENDING_MARK = "⏳ "
 
 
 def _append_task_items(task_list, tasks) -> None:
-    # Same extend()-once rationale as _append_email_items above.
-    task_list.extend(
-        ListItem(
-            Label(f"{_PENDING_MARK if t.get('_pending') else ''}"
-                  f"{'[x]' if t.get('status') == 'completed' else '[ ]'} {t.get('title','')[:50]}"),
-            id=_mk_id("k", f"{t['_list']}-{t['id']}"))
-        for t in tasks
-    )
+    """Populate the Dashboard's TASKS card, grouped by due status (Overdue /
+    Due today / Upcoming / No due date / Done) with a dim header row before
+    each non-empty group. Task rows keep their `k-<list>-<id>` widget id so the
+    existing Space-toggle (action_toggle_task) and Enter-detail (TaskModal)
+    handlers work unchanged; header rows carry no id, so a Space/Enter that
+    lands on one is a harmless no-op (_selected_task returns None). Google
+    Tasks' `due` is a date-only RFC3339 stamp at midnight UTC, so comparing the
+    `YYYY-MM-DD` prefix against the local ISO date is the right granularity —
+    the time component is never meaningful. Same extend()-once rationale as
+    _append_email_items above."""
+    today = dt.date.today().isoformat()
+    groups: dict[str, list[dict]] = {"overdue": [], "today": [], "upcoming": [],
+                                     "none": [], "done": []}
+    for t in tasks:
+        if t.get("status") == "completed":
+            groups["done"].append(t)
+            continue
+        due = (t.get("due") or "")[:10]
+        if not due:
+            groups["none"].append(t)
+        elif due < today:
+            groups["overdue"].append(t)
+        elif due == today:
+            groups["today"].append(t)
+        else:
+            groups["upcoming"].append(t)
+    headers = [("overdue", "OVERDUE"), ("today", "DUE TODAY"),
+               ("upcoming", "UPCOMING"), ("none", "NO DUE DATE"), ("done", "DONE")]
+    items = []
+    for key, header in headers:
+        rows = groups[key]
+        if not rows:
+            continue
+        items.append(ListItem(Label(header), classes="dash-group-header-item"))
+        for t in rows:
+            items.append(ListItem(
+                Label(f"{_PENDING_MARK if t.get('_pending') else ''}"
+                      f"{'[x]' if t.get('status') == 'completed' else '[ ]'} {t.get('title','')[:50]}"),
+                id=_mk_id("k", f"{t['_list']}-{t['id']}")))
+    task_list.extend(items)
 
 
-def _append_event_items(event_list, events) -> None:
-    # Same extend()-once rationale as _append_email_items/_append_task_items
-    # above.
-    event_list.extend(
-        ListItem(
-            Label(f"{_PENDING_MARK if e.get('_pending') else ''}"
-                  f"{_fmt_date(e.get('start', {}).get('dateTime') or e.get('start', {}).get('date', ''))}"
-                  f"  {e.get('summary','')[:40]}"),
-            id=_mk_id("e", e["id"]))
-        for e in events
-    )
+def _todays_events(events: list[dict]) -> list[dict]:
+    """Filter an upcoming-events list down to just TODAY's (local date), for
+    the Dashboard's TODAY card. Handles both all-day events (`start.date` /
+    `end.date`, end exclusive per the Calendar API) and timed events
+    (`start.dateTime`, compared in local time). Sorted all-day-first, then by
+    start time. Malformed date strings are skipped rather than raising."""
+    today = dt.date.today()
+    out = []
+    for e in events:
+        start = e.get("start", {})
+        if start.get("date"):  # all-day
+            try:
+                sd = dt.date.fromisoformat(start["date"])
+                end = e.get("end", {}).get("date")
+                ed = dt.date.fromisoformat(end) if end else sd + dt.timedelta(days=1)
+            except Exception:
+                continue
+            if sd <= today < ed:
+                out.append(e)
+        elif start.get("dateTime"):
+            try:
+                sdt = dt.datetime.fromisoformat(start["dateTime"].replace("Z", "+00:00"))
+            except Exception:
+                continue
+            local = sdt.astimezone() if sdt.tzinfo else sdt
+            if local.date() == today:
+                out.append(e)
+
+    def _key(e):
+        s = e.get("start", {})
+        return (0, "") if s.get("date") else (1, s.get("dateTime", ""))
+    return sorted(out, key=_key)
+
+
+def _append_today_event_items(event_list, events) -> None:
+    """TODAY-card row formatter: an all-day event shows "all day", a timed one
+    shows just its local start time (the date is redundant — every row is
+    today). Keeps the `e-<id>` widget id so Enter still opens EventModal via
+    _open_event_by_id. Same extend()-once rationale as the other lists."""
+    items = []
+    for e in events:
+        start = e.get("start", {})
+        if start.get("date"):
+            when = "all day"
+        else:
+            when = _fmt_date(start.get("dateTime", "")).split(" ")[-1].lower()
+        pend = _PENDING_MARK if e.get("_pending") else ""
+        items.append(ListItem(
+            Label(f"{pend}{when:>8}  {e.get('summary', '')[:34]}"),
+            id=_mk_id("e", e["id"])))
+    event_list.extend(items)
 
 
 def _append_drive_items(drive_list, files, path: str) -> None:
     # Same extend()-once rationale as _append_email_items/_append_task_items/
-    # _append_event_items above. The "up" row is NOT part of the filterable
+    # _append_today_event_items above. The "up" row is NOT part of the filterable
     # file list — it's chrome, always present (except at "/") regardless of
     # what #drive-search's current query is, same as it always was before
     # search existed.
@@ -980,7 +1066,18 @@ class GoogleTUI(App):
     #body { height: 1fr; }
     #left { width: 65%; }
     #right { width: 1fr; border: round $panel-darken-1; padding: 0 1; }
-    #dashboard-body { height: 1fr; }
+    /* Dashboard 2x2 card grid + full-width Hermes row (2026-07-17). The grid
+       is 2 columns x 3 rows; #hermes spans both columns on the bottom row.
+       grid-rows give the two card rows equal weight and Hermes a slightly
+       shorter band. Narrow-mode collapses this to a single column (below). */
+    #dashboard-body { height: 1fr; grid-size: 2 3; grid-rows: 1fr 1fr 1fr; grid-gutter: 0; }
+    #hermes { column-span: 2; }
+    #dash-mail-list, #dash-news-list { height: 1fr; }
+    /* Group/section header rows inside the TASKS and MAIL cards (OVERDUE, DUE
+       TODAY, unread count, ...): accent + bold, and no cursor highlight since
+       they're not selectable targets (they carry no widget id). */
+    .dash-group-header-item { color: $accent; text-style: bold; }
+    .dash-group-header-item.-highlight { background: $panel; }
     #email-preview-meta { height: auto; border-bottom: solid $panel-darken-2; padding-bottom: 1; }
     .pane { height: 1fr; border: round $panel-darken-2; padding: 0 1; }
     .pane-active { border: round $accent; }
@@ -1105,6 +1202,11 @@ class GoogleTUI(App):
        the primary content dominant instead of squeezed. See
        GoogleTUI._apply_narrow_layout, which toggles this class. */
     .narrow-hidden { display: none; }
+    /* ...and collapse the 2x3 grid to a single full-height cell when narrow,
+       so the one still-visible card (the rest are .narrow-hidden'd) fills the
+       tab instead of sitting in a 2-column quadrant. */
+    Screen.-narrow #dashboard-body { grid-size: 1; grid-rows: 1fr; }
+    Screen.-narrow #hermes { column-span: 1; }
 
     /* Mail tab: Email's list+preview split stacks (doesn't hide) when
        narrow, same rationale as Drive's list+preview column -- a preview
@@ -1212,6 +1314,13 @@ class GoogleTUI(App):
         # backs the News tab's search filter (Input#news-search) the same
         # way self._threads_cache/self._tasks_cache back Email/Tasks search.
         self._news_entries_cache: list[dict] = []
+        # Dashboard NEWS card: cid -> entry lookup (distinct dn- id prefix from
+        # the News tab's n- ids, so the same entry can live in both lists
+        # without a widget-id collision), plus a rotation offset the on_mount
+        # interval advances so the card cycles through more than its 5 visible
+        # headlines over time. See _populate_dash_news / _rotate_dash_news.
+        self._dash_news_by_cid: dict[str, dict] = {}
+        self._dash_news_offset: int = 0
         self._browser_history: list[BrowserHistoryEntry] = []
         self._browser_hist_pos: int = -1
         self._browser_tofu: fetchers.GeminiTofuStore | None = None
@@ -1327,11 +1436,13 @@ class GoogleTUI(App):
 
     # ---- pane helpers (Mail tab) ----
     def _pane_title_row(self, text: str, num: int) -> Horizontal:
-        return Horizontal(
-            Label(text, classes="pane-title-text"),
-            Label(str(num), classes="pane-title-num"),
-            classes="pane-title-row",
-        )
+        # num == 0 means "no Alt-digit shortcut" (the Dashboard's MAIL/NEWS
+        # cards, reachable via Tab/arrows only) -- omit the number label
+        # entirely rather than render a misleading "0".
+        children = [Label(text, classes="pane-title-text")]
+        if num:
+            children.append(Label(str(num), classes="pane-title-num"))
+        return Horizontal(*children, classes="pane-title-row")
 
     def _main_tabs(self) -> TabbedContent:
         return self.query_one("#main-tabs", TabbedContent)
@@ -1353,8 +1464,8 @@ class GoogleTUI(App):
         self._update_help_bar()
 
     def _focus_dash_pane(self, idx: int) -> None:
-        """Dashboard-tab counterpart to _focus_pane, for its 3 stacked
-        panes (Events/Tasks/Hermes -- interim content, see the compose()
+        """Dashboard-tab counterpart to _focus_pane, for its five cards
+        (Today/Tasks/Mail/News/Hermes -- see DASH_PANE_IDS and the compose()
         comment on tab-dashboard)."""
         self._dash_active = idx % len(DASH_PANE_IDS)
         for pid in DASH_PANE_IDS:
@@ -1367,7 +1478,9 @@ class GoogleTUI(App):
             self.query_one(f"#{pane_id}").add_class("pane-active")
         except Exception:
             pass
-        targets = {"events": "#event-list", "tasks": "#task-list", "hermes": "#hermes-input"}
+        targets = {"events": "#event-list", "tasks": "#task-list",
+                   "dash-mail": "#dash-mail-list", "dash-news": "#dash-news-list",
+                   "hermes": "#hermes-input"}
         try:
             self.query_one(targets[pane_id]).focus()
         except Exception:
@@ -1529,17 +1642,22 @@ class GoogleTUI(App):
     def compose(self) -> ComposeResult:
         yield GtHeader()
         with TabbedContent(id="main-tabs", initial="tab-mail"):
-            # Interim home for Events/Tasks/Hermes (moved out of the Mail tab,
-            # `2026-07-16`, to make Email single-purpose) -- placeholder
-            # content for the real Dashboard feature (ROADMAP P4: weather,
-            # stocks, word of the day, today's events, tasks due, unread
-            # count, etc.), not yet built. Badge numbers on each pane's title
-            # row (2/3/4) are unchanged from before the move -- they still
-            # match the Alt+2/3/4 shortcuts that jump here.
+            # The real Google-native Dashboard (`2026-07-17`, ROADMAP P4): a
+            # 2x2 card grid of TODAY (today's events) / TASKS (grouped) / MAIL
+            # (unread count + top unread) / NEWS (top headlines), with HERMES
+            # ASK full-width below. Reuses #event-list/#task-list in place (so
+            # their Space-toggle / Enter-detail handlers are unchanged); the
+            # #events-search/#tasks-search bars stay in-DOM (hidden) so the "/"
+            # filter path (action_focus_search -> _show_pane_search) still
+            # works. External cards (weather/stocks/dictionary/Wikipedia) are
+            # the remaining open half of the ROADMAP item -- not yet built.
+            # Title-row badge numbers: 2/3 = Alt+2/3 (events/tasks), 4 = Alt+4
+            # (hermes); MAIL/NEWS have no Alt digit (Tab/arrows only), so they
+            # pass 0 -- _pane_title_row omits the number label for a falsy num.
             with TabPane(_tab_label("Dashboard", 1, self.settings.ascii_mode), id="tab-dashboard"):
-                with Vertical(id="dashboard-body"):
+                with Grid(id="dashboard-body"):
                     with Container(id="events", classes="pane"):
-                        yield self._pane_title_row("EVENTS  (upcoming)", 2)
+                        yield self._pane_title_row("TODAY  (events, enter=detail)", 2)
                         with Horizontal(id="events-bar", classes="btnrow hidden"):
                             yield Input(placeholder="Search events (summary/description)… (/)",
                                         id="events-search")
@@ -1549,6 +1667,12 @@ class GoogleTUI(App):
                         with Horizontal(id="tasks-bar", classes="btnrow hidden"):
                             yield Input(placeholder="Search tasks (title/notes)… (/)", id="tasks-search")
                         yield ListView(id="task-list")
+                    with Container(id="dash-mail", classes="pane"):
+                        yield self._pane_title_row("MAIL  (unread, enter=open)", 0)
+                        yield ListView(id="dash-mail-list")
+                    with Container(id="dash-news", classes="pane"):
+                        yield self._pane_title_row("NEWS  (top headlines)", 0)
+                        yield ListView(id="dash-news-list")
                     with Container(id="hermes", classes="pane"):
                         yield self._pane_title_row("HERMES ASK  (type a question, Enter)", 4)
                         yield RichLog(id="hermes-log", markup=False, wrap=True)
@@ -1825,6 +1949,10 @@ class GoogleTUI(App):
         # on the first actual resize.
         self._narrow = self.size.width < NARROW_WIDTH_THRESHOLD
         self._focus_pane(0)
+        # Dashboard NEWS card rotation — cycles the visible headline window
+        # (see _rotate_dash_news, which no-ops while the card is focused or
+        # when there aren't enough entries to rotate).
+        self.set_interval(self._DASH_NEWS_ROTATE_SECONDS, self._rotate_dash_news)
         self._apply_email_preview_visibility()  # applies Settings.email_preview_default_visible
         self._apply_ascii_mode()  # applies whatever Settings.ascii_mode loaded from disk; also updates the help bar
         problems = self._diagnose_setup()
@@ -2477,6 +2605,7 @@ class GoogleTUI(App):
         await self.query_one("#email-list").clear()
         await self.query_one("#event-list").clear()
         await self.query_one("#task-list").clear()
+        await self.query_one("#dash-mail-list").clear()
         if gen != self._mail_apply_gen:
             return  # superseded by a newer _apply_mail_data call
 
@@ -2496,16 +2625,7 @@ class GoogleTUI(App):
         # immediately and disappears the instant it replays — see the
         # _merge_pending_* module docs.
         self._events_cache = events
-        disp_events = self._reconcile_events(events)
-        try:
-            events_query = self.query_one("#events-search", Input).value
-        except Exception:
-            events_query = ""
-        visible_events = _fuzzy_filter_events(disp_events, events_query) if events_query.strip() else disp_events
-        event_list = self.query_one("#event-list")
-        _append_event_items(event_list, visible_events)
-        _append_load_more_row(event_list, not events_query.strip(),
-                              LOAD_MORE_EVENTS_ID, "↓ Load more events…")
+        self._fill_today_events(self.query_one("#event-list"), events)
 
         self._tasks_cache = tasks
         disp_tasks = self._reconcile_tasks(tasks)
@@ -2515,6 +2635,8 @@ class GoogleTUI(App):
             tasks_query = ""
         visible_tasks = _fuzzy_filter_tasks(disp_tasks, tasks_query) if tasks_query.strip() else disp_tasks
         _append_task_items(self.query_one("#task-list"), visible_tasks)
+
+        self._populate_dash_mail(threads)
 
     def _refresh_all_thread(self) -> None:
         """Post-write refresh (task toggled, mail sent) — MUST run with
@@ -3224,16 +3346,43 @@ class GoogleTUI(App):
         await self.query_one("#event-list").clear()
         if gen != self._events_apply_gen:
             return  # superseded by a newer apply call
-        events = self._reconcile_events(events)  # overlay offline creates
+        self._fill_today_events(self.query_one("#event-list"), events)
+
+    def _fill_today_events(self, event_list, events) -> None:
+        """Shared TODAY-card populate (used by the full mail-data apply and the
+        #events-search debounce path). Filters to today, overlays offline
+        creates, applies any "/" search filter, and shows a friendly empty
+        state when there's nothing today (but not when a search simply had no
+        matches — that would misread as "no events today"). No "Load more" row:
+        the card is today-scoped, so there's nothing to paginate into."""
+        disp = _todays_events(self._reconcile_events(events))
         try:
             query = self.query_one("#events-search", Input).value
         except Exception:
             query = ""
-        visible = _fuzzy_filter_events(events, query) if query.strip() else events
-        event_list = self.query_one("#event-list")
-        _append_event_items(event_list, visible)
-        _append_load_more_row(event_list, not query.strip(),
-                              LOAD_MORE_EVENTS_ID, "↓ Load more events…")
+        visible = _fuzzy_filter_events(disp, query) if query.strip() else disp
+        if visible:
+            _append_today_event_items(event_list, visible)
+        elif not query.strip():
+            event_list.append(ListItem(Label("No events today 🎉"), id="dash-empty-events"))
+
+    def _populate_dash_mail(self, threads) -> None:
+        """Dashboard MAIL card: an unread count header (Enter jumps to the Mail
+        tab) followed by up to six most-recent unread threads (Enter opens the
+        thread). Row ids are `dm-open` (the header) and `dm-<threadId>`; see
+        on_list_view_selected's dm- branch. markup=False on the subject rows
+        for the same reason the News list uses it — subjects are arbitrary
+        external text that Textual's markup parser would otherwise choke on."""
+        lst = self.query_one("#dash-mail-list")
+        unread = [t for t in threads if t.get("unread")]
+        items = [ListItem(Label(f"📬 {len(unread)} unread"), id="dm-open",
+                          classes="dash-group-header-item")]
+        for t in unread[:6]:
+            frm = _format_sender(t.get("from", ""), False)
+            subj = t.get("subject") or "(no subject)"
+            items.append(ListItem(Label(f"{frm[:18]:<18} {subj[:30]}", markup=False),
+                                  id=_mk_id("dm", t["threadId"])))
+        lst.extend(items)
 
     def _highlighted_event_id(self) -> str | None:
         el = self.query_one("#event-list")
@@ -3279,6 +3428,14 @@ class GoogleTUI(App):
             eid = self._highlighted_event_id()
             if eid:
                 self._open_event_by_id(eid)
+        elif pane in ("dash-mail", "dash-news"):
+            # Space mirrors Enter on these cards (open the highlighted item) —
+            # neither has a toggle/expand action of its own, so reuse the
+            # on_list_view_selected dispatch for whatever row is highlighted.
+            lst_id = "#dash-mail-list" if pane == "dash-mail" else "#dash-news-list"
+            item = self.query_one(lst_id).highlighted_child
+            if item is not None:
+                self.on_list_view_selected(ListView.Selected(self.query_one(lst_id), item))
 
     # ---- list selections (Enter) ----
     def on_list_view_selected(self, event: ListView.Selected) -> None:
@@ -3313,6 +3470,21 @@ class GoogleTUI(App):
             self._drive_open_selected()
         elif cid.startswith("n-"):
             entry = self._news_by_cid.get(cid)
+            if entry:
+                self.push_screen(NewsEntryModal(entry))
+        elif cid == "dm-open":
+            # Dashboard MAIL card header row — jump to the full Mail tab.
+            self._goto_tab("tab-mail")
+        elif cid.startswith("dm-"):
+            # Dashboard MAIL card unread row — open that thread directly, the
+            # same ThreadModal the Mail tab's Enter opens.
+            tid = cid[3:]
+            self.push_screen(ThreadModal(self.svc, tid, thread_ids=[tid], index=0),
+                              self._on_thread_modal_result)
+        elif cid.startswith("dn-"):
+            # Dashboard NEWS card row — open the entry (NewsEntryModal), same
+            # as the News tab, via the dn- lookup (distinct from n- ids).
+            entry = self._dash_news_by_cid.get(cid)
             if entry:
                 self.push_screen(NewsEntryModal(entry))
         elif cid.startswith("ct-"):
@@ -4354,6 +4526,67 @@ class GoogleTUI(App):
             query = ""
         visible = _fuzzy_filter_news_entries(entries, query) if query.strip() else entries
         self._populate_news_list(visible)
+        self._dash_news_offset = 0
+        await self.query_one("#dash-news-list").clear()
+        self._populate_dash_news()
+
+    # Dashboard NEWS card: number of headlines shown at once, and how often the
+    # rotation interval advances the window.
+    _DASH_NEWS_WINDOW = 5
+    _DASH_NEWS_ROTATE_SECONDS = 12.0
+
+    def _populate_dash_news(self) -> None:
+        """Fill the Dashboard NEWS card with a window of the newest feed
+        entries (self._news_entries_cache, newest-first), starting at
+        self._dash_news_offset so _rotate_dash_news can cycle through more than
+        the _DASH_NEWS_WINDOW visible at once. Row ids are `dn-<cid>` (distinct
+        from the News tab's `n-` ids) mapped via self._dash_news_by_cid; Enter
+        opens NewsEntryModal. markup=False for the same external-text reason as
+        _populate_news_list. Does NOT clear the list itself — every caller must
+        `await ...clear()` first (ListView.clear is async and the reused dn-
+        ids would otherwise race into DuplicateIds, per AGENTS.md §2)."""
+        try:
+            lst = self.query_one("#dash-news-list")
+        except Exception:
+            return
+        entries = sorted(self._news_entries_cache,
+                         key=lambda e: e.get("published") or "", reverse=True)
+        self._dash_news_by_cid = {}
+        if not entries:
+            lst.append(ListItem(Label("No news yet — add feeds in Settings → News Feeds"),
+                                id="dash-empty-news"))
+            return
+        window = entries[self._dash_news_offset:self._dash_news_offset + self._DASH_NEWS_WINDOW]
+        items = []
+        for e in window:
+            cid = _mk_id("dn", e["id"])
+            self._dash_news_by_cid[cid] = e
+            feed_title = (e.get("feed_title") or "")[:16]
+            title = (e.get("title") or "(untitled)")[:40]
+            items.append(ListItem(Label(f"[{feed_title}] {title}", markup=False), id=cid))
+        lst.extend(items)
+
+    async def _rotate_dash_news(self) -> None:
+        """Advance the NEWS card window by _DASH_NEWS_WINDOW, wrapping at the
+        end. Skipped while the card is focused (so a rotation never yanks the
+        selection out from under an Enter) or when there's nothing to rotate
+        (<= one window of entries). Async so it can `await ...clear()` before
+        repopulating (same reused-id race as above). Driven by a set_interval
+        started in on_mount."""
+        entries = self._news_entries_cache
+        if len(entries) <= self._DASH_NEWS_WINDOW:
+            return
+        if (DASH_PANE_IDS[self._dash_active] == "dash-news"
+                and self._main_tabs().active == "tab-dashboard"):
+            return
+        self._dash_news_offset += self._DASH_NEWS_WINDOW
+        if self._dash_news_offset >= len(entries):
+            self._dash_news_offset = 0
+        try:
+            await self.query_one("#dash-news-list").clear()
+        except Exception:
+            return
+        self._populate_dash_news()
 
     def _populate_news_list(self, entries: list[dict]) -> None:
         lst = self.query_one("#news-list")

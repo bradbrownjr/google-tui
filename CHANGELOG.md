@@ -3,6 +3,49 @@
 Format: keep newest at top. One entry per meaningful change. Reference files
 touched and any breaking notes.
 
+## [2026-07-17] — Dashboard tab: the real Google-native dashboard
+
+Replaces the Dashboard tab's interim 3-pane stack (Events/Tasks/Hermes,
+parked there `2026-07-16`) with the first half of the real dashboard feature
+(ROADMAP P4) — a 2×2 card grid plus a full-width Hermes Ask card below
+(`google_tui/main.py`, `google_tui/bindings.py`):
+
+- **TODAY** — today's events only (all-day + timed, local date), replacing
+  the old next-3-weeks Events list. New module helpers `_todays_events`
+  (all-day `start.date`/`end.date` exclusive-range + timed `start.dateTime`
+  in local time) and `_append_today_event_items` ("all day" / local start
+  time, no redundant date); friendly empty state when nothing's on today.
+  Keeps `#event-list` in place so Enter→EventModal and `n`/`/` are unchanged.
+- **TASKS** — the same `#task-list`, now grouped by due status (Overdue /
+  Due today / Upcoming / No due date / Done) with accent header rows.
+  `_append_task_items` rewritten to bucket by the `due` date prefix vs. the
+  local ISO date; task rows keep their `k-` ids so Space-toggle / Enter-detail
+  work untouched, header rows carry no id so a Space/Enter on one no-ops.
+- **MAIL** — unread count header (Enter → Mail tab) + up to six most-recent
+  unread threads (Enter → ThreadModal). New `#dash-mail-list`,
+  `_populate_dash_mail`, `dm-`/`dm-open` selection branches.
+- **NEWS** — top headlines from the subscribed feeds (reuses the News tab's
+  `_news_entries_cache`, no new fetcher), gently rotating through the list on
+  a `set_interval` (`_rotate_dash_news`, paused while the card is focused).
+  New `#dash-news-list`, `_populate_dash_news`, `dn-` ids (distinct from the
+  News tab's `n-` ids, mapped via `self._dash_news_by_cid`) → NewsEntryModal.
+- **HERMES ASK** — unchanged, now full-width across the bottom row.
+
+Layout is a Textual `Grid` (`#dashboard-body`, `grid-size: 2 3`, `#hermes`
+`column-span: 2`); narrow mode collapses it to a single column so the one
+still-visible card (the rest `.narrow-hidden`'d by `_apply_narrow_layout`)
+fills the tab. `DASH_PANE_IDS` grew to the five card ids and `DASH_ADJACENCY`
+became a real 2-D map; `Alt+2/3/4` keep their meaning (Today/Tasks/Hermes),
+Mail/News are Tab/arrows-only. The hidden `#events-search`/`#tasks-search`
+bars stay in-DOM so the `/`-filter path is untouched. Verified via isolated,
+fully-mocked `run_test` pilots (rendering + all five cards populated, today
+filter, task grouping, unread count, Tab-cycle across five cards, Alt-arrow
+adjacency, Enter→NewsEntryModal/ThreadModal, narrow single-card).
+
+ROADMAP: the Dashboard item is now narrowed to just its remaining external
+cards (weather / stocks / dictionary WOTD / Wikipedia POTD) + their Settings
+rows — the Google-native half shipped here.
+
 ## [2026-07-16] — Fix dead Tab/Shift+Tab pane-cycling keys
 
 Closes the ROADMAP P4 item discovered the same day while pilot-testing the

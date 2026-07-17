@@ -62,20 +62,24 @@ just checking it off here, so ROADMAP.md only ever shows what's still open.
   (subject/from/date) are cached today, not full bodies — opening a thread
   while offline isn't possible yet. Would follow the same lazy,
   cache-on-view pattern as `drive_file_text`.
-- [ ] **Dashboard tab: the actual dashboard content.** The tab exists now
-  (`tab-dashboard`, first position, `F1`/`Ctrl+1` — see CHANGELOG
-  `[2026-07-16]`), but only holds Events/Tasks/Hermes, relocated intact from
-  the old 4-pane Mail tab so Email could go single-purpose — interim
-  content, not the feature. Still to build: weather, stocks (configurable
-  in Settings), dictionary word of the day, Wikipedia picture of the day,
-  top-5 rotating news headlines (by RSS category, per the RSS settings),
-  unread email count, tasks due/overdue/unscheduled, and today's events
-  (scheduled + all-day, selectable calendar sources in Settings) — replacing
-  or supplementing the parked Events/Tasks/Hermes panes. Should ship with
-  reasonable moderate defaults rather than an empty dashboard. Largest
-  net-new feature on this list — new fetchers for weather/stocks/
-  dictionary/Wikipedia, and several new Settings rows.
-  *(Suggested model: Opus.)*
+- [ ] **Dashboard tab: the external cards.** The Google-native half shipped
+  `[2026-07-17]` (see CHANGELOG / the Done list below): a 2×2 card grid —
+  TODAY (today's events), TASKS (grouped overdue/today/upcoming/unscheduled),
+  MAIL (unread count + top unread), NEWS (top rotating headlines from the
+  subscribed feeds) — plus the Hermes Ask card full-width below. Still to
+  build, the remaining half: **weather**, **stocks** (symbols configurable in
+  Settings), **dictionary word of the day**, **Wikipedia picture of the day**.
+  Each needs a new fetcher (Open-Meteo / a stocks API / a dictionary API /
+  Wikipedia REST `featured` endpoint) plus its own Settings rows (weather
+  location, stock symbols, on/off toggles) and a new card slot in the grid
+  (the layout mechanism — `#dashboard-body` Grid, `DASH_PANE_IDS`,
+  `DASH_ADJACENCY`, `_apply_narrow_layout` — is already in place; adding a
+  card is: a `Container` in `compose()`, an id in `DASH_PANE_IDS`, an
+  adjacency entry, a `_fetch_*`/`_apply_*` split per AGENTS.md §8, and the
+  fetcher). The news-headline card currently pulls from ALL subscribed feeds
+  newest-first, not "top-5 by RSS category" — per-category selection is a
+  possible refinement if the flat list proves too noisy. *(Suggested model:
+  Opus for the fetchers + Settings; the grid wiring is now mechanical.)*
 - [ ] **RSS subscription list.** Categorized checklist of popular feeds to
   toggle on/off, plus add-your-own custom feed URL (Settings already has a
   feed list at `#settings-feed-list`, `main.py:569` — extend it rather than
@@ -88,6 +92,11 @@ just checking it off here, so ROADMAP.md only ever shows what's still open.
 
 ## Done
 
+- [x] **Dashboard tab: Google-native cards** (`[2026-07-17]`) — the 2×2 card
+  grid (TODAY / TASKS grouped / MAIL unread / NEWS rotating headlines) + the
+  full-width Hermes Ask card, replacing the interim Events/Tasks/Hermes stack.
+  Reuses existing Google/feed data — no new fetchers or API keys. The external
+  cards (weather/stocks/dictionary/Wikipedia) remain open above. See CHANGELOG.
 - [x] Tab/pane redesign: full-width tabs in the blue bar (`Ctrl+#`), with
   Mail originally holding Email / Events / Tasks / Hermes panes (`Alt+1..4`,
   adjacency-based `Alt+arrows`) — superseded `[2026-07-16]` by the Mail/
