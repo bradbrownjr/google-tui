@@ -3,6 +3,50 @@
 Format: keep newest at top. One entry per meaningful change. Reference files
 touched and any breaking notes.
 
+## [2026-07-18] — Filter-as-you-type in the label picker's checklist
+
+ROADMAP's P2 — Email item flagged two label pickers as flat/unfiltered:
+`email-label-select` (the Email pane's folder dropdown, a `Select`) and
+`LabelPickerModal`'s `SelectionList` (the "L" action's multi-select
+checklist). Checked before writing anything: `Select` in this Textual
+version (8.2.8) already ships `type_to_search=True` by default — typing
+while its dropdown is open does a substring search and jumps the highlight
+to the first match (`textual.widgets._select.SelectOverlay._find_search_match`).
+`email-label-select` never opted out of that, so it already had "type to
+find" for free; it's single-select and realistically has far fewer options
+than the checklist, so no further work seemed warranted there.
+
+`LabelPickerModal`'s `SelectionList` had nothing, though — no type-to-search,
+no filter, nothing. Added `Input#labelpick-search` above it; each keystroke
+calls new `_fuzzy_filter_labels` (`main.py`, same `_fuzzy_score` idiom as
+`_fuzzy_filter_threads`/`_fuzzy_filter_tasks`/etc., matched against each
+label's full slash-path `name` so filtering by a parent category still
+surfaces its children) and rebuilds the `SelectionList` via
+`clear_options()`/`add_options()`.
+
+The tricky part: `SelectionList` only knows about whatever's currently
+rendered, so a label checked while filtered down would lose its checked
+state the moment a rebuild dropped it from the list. `LabelPickerModal` now
+tracks checked state itself in `self._checked_ids` (seeded from
+`applied_ids`), kept in sync via a new `on_selection_list_selection_toggled`
+handler; `self._visible_ids` records which labels the last rebuild actually
+rendered, so the toggle handler only lets the widget's live `.selected`
+override `_checked_ids` for labels that were actually on-screen to be
+toggled, and leaves everything else untouched. Apply reads the same
+merged `_checked_ids | visible .selected` state rather than the
+`SelectionList` alone, so it's correct even if a rebuild happened right
+before the click.
+
+Files: `google_tui/main.py`. Verified via an isolated, fully-mocked
+`run_test` pilot: pushed `LabelPickerModal` directly with 4 fake labels (one
+pre-applied), typed "work" and confirmed the list narrowed from 4 to 2,
+toggled a match on while filtered, cleared the filter and confirmed both the
+newly-toggled label AND the pre-applied one still showed checked, then hit
+Apply and confirmed it returned only the newly-checked id (the pre-applied
+one stayed excluded, per the picker's existing assign-only design). Re-ran
+the label-chip, date-column, and custom-default-label pilot scenarios too —
+no regressions.
+
 ## [2026-07-18] — Show applied labels in the Email list, same row as the subject
 
 ROADMAP's P2 — Email item needed two pieces: `list_threads`'s thread-summary

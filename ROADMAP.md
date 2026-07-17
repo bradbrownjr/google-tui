@@ -53,11 +53,6 @@ just checking it off here, so ROADMAP.md only ever shows what's still open.
 
 ## P2 — Email
 
-- [ ] **Searchable/filterable label list** — `email-label-select` and
-  `LabelPickerModal`'s `SelectionList` are both flat, unfiltered lists today;
-  a Gmail account with many labels (nested categories, auto-created ones)
-  gets unwieldy. Filter-as-you-type, same idiom as Contacts'
-  `_fuzzy_filter_contacts` (`main.py`, `rapidfuzz`-based).
 - [ ] **Quote the last message below new reply text** (toggleable in
   Settings) — helps recall what was being replied to. `ComposeModal`'s
   reply/reply-all path (`main.py:6062+`) would need to prepend a `"> "`-
@@ -250,6 +245,16 @@ just checking it off here, so ROADMAP.md only ever shows what's still open.
 
 ## Done
 
+- [x] **Filter-as-you-type in `LabelPickerModal`'s label checklist**
+  (`[2026-07-18]`) — new `Input#labelpick-search` above the `SelectionList`,
+  filtered via new `_fuzzy_filter_labels` (same `_fuzzy_score` idiom as
+  Contacts/Email/Tasks' filters). Checked state is tracked separately
+  (`self._checked_ids`) so a label checked while filtered stays checked once
+  the filter's cleared. `email-label-select` (the folder dropdown) already
+  had Textual's built-in `type_to_search` substring-jump — good enough as
+  a "search" there since it's single-select and rarely has enough labels to
+  need real narrowing; only the multi-select checklist got a dedicated
+  filter box. See CHANGELOG.
 - [x] **Show applied labels in the Email list, same row as the subject**
   (`[2026-07-18]`) — `list_threads`'s thread-summary dicts now carry
   `labelIds` (union across the thread's messages, `gauth._thread_summary`),

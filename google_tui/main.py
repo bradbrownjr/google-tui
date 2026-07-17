@@ -509,6 +509,28 @@ def _fuzzy_filter_tasks(tasks: list[dict], query: str, limit: int | None = None,
     return result[:limit] if limit else result
 
 
+def _fuzzy_filter_labels(labels: list[dict], query: str, threshold: int = 75) -> list[dict]:
+    """Client-side live filter backing LabelPickerModal's search box — same
+    _fuzzy_score idiom as _fuzzy_filter_threads/_fuzzy_filter_tasks above,
+    scored against each label's full slash-path `name` (e.g. "Work/Projects"),
+    not just its display leaf, so filtering by a parent category still
+    matches its children. Empty query returns the input list unchanged."""
+    query = query.strip()
+    if not query:
+        return list(labels)
+    query_lower = query.lower()
+    scored = []
+    for l in labels:
+        target = l.get("name", "")
+        if not target:
+            continue
+        score = _fuzzy_score(query_lower, target.lower(), threshold)
+        if score is not None:
+            scored.append((score, l))
+    scored.sort(key=lambda pair: -pair[0])
+    return [l for _, l in scored]
+
+
 def _fuzzy_filter_events(events: list[dict], query: str, limit: int | None = None,
                          threshold: int = 75) -> list[dict]:
     """Client-side live filter backing the Events pane's search box
@@ -5778,22 +5800,48 @@ class LabelPickerModal(ModalScreen):
         super().__init__()
         self._labels = labels
         self._applied_ids = applied_ids
+        # Checked state survives filtering — SelectionList itself only knows
+        # about whatever's currently rendered, so a checked-then-filtered-out
+        # label would otherwise lose its check. _visible_ids is whichever
+        # labels _rebuild_list last rendered, so a toggle handler can tell
+        # "this id's SelectionList state is now authoritative" (visible) from
+        # "leave whatever we already have" (filtered out, untouched).
+        self._checked_ids: set[str] = set(applied_ids)
+        self._visible_ids: set[str] = {l["id"] for l in labels}
 
     def compose(self) -> ComposeResult:
         with Container(id="labelpick-box", classes="pane"):
             yield Label("ASSIGN LABELS", classes="pane-title-text")
+            yield Input(placeholder="Filter labels…", id="labelpick-search")
             yield SelectionList(
-                *[(_label_display_name(l), l["id"], l["id"] in self._applied_ids)
+                *[(_label_display_name(l), l["id"], l["id"] in self._checked_ids)
                   for l in self._labels],
                 id="labelpick-list")
             with Horizontal(classes="btnrow"):
                 yield Button("Apply", id="labelpick-apply")
                 yield Button("Cancel", id="labelpick-cancel")
 
+    def _rebuild_list(self, query: str) -> None:
+        filtered = _fuzzy_filter_labels(self._labels, query)
+        self._visible_ids = {l["id"] for l in filtered}
+        sel_list = self.query_one("#labelpick-list", SelectionList)
+        sel_list.clear_options()
+        sel_list.add_options(
+            [(_label_display_name(l), l["id"], l["id"] in self._checked_ids) for l in filtered])
+
+    def on_input_changed(self, e: Input.Changed) -> None:
+        if e.input.id == "labelpick-search":
+            self._rebuild_list(e.value)
+
+    def on_selection_list_selection_toggled(self, e: SelectionList.SelectionToggled) -> None:
+        sel_list = self.query_one("#labelpick-list", SelectionList)
+        self._checked_ids = (self._checked_ids - self._visible_ids) | set(sel_list.selected)
+
     def on_button_pressed(self, e: Button.Pressed) -> None:
         if e.button.id == "labelpick-apply":
-            selected = set(self.query_one("#labelpick-list", SelectionList).selected)
-            self.dismiss(list(selected - self._applied_ids))
+            sel_list = self.query_one("#labelpick-list", SelectionList)
+            checked = (self._checked_ids - self._visible_ids) | set(sel_list.selected)
+            self.dismiss(list(checked - self._applied_ids))
         else:
             self.dismiss(None)
 
