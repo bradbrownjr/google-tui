@@ -250,14 +250,15 @@ just checking it off here, so ROADMAP.md only ever shows what's still open.
 
 ## Done
 
-- [x] **Show applied labels under the subject in the Email list**
+- [x] **Show applied labels in the Email list, same row as the subject**
   (`[2026-07-18]`) — `list_threads`'s thread-summary dicts now carry
   `labelIds` (union across the thread's messages, `gauth._thread_summary`),
-  and `_email_collapsed_line` appends a `Labels: …` chip line (via new
-  `_thread_label_chips`) using `_label_display_name`, same idiom as
-  `_thread_expanded_text`'s snippet line — user labels only, since system
-  ones (INBOX/UNREAD/CATEGORY_*) aren't shown as chips in Gmail's own UI
-  either. See CHANGELOG.
+  and `_email_collapsed_line` renders them as a compact inline column
+  (new `_thread_label_chips` + `_label_display_name`) — kept on the same
+  row rather than a second line, to keep the list compact. User labels
+  only, since system ones (INBOX/UNREAD/CATEGORY_*) aren't shown as chips
+  in Gmail's own UI either. `ThreadModal`'s separate "Labels: …" line under
+  the subject already existed before this change. See CHANGELOG.
 - [x] **Date/time shown on Email list rows and the Dashboard MAIL card**
   (`[2026-07-18]`) — appended a formatted date/time (from each thread's raw
   `date` header) to `_email_collapsed_line` and `_populate_dash_mail`'s row

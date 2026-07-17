@@ -3,7 +3,7 @@
 Format: keep newest at top. One entry per meaningful change. Reference files
 touched and any breaking notes.
 
-## [2026-07-18] — Show applied labels under the subject in the Email list
+## [2026-07-18] — Show applied labels in the Email list, same row as the subject
 
 ROADMAP's P2 — Email item needed two pieces: `list_threads`'s thread-summary
 dicts didn't carry `labelIds` at all (only `get_thread`'s per-message
@@ -22,15 +22,21 @@ New `_thread_label_chips` (`main.py`) turns a thread's `labelIds` into a
 `_label_display_name`-formatted, comma-joined string, *user* labels only —
 system ones (INBOX, UNREAD, CATEGORY_*, IMPORTANT, …) are excluded because
 Gmail's own web/mobile UI doesn't show those as chips either, only custom
-labels. `_email_collapsed_line` appends it as a `Labels: …` line under the
-subject when non-empty, the same idiom `_thread_expanded_text` already used
-for its snippet line. `_thread_expanded_text` and `_append_email_items` both
-gained a `labels_by_id` passthrough parameter; every call site in `main.py`
+labels. First pass appended this as a second "Labels: …" line under each row
+(mirroring `_thread_expanded_text`'s snippet-line idiom) — wrong call: it
+doubled the height of every list row. Corrected to a compact inline column
+instead, same row as the subject: `_email_collapsed_line` shrank its subject
+field (66 → 50 chars) to make room and appends the (20-char-capped) label
+string before the date. `ThreadModal` already had its own separate
+"Labels: …" line under the subject (pre-existing, `#thread-labels` /
+`_update_labels_line`) — that one was correct as-is and untouched.
+
+`_thread_expanded_text` and `_append_email_items` both gained a
+`labels_by_id` passthrough parameter; every call site in `main.py`
 (email-list population, Space-to-expand/collapse, the async thread-preview
 fetch) now supplies it via a new `GoogleTUI._labels_by_id()` helper
 (`{id: label}` from `self._labels_cache`). The Dashboard MAIL card is
-unchanged — the roadmap item scoped this to the Email list, and the card's
-rows are already tight on width.
+unchanged — the roadmap item scoped this to the Email list.
 
 Not in scope here: applying a label from `ThreadModal`'s "L" picker updates
 only the modal's own "Labels: …" line, not the Email list's cached row — the
@@ -39,9 +45,9 @@ out-of-modal thread mutation), consistent with existing behavior.
 
 Files: `google_tui/gauth.py`, `google_tui/main.py`. Verified via an isolated,
 fully-mocked `run_test` pilot with one thread carrying a user label plus two
-system labels: confirmed the Email list row shows `Labels: Work` and that
-INBOX/UNREAD are excluded. Re-ran the date-column and custom-default-label
-pilot scenarios too — no regressions.
+system labels: confirmed the Email list row stays a single line and shows
+`Work` while excluding INBOX/UNREAD. Re-ran the date-column and
+custom-default-label pilot scenarios too — no regressions.
 
 ## [2026-07-18] — Date/time shown on Email list rows and the Dashboard MAIL card
 

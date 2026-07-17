@@ -649,9 +649,11 @@ def _format_sender(raw: str, show_address: bool) -> str:
 def _thread_label_chips(th: dict, labels_by_id: dict | None) -> str:
     """Comma-joined display names of a thread's applied *user* labels (not
     system ones like INBOX/UNREAD/CATEGORY_* — Gmail's own web/mobile UI
-    doesn't show those as chips either, only custom labels). `labels_by_id`
-    is the app's `_labels_cache` reshaped to {id: label}; None/empty (labels
-    not loaded yet) means no chip line."""
+    doesn't show those as chips either, only custom labels), for the
+    Email list's compact same-row labels column (kept a single line, unlike
+    ThreadModal's own separate "Labels: …" line under the subject).
+    `labels_by_id` is the app's `_labels_cache` reshaped to {id: label};
+    None/empty (labels not loaded yet) means no chips."""
     if not labels_by_id:
         return ""
     ids = th.get("labelIds") or []
@@ -669,12 +671,13 @@ def _email_collapsed_line(th: dict, show_sender_address: bool = False,
     subj = th["subject"] or "(no subject)"
     frm = _format_sender(th["from"], show_sender_address)
     count_note = f"  ({th['count']})" if th["count"] > 1 else ""
-    subj_field = f"{subj[:60]}{count_note}"
-    date_str = _fmt_email_date(th.get("date", ""))
-    line = f"{mark} {frm[:36]:<36} {subj_field:<66}"
-    line = f"{line} {date_str}" if date_str else line
+    subj_field = f"{subj[:44]}{count_note}"
     chips = _thread_label_chips(th, labels_by_id)
-    return f"{line}\n    Labels: {chips}" if chips else line
+    if len(chips) > 20:
+        chips = chips[:19] + "…"
+    date_str = _fmt_email_date(th.get("date", ""))
+    line = f"{mark} {frm[:36]:<36} {subj_field:<50} {chips:<20}"
+    return f"{line} {date_str}" if date_str else line
 
 
 def _thread_expanded_text(th: dict, msgs: list[dict], show_sender_address: bool = False,
