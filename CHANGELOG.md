@@ -3,6 +3,47 @@
 Format: keep newest at top. One entry per meaningful change. Reference files
 touched and any breaking notes.
 
+## [2026-07-18] — Month grid day-squares stretch to fill the terminal
+
+Fourth and final `## P2 — Calendar` item. Before this, `#cal-grid` used
+`grid.add_columns("Mon", ..., "Sun")` (no explicit width, so Textual
+auto-sized each column to its widest cell content) and a hardcoded
+`height=4` on every row regardless of terminal size — on a wide/tall
+terminal this left a visible dead zone of blank space to the right of and
+below the grid; on a narrow one there was no headroom to trim.
+
+`_apply_cal_month` (`main.py`) now reads the grid's actual `size` (available
+only once the widget has been laid out — falls back to the old fixed sizing
+if `size.width`/`size.height` come back 0, e.g. before first paint) and:
+
+- Splits `size.width` evenly across the 7 day columns via explicit
+  `add_column(label, width=...)` calls (any remainder pixel-columns go to
+  the leftmost columns), floored at a 10-column minimum so a tiny terminal
+  never gets crushed.
+- Computes `row_height = max(4, min(8, (size.height - 1) // num_rows))` —
+  `num_rows` is 5 or 6 depending on the month's calendar layout, `- 1`
+  accounts for the DataTable header row. Clamped to [4, 8] so this never
+  regresses below the old fixed height and never balloons into absurdly
+  tall rows on a very tall terminal.
+
+`_day_cell_text` gained two new parameters to actually use that extra
+room instead of leaving it blank: `max_events` (was a hardcoded `2` —
+now `row_height - 2`, so a taller row shows more of the day's events
+before falling back to a "+N more" overflow line) and `line_width` (was a
+hardcoded `18` — now derived from the column width, so event summaries
+aren't truncated more aggressively than the available space requires). The
+total line count per cell is always `max_events + 2` (day number + up to
+`max_events` event lines + one overflow/blank line), so every cell in a
+given month grid still gets a uniform row height regardless of how many
+events that particular day has — this generalizes the pre-existing
+fixed-4-lines invariant rather than changing it.
+
+Verified via a new pilot (`scenario_cal_month_sizing.py`): a 210×55
+terminal gets 7 roughly-equal columns summing to >100 columns and a row
+height of 8 (vs. the old fixed 4); an 80×24 terminal keeps the old
+`height=4` minimum unchanged, confirming no regression on typical/small
+terminals. Full regression suite (9 pilots) re-run clean afterward.
+
 ## [2026-07-18] — Full multi-calendar support + background-color events by source calendar
 
 Third `## P2 — Calendar` item. Before this, `list_events`/`events_between`/

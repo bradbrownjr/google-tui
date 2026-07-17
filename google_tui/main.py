@@ -4195,18 +4195,23 @@ class GoogleTUI(App):
                 self._cal_year += 1
             self._build_cal_month()
 
-    def _day_cell_text(self, day: int, events: list[dict], *, is_today: bool = False) -> str | Text:
+    def _day_cell_text(self, day: int, events: list[dict], *, is_today: bool = False,
+                        max_events: int = 2, line_width: int = 18) -> str | Text:
         lines = [str(day)]
         colors: list[str | None] = [None]  # parallel list -- colors[i] styles lines[i]
-        for e in events[:2]:
+        for e in events[:max_events]:
             start = _fmt_date(e.get("start", {}).get("dateTime") or e.get("start", {}).get("date", ""))
             time_part = start.split()[-1] if " " in start else ""
-            lines.append(f"{time_part} {e.get('summary','')[:14]}"[:18])
+            summary_width = max(1, line_width - len(time_part) - 1)
+            lines.append(f"{time_part} {e.get('summary','')[:summary_width]}"[:line_width])
             colors.append(e.get("_color"))
-        if len(events) > 2:
-            lines.append(f"+{len(events) - 2} more")
+        if len(events) > max_events:
+            lines.append(f"+{len(events) - max_events} more")
             colors.append(None)
-        while len(lines) < 4:
+        # Total lines is always max_events + 2 (day number + up to max_events
+        # event lines + one overflow/blank line) so every cell in the grid --
+        # regardless of how many events it holds -- gets the same row height.
+        while len(lines) < max_events + 2:
             lines.append("")
             colors.append(None)
         joined = "\n".join(lines)
@@ -4236,7 +4241,6 @@ class GoogleTUI(App):
     def _apply_cal_month(self, events: list[dict]) -> None:
         grid = self.query_one("#cal-grid")
         grid.clear(columns=True)
-        grid.add_columns("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
         # Overlay offline-created events that fall in THIS month. Range-filtered
         # explicitly because _event_day returns a day-of-month only (month-
         # agnostic), so a pending event in another month would otherwise land
@@ -4260,13 +4264,35 @@ class GoogleTUI(App):
             cells.append(d)
         while len(cells) % 7:
             cells.append(None)
+        num_rows = len(cells) // 7
+
+        # Stretch day-squares to fill the widget's actual size instead of
+        # the old fixed 7-auto-width-columns/height=4 layout, which left a
+        # visible gap on wide/tall terminals and cramped small ones. Falls
+        # back to the old fixed sizing if the grid hasn't been laid out yet
+        # (size not yet known -- e.g. building the grid before first paint).
+        avail_width = grid.size.width
+        col_width = avail_width // 7 if avail_width > 0 else None
+        if col_width is not None:
+            col_width = max(10, col_width)
+        extra = (avail_width - col_width * 7) if col_width else 0
+        for i, label in enumerate(("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")):
+            width = (col_width + 1) if col_width and i < extra else col_width
+            grid.add_column(label, width=width)
+
+        avail_height = grid.size.height - 1  # header row
+        row_height = max(4, min(8, avail_height // num_rows)) if avail_height > 0 and num_rows else 4
+        max_events = row_height - 2
+        line_width = max(18, (col_width or 18) - 2)
+
         today = dt.date.today()
         this_month_is_current = (self._cal_year, self._cal_month) == (today.year, today.month)
         for i in range(0, len(cells), 7):
             row = [self._day_cell_text(d, by_day.get(d, []),
-                                        is_today=this_month_is_current and d == today.day)
+                                        is_today=this_month_is_current and d == today.day,
+                                        max_events=max_events, line_width=line_width)
                    if d else "" for d in cells[i:i + 7]]
-            grid.add_row(*row, height=4)
+            grid.add_row(*row, height=row_height)
 
     def _fetch_cal_week(self, calendars: list[dict] | None = None) -> list[dict]:
         start = dt.datetime.combine(self._cal_week_start, dt.time.min).replace(tzinfo=dt.timezone.utc)

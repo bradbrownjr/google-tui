@@ -51,14 +51,6 @@ just checking it off here, so ROADMAP.md only ever shows what's still open.
   `messages().get(format="raw")` to see its actual MIME tree, then come
   back with that before writing a fix.
 
-## P2 — Calendar
-
-- [ ] **Size the Month grid's day squares to better fill the terminal** —
-  `#cal-grid` currently has a fixed row/column sizing regardless of terminal
-  dimensions; investigate `DataTable` cell-height/column-width options for
-  filling available space more completely, similar in spirit to the P4
-  sub-hour week-view item already on this list.
-
 ## P2 — Drive
 
 - [ ] **Better binary-vs-image detection in the file preview**, instead of
@@ -222,6 +214,14 @@ just checking it off here, so ROADMAP.md only ever shows what's still open.
   credential storage, and Settings UI.)*
 
 ## Done
+
+- [x] **Size the Month grid's day squares to better fill the terminal**
+  (`[2026-07-18]`) — `#cal-grid`'s 7 day columns now get explicit widths that
+  split the widget's actual size evenly (instead of narrow auto-sized
+  columns), and row height grows with available vertical space (min 4, max
+  8 lines), with `_day_cell_text` showing more events per day (`max_events`)
+  and wider text (`line_width`) when the extra room allows. Small terminals
+  keep the old minimum sizing unchanged. See CHANGELOG.
 
 - [x] **Background-color events by their source calendar** (`[2026-07-18]`) —
   new `gauth.list_calendars` (`calendarList().list()`) feeds a new `calendars`
