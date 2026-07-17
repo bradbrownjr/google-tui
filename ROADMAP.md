@@ -53,16 +53,6 @@ just checking it off here, so ROADMAP.md only ever shows what's still open.
 
 ## P2 — Email
 
-- [ ] **Date/time-received columns on the Email list and Dashboard MAIL
-  card, sorted newest-first by default.** Currently `_email_collapsed_line`
-  (`main.py:635-639`) is one flat string (sender/subject only, no date) in a
-  plain `ListView`/`Label`, not a `DataTable` — real columns would mean
-  either switching the Email pane to a `DataTable` (bigger change, would also
-  need to preserve lightbar-style `Enter`/`Space` row actions) or appending a
-  formatted date to the existing string (cheaper, but not a real sortable
-  column). Gmail thread order from `list_threads` is already newest-first by
-  internal date, so "sorted newest first by default" may already hold —
-  confirm before assuming it needs a sort change too.
 - [ ] **Show applied labels under/after the subject** in the Email list —
   `gauth.get_thread` returns per-message `label_ids` now (`[2026-07-18]`,
   used by `ThreadModal`'s "Labels: …" line and `LabelPickerModal`'s
@@ -267,6 +257,13 @@ just checking it off here, so ROADMAP.md only ever shows what's still open.
 
 ## Done
 
+- [x] **Date/time shown on Email list rows and the Dashboard MAIL card**
+  (`[2026-07-18]`) — appended a formatted date/time (from each thread's raw
+  `date` header) to `_email_collapsed_line` and `_populate_dash_mail`'s row
+  text, the cheaper of the two options this item originally weighed; a
+  `DataTable` rewrite remains open if real sortable columns are wanted
+  later. Confirmed thread order from `list_threads` was already
+  newest-first, so no sort change was needed. See CHANGELOG.
 - [x] **A custom `default_label_id` now survives launch** (`[2026-07-18]`) —
   `email-label-select`'s initial value used to ignore anything other than
   `"ALL"`/`"INBOX"`, then a mount-time `Select.Changed` echo silently

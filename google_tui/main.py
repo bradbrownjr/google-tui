@@ -293,6 +293,20 @@ def _fmt_date(s: str) -> str:
         return s
 
 
+def _fmt_email_date(s: str) -> str:
+    """Format a message's raw RFC 2822 "Date" header (e.g. from a Gmail
+    thread summary's "date" field) the same way `_fmt_date` formats the
+    ISO 8601 timestamps used elsewhere — but parsed differently, since
+    email headers aren't ISO 8601."""
+    if not s:
+        return ""
+    try:
+        d = email.utils.parsedate_to_datetime(s)
+        return d.strftime("%m/%d %I:%M%p")
+    except Exception:
+        return ""
+
+
 def _mk_id(prefix: str, raw: str) -> str:
     safe = "".join(c if (c.isalnum() or c in "-_") else "-" for c in raw)
     return f"{prefix}-{safe}"
@@ -637,7 +651,10 @@ def _email_collapsed_line(th: dict, show_sender_address: bool = False) -> str:
     subj = th["subject"] or "(no subject)"
     frm = _format_sender(th["from"], show_sender_address)
     count_note = f"  ({th['count']})" if th["count"] > 1 else ""
-    return f"{mark} {frm[:36]:<36} {subj[:60]}{count_note}"
+    subj_field = f"{subj[:60]}{count_note}"
+    date_str = _fmt_email_date(th.get("date", ""))
+    line = f"{mark} {frm[:36]:<36} {subj_field:<66}"
+    return f"{line} {date_str}" if date_str else line
 
 
 def _thread_expanded_text(th: dict, msgs: list[dict], show_sender_address: bool = False) -> str:
@@ -3562,7 +3579,8 @@ class GoogleTUI(App):
         for t in unread[:6]:
             frm = _format_sender(t.get("from", ""), False)
             subj = t.get("subject") or "(no subject)"
-            items.append(ListItem(Label(f"{frm[:18]:<18} {subj[:30]}", markup=False),
+            date_str = _fmt_email_date(t.get("date", ""))
+            items.append(ListItem(Label(f"{frm[:18]:<18} {subj[:30]:<30} {date_str}", markup=False),
                                   id=_mk_id("dm", t["threadId"])))
         lst.extend(items)
 

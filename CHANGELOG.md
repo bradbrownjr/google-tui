@@ -3,6 +3,35 @@
 Format: keep newest at top. One entry per meaningful change. Reference files
 touched and any breaking notes.
 
+## [2026-07-18] — Date/time shown on Email list rows and the Dashboard MAIL card
+
+ROADMAP's P2 — Email item weighed a `DataTable` rewrite (real sortable
+columns, but a bigger change that would also need to preserve the
+lightbar-style `Enter`/`Space` row actions) against just appending a
+formatted date to the existing flat-string row (cheaper, no real column).
+Went with the cheaper option — a `DataTable` conversion is still open if
+sortable columns are wanted later.
+
+New `_fmt_email_date` (`main.py`) parses a thread's raw RFC 2822 `date`
+header (`email.utils.parsedate_to_datetime`) the way `_fmt_date` already
+formats the ISO 8601 timestamps used elsewhere in the app — they're
+separate helpers because email headers and ISO 8601 need different
+parsing, not different output. `_email_collapsed_line` now pads the
+subject+count field to a fixed width and appends the formatted date;
+`_populate_dash_mail`'s row text does the same, sized for the narrower
+Dashboard card.
+
+Confirmed before starting that thread order from `gauth.list_threads` was
+already newest-first (Gmail's own `threads().list` order, reassembled
+as-listed) — no sort change was needed to satisfy "sorted newest first by
+default."
+
+Files: `google_tui/main.py`. Verified via an isolated, fully-mocked
+`run_test` pilot: one thread with a known `date` header, confirmed both the
+Email list row and the Dashboard MAIL card row render the formatted date
+string. Re-ran the existing Dashboard-MAIL-scoping and custom-default-label
+pilot scenarios too — no regressions.
+
 ## [2026-07-18] — Custom `default_label_id` no longer resets to Inbox on launch
 
 Found while fixing the Dashboard MAIL card bug just below. `#email-label-
