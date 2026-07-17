@@ -2149,12 +2149,14 @@ class GoogleTUI(App):
         # so they still get replayed once this session reconnects.
         self._pending_mutations = self._cache.get_all("pending_mutation")
         thread_summaries = list(self._cache.get_all(f"thread_summary:{self._current_label_id}").values())
+        inbox_summaries = (thread_summaries if self._current_label_id == "INBOX"
+                           else list(self._cache.get_all("thread_summary:INBOX").values()))
         events = list(self._cache.get_all("event").values())
         tasks = list(self._cache.get_all("task").values())
         tasklists = list(self._cache.get_all("tasklist").values())
         had_mail = bool(thread_summaries or events or tasks)
         if had_mail:
-            self._apply_mail_data(thread_summaries, events, tasks, tasklists)
+            self._apply_mail_data(thread_summaries, events, tasks, tasklists, inbox_summaries)
 
         labels = list(self._cache.get_all("label").values())
         if labels:
@@ -2194,10 +2196,12 @@ class GoogleTUI(App):
         except Exception:
             return {}
 
-    def _write_mail_cache(self, label_id, threads, events, tasks, tasklists) -> None:
+    def _write_mail_cache(self, label_id, threads, events, tasks, tasklists, inbox_threads=None) -> None:
         if not self._cache:
             return
         self._cache.put_many(f"thread_summary:{label_id}", {t["threadId"]: t for t in threads})
+        if inbox_threads is not None and label_id != "INBOX":
+            self._cache.put_many("thread_summary:INBOX", {t["threadId"]: t for t in inbox_threads})
         self._cache.put_many("event", {e["id"]: e for e in events})
         self._cache.put_many("task", {f"{t['_list']}-{t['id']}": t for t in tasks})
         self._cache.put_many("tasklist", {tl["id"]: tl for tl in tasklists})
@@ -2266,8 +2270,8 @@ class GoogleTUI(App):
                 pass
             self._loading_modal = None
         if mail is not None:
-            _, threads, events, tasks, tasklists = mail
-            self._apply_mail_data(threads, events, tasks, tasklists)
+            _, threads, events, tasks, tasklists, inbox_threads = mail
+            self._apply_mail_data(threads, events, tasks, tasklists, inbox_threads)
         if labels is not None:
             self._apply_labels(labels)
         if cal_month is not None:
@@ -2500,6 +2504,16 @@ class GoogleTUI(App):
         known = self._cached_thread_summaries(label_id)
         threads, next_page_token = gauth.list_threads(self.svc, max_results=80, label_ids=label_ids,
                                                        known=known)
+        # The Dashboard MAIL card always means Inbox, regardless of what
+        # label the Email tab itself is browsing — fetch that separately
+        # when the two diverge (same revalidate-against-cache trick, just
+        # keyed on "INBOX" instead of whatever `label_id` is).
+        if label_id == "INBOX":
+            inbox_threads = threads
+        else:
+            inbox_known = self._cached_thread_summaries("INBOX")
+            inbox_threads, _ = gauth.list_threads(self.svc, max_results=80, label_ids=["INBOX"],
+                                                   known=inbox_known)
         # Plain attribute write from a worker thread — safe (CPython attribute
         # assignment is atomic) and consistent with how self._cache/self._online
         # are already touched off-thread elsewhere in this file. Read by
@@ -2515,7 +2529,7 @@ class GoogleTUI(App):
         for tl in tasklists:
             for t in gauth.list_tasks(self.svc, tl["id"], show_completed=True):
                 tasks.append({**t, "_list": tl["id"]})
-        return label_id, threads, events, tasks, tasklists
+        return label_id, threads, events, tasks, tasklists, inbox_threads
 
     # ---- labels (folders) ----
     def _apply_labels(self, labels: list[dict]) -> None:
@@ -2682,7 +2696,7 @@ class GoogleTUI(App):
         _append_load_more_row(email_list, bool(self._email_next_page_token) and not query.strip(),
                               LOAD_MORE_EMAIL_ID, "↓ Load more messages…")
 
-    def _apply_mail_data(self, threads, events, tasks, tasklists) -> None:
+    def _apply_mail_data(self, threads, events, tasks, tasklists, inbox_threads=None) -> None:
         self._tasklists = tasklists
         # ListView.clear() returns an AwaitRemove that can take LONGER than a
         # single call_after_refresh cycle to actually finish removing widgets
@@ -2696,10 +2710,10 @@ class GoogleTUI(App):
         self._mail_apply_gen += 1
         gen = self._mail_apply_gen
         self.run_worker(
-            self._apply_mail_data_async(gen, threads, events, tasks, tasklists),
+            self._apply_mail_data_async(gen, threads, events, tasks, tasklists, inbox_threads),
             exclusive=True, group="mail-apply")
 
-    async def _apply_mail_data_async(self, gen, threads, events, tasks, tasklists) -> None:
+    async def _apply_mail_data_async(self, gen, threads, events, tasks, tasklists, inbox_threads=None) -> None:
         await self.query_one("#email-list").clear()
         await self.query_one("#event-list").clear()
         await self.query_one("#task-list").clear()
@@ -2734,7 +2748,7 @@ class GoogleTUI(App):
         visible_tasks = _fuzzy_filter_tasks(disp_tasks, tasks_query) if tasks_query.strip() else disp_tasks
         _append_task_items(self.query_one("#task-list"), visible_tasks)
 
-        self._populate_dash_mail(threads)
+        self._populate_dash_mail(inbox_threads if inbox_threads is not None else threads)
 
     def _refresh_all_thread(self) -> None:
         """Post-write refresh (task toggled, mail sent) — MUST run with
@@ -2752,9 +2766,9 @@ class GoogleTUI(App):
         except Exception as e:
             self.call_from_thread(self.notify, f"Refresh error: {e}", severity="error")
             return
-        _, threads, events, tasks, tasklists = mail
+        _, threads, events, tasks, tasklists, inbox_threads = mail
         self._write_mail_cache(*mail)
-        self.call_from_thread(self._apply_mail_data, threads, events, tasks, tasklists)
+        self.call_from_thread(self._apply_mail_data, threads, events, tasks, tasklists, inbox_threads)
         try:
             labels = gauth.list_labels(self.svc)
             if self._cache:

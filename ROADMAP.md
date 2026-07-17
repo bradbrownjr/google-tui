@@ -53,19 +53,19 @@ just checking it off here, so ROADMAP.md only ever shows what's still open.
 
 ## P2 — Email
 
-- [ ] **Default to Inbox, not All Mail — for the Email tab AND Dashboard.**
-  `Settings.default_label_id` defaults to `"INBOX"` (`settings.py:21`) and
-  already drives both surfaces — `_fetch_mail_data` (`main.py:2492-2493`)
-  filters by `self._current_label_id` for the Email tab, and
-  `_populate_dash_mail` (`main.py:3484-3500`) is fed the SAME filtered
-  `threads` list, further narrowed to unread. That's one shared setting,
-  which is probably the actual bug here: once you switch the Email tab's
-  view to "All Mail" or a custom label (via `email-label-select`, the same
-  widget `l` opens), the Dashboard's MAIL card silently follows along too,
-  since there's no separate "Dashboard always means Inbox" concept. Likely
-  fix: decouple the Dashboard MAIL card from `_current_label_id` and always
-  fetch/filter it against INBOX specifically, regardless of what the Email
-  tab happens to be browsing.
+- [ ] **`email-label-select`'s initial value ignores a custom
+  `default_label_id`.** Found while fixing the Dashboard-MAIL-card-follows-
+  label bug below (`[2026-07-18]`, see CHANGELOG) — not fixed there, separate
+  issue. The Select's `value=` at compose time (`main.py:1754-1757`) only
+  recognizes `"ALL"`/`"INBOX"` as valid presets; if `Settings.default_label_id`
+  is ever a custom label id, the Select mounts showing `"INBOX"` instead, and
+  the mount-time `Select.Changed` echo (fires once even with no real user
+  change — see the `on_select_changed` comment, `main.py:2534+`) then
+  overwrites `_current_label_id`/`Settings.default_label_id` back to
+  `"INBOX"` and saves it, silently discarding the saved preference every
+  launch. Likely fix: build the Select's initial options/value from the
+  cached label list (if any) at compose time, or defer setting `value=` until
+  after `_apply_labels` has run once with the real label list.
 - [ ] **Date/time-received columns on the Email list and Dashboard MAIL
   card, sorted newest-first by default.** Currently `_email_collapsed_line`
   (`main.py:635-639`) is one flat string (sender/subject only, no date) in a
@@ -280,6 +280,10 @@ just checking it off here, so ROADMAP.md only ever shows what's still open.
 
 ## Done
 
+- [x] **Dashboard MAIL card always means Inbox** (`[2026-07-18]`) — decoupled
+  from `_current_label_id`; the Email tab can browse any label while the
+  Dashboard's MAIL card keeps showing Inbox unread specifically. See
+  CHANGELOG.
 - [x] **P1 bug batch from the 2026-07-17 live-usage testing pass**
   (`[2026-07-18]`) — five of eight: the `(1)` suffix on single-message
   threads, retry-once-on-timeout for the label refresh error, Drive/Mail

@@ -3,6 +3,39 @@
 Format: keep newest at top. One entry per meaningful change. Reference files
 touched and any breaking notes.
 
+## [2026-07-18] — Dashboard MAIL card always means Inbox
+
+The Dashboard's MAIL card (unread count + top unread threads) used to be fed
+the SAME label-filtered thread list as the Email tab, via one shared
+`_current_label_id` — switching the Email tab's view to "All Mail" or a
+custom label (`email-label-select`, the same widget `l` opens) silently
+changed what the Dashboard considered "mail" too.
+
+`_fetch_mail_data` (`main.py`) now fetches Inbox threads separately whenever
+`_current_label_id` isn't already `"INBOX"` (no extra API call when it is —
+the existing fetch is reused), and threads that result through
+`_write_mail_cache` (a second `thread_summary:INBOX` cache key, distinct from
+whatever label the Email tab is browsing), `_apply_mail_data`/
+`_apply_mail_data_async`, `_apply_live_refresh`, and `_load_from_cache` (all
+now carry an `inbox_threads` value end to end) so `_populate_dash_mail`
+always renders from Inbox regardless of the Email tab's current label.
+
+Files: `google_tui/main.py`. Verified via an isolated, fully-mocked
+`run_test` pilot (platformdirs redirected to a temp dir, no live API calls):
+switched the Email tab to a custom label mid-session, forced a full refresh,
+and confirmed the Email list showed that label's thread while the Dashboard
+MAIL card kept showing only the Inbox thread.
+
+Separately noticed but NOT fixed here (different bug, out of scope): the
+`email-label-select` Select's initial `value=` at compose time
+(`main.py:1754-1757`) only recognizes `"ALL"`/`"INBOX"` as valid presets — if
+`Settings.default_label_id` is a custom label, the Select mounts showing
+`"INBOX"` instead, and the mount-time `Select.Changed` echo (Textual fires
+one even though nothing was user-changed) then overwrites
+`_current_label_id`/`Settings.default_label_id` back to `"INBOX"` and saves
+it, silently discarding a saved "default to a custom label" preference on
+every launch. Worth its own fix if that's ever a real default anyone sets.
+
 ## [2026-07-18] — P1 bug batch from the 2026-07-17 live-usage testing pass
 
 Five of the eight P1 bugs from that testing pass, all reproducible/fixable
