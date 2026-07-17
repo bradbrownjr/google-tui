@@ -1013,14 +1013,14 @@ def parse_feed_entry(title: str, html_or_text: str, base_url: str = "", ascii_mo
 
 _INLINE_LINK_RE = re.compile(r"\[\d+\]")
 
-# Distinct color+underline for link text/markers, layered ON TOP of the
-# existing "dim" marker styling below rather than replacing it — so the
-# fallback path (a marker we can't confidently match back to its anchor
-# text) still looks the same as before this was added, and only the
-# positively-matched spans get the stronger, more "clickable-looking"
-# style. Picked to read as a classic terminal hyperlink (color + underline)
-# and to stay visually distinct from #doc-title's bold "$accent" styling.
-_LINK_STYLE = "underline bright_cyan"
+# Distinct color for link text/markers, layered ON TOP of the existing
+# "dim" marker styling below rather than replacing it — so the fallback
+# path (a marker we can't confidently match back to its anchor text) still
+# looks the same as before this was added, and only the positively-matched
+# spans get the stronger, more "clickable-looking" style. No underline —
+# it hurt readability more than it helped signal "clickable". Stays
+# visually distinct from #doc-title's bold "$accent" styling via color alone.
+_LINK_STYLE = "bright_cyan"
 
 
 class DocumentView(VerticalScroll):

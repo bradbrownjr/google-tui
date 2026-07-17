@@ -130,7 +130,13 @@ NARROW_WIDTH_THRESHOLD = 100
 
 _SUPERSCRIPT = {1: "¹", 2: "²", 3: "³", 4: "⁴", 5: "⁵", 6: "⁶", 7: "⁷", 8: "⁸", 9: "⁹"}
 
-NAV_EXPORT_DIR = Path(platformdirs.user_documents_dir()) / "google-tui"
+# Shared local-file destination for anything this app writes out on request
+# (Navigation's itinerary export, Drive's file download below) — one place
+# under the user's Documents folder rather than a picker/prompt, matching
+# this app's no-native-picker-widget precedent (see the comment near
+# action_toggle_preview's Drive/Mail split for the sibling "one key, two
+# tabs" precedent this borrows from).
+EXPORT_DIR = Path(platformdirs.user_documents_dir()) / "google-tui"
 
 # Where "Save to file" in the re-auth modal drops the Google authorization URL,
 # for terminals that swallow OSC 52 clipboard writes (see GoogleReauthModal).
@@ -648,8 +654,8 @@ def _export_itinerary(result: "fetchers.RouteResult") -> Path:
     """Write a plain-text turn-by-turn itinerary to
     ``platformdirs.user_documents_dir()/google-tui/``. Runs synchronously on
     the main thread — it's a small local write, no worker needed."""
-    NAV_EXPORT_DIR.mkdir(parents=True, exist_ok=True)
-    path = NAV_EXPORT_DIR / _nav_export_filename(result)
+    EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+    path = EXPORT_DIR / _nav_export_filename(result)
     lines = [
         f"Route: {result.origin} -> {result.destination}",
         f"Generated: {dt.datetime.now():%Y-%m-%d %H:%M}",
@@ -4824,6 +4830,46 @@ class GoogleTUI(App):
         elif tab == "tab-mail":
             self._toggle_email_preview()
 
+    def action_download_drive_file(self) -> None:
+        """"d" — download the highlighted Drive file to EXPORT_DIR
+        (Documents/google-tui/), the same no-picker-widget destination
+        Navigation's itinerary export uses. No-ops outside the Drive tab,
+        on folders/the "load more" row, and while offline (get_media/
+        export_media are live API calls -- no cached-bytes fallback exists
+        the way text preview has one).
+        """
+        if self._main_tabs().active != "tab-drive":
+            return
+        lst = self.query_one("#drive-list")
+        item = lst.highlighted_child
+        cid = item.id or "" if item is not None else ""
+        if not cid.startswith("d-") or cid == "d-up":
+            return
+        fid = cid[2:]
+        f = next((x for x in self._drive_files if x["id"] == fid), None)
+        if f is None:
+            return
+        if f["mimeType"] == "application/vnd.google-apps.folder":
+            self.notify("Select a file, not a folder, to download.", severity="warning")
+            return
+        if not self._online:
+            self.notify("Downloading needs a network connection.", severity="warning")
+            return
+        self.notify(f"Downloading {f['name']}…")
+        self.run_worker(lambda: self._drive_download_thread(f),
+                         thread=True, exclusive=True, group="drive-download")
+
+    def _drive_download_thread(self, f: dict) -> None:
+        try:
+            name, data = gauth.download_drive_file(self.svc, f["id"])
+            EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+            path = EXPORT_DIR / name
+            path.write_bytes(data)
+        except Exception as e:
+            self.call_from_thread(self.notify, f"Download failed: {e}", severity="error")
+            return
+        self.call_from_thread(self.notify, f"Downloaded to {path}")
+
     def _apply_drive_preview_visibility(self) -> None:
         try:
             preview_col = self.query_one("#drive-preview-col")
@@ -5068,8 +5114,11 @@ class GoogleTUI(App):
             info += "\n(offline — showing cached details)"
         if is_folder:
             return info, "(folder — press Enter to open)"
-        if not _is_previewable(meta.get("mimeType", "")):
-            return info, "(binary/image file — no text preview)"
+        mime = meta.get("mimeType", "")
+        if not _is_previewable(mime):
+            if mime.startswith("image/"):
+                return info, "(image file — no text preview)"
+            return info, "(binary file — no text preview)"
 
         # The body is the expensive part (a full file download). Reuse the
         # cached text whenever the modifiedTime says the file hasn't changed —

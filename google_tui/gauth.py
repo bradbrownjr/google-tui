@@ -753,6 +753,35 @@ def read_drive_text(svc, file_id: str):
     return meta["name"], mime, text
 
 
+# Extension for each _MIME_EXPORT target, appended to a Google-native file's
+# Drive name (which normally carries none) so the downloaded copy opens in
+# the right local app.
+_EXPORT_EXTENSIONS = {"text/plain": ".txt", "text/csv": ".csv", "image/png": ".png"}
+
+
+def download_drive_file(svc, file_id: str) -> tuple[str, bytes]:
+    """Fetches a file's raw bytes for saving to the local filesystem.
+    Google-native docs (Sheets/Slides/Docs/Drawings) have no raw bytes —
+    the same `_MIME_EXPORT` table `read_drive_text` uses converts them to an
+    exportable format first. Returns `(filename, data)`."""
+    d = svc["drive"]
+    meta = d.files().get(fileId=file_id, fields="mimeType,name").execute()
+    name = meta["name"]
+    mime = meta["mimeType"]
+    if mime.startswith("application/vnd.google-apps."):
+        kind = mime.split(".")[-1]
+        target = _MIME_EXPORT.get(kind, "text/plain")
+        data = d.files().export_media(fileId=file_id, mimeType=target).execute()
+        ext = _EXPORT_EXTENSIONS.get(target, "")
+        if ext and not name.lower().endswith(ext):
+            name += ext
+    else:
+        data = d.files().get_media(fileId=file_id).execute()
+    if isinstance(data, str):
+        data = data.encode("utf-8")
+    return name, data
+
+
 # ----------------------------------------------------------------------------
 # People / Contacts (P1 M5)
 # ----------------------------------------------------------------------------

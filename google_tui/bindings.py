@@ -98,6 +98,7 @@ GLOBAL_ACTIONS: list[ActionSpec] = [
     # dual-context-single-action pattern as "n"/new_event (Calendar tab vs
     # Mail's Events pane): action_toggle_preview branches on the active tab.
     ActionSpec("toggle_preview", "p", "Toggle Preview"),
+    ActionSpec("download_drive_file", "d", "Download"),
     ActionSpec("refresh", "ctrl+r", "Refresh"),
     ActionSpec("help", "ctrl+h", "Help"),
     ActionSpec("toggle_mouse", "f12", "Mouse"),
@@ -185,7 +186,7 @@ CONTEXT_HELP: dict[str, str] = {
     "pane:dash-news": "Enter/Space Open Headline",
     "pane:hermes": "Enter Ask",
     "tab:tab-calendar": "[ / ] Prev/Next Month or Week   Enter Day Detail   n New Event",
-    "tab:tab-drive": "Enter Open Folder / Reload Preview   / Search (this folder)   p Toggle Preview",
+    "tab:tab-drive": "Enter Open Folder / Reload Preview   / Search (this folder)   p Toggle Preview   d Download",
     "tab:tab-browser": "Enter Load/Search   Alt+←/→ Back/Forward   H Home   B Bookmarks   Ctrl+B Bookmark Page   Tab Toggle Focus   0-9+Enter Link",
     "tab:tab-news": "Enter/Space Open Entry   / Search",
     "tab:tab-navigation": "Enter/Go Compute Route   Export Save Itinerary To File",
@@ -374,6 +375,10 @@ DRIVE TAB
                 (not the whole Drive tree)
   p             Toggle the preview/info column — hide it to give the file
                 list the full width
+  d             Download the selected file to Documents/google-tui/ (a
+                Google-native Doc/Sheet/Slide/Drawing is exported first,
+                same conversion the text preview uses); no-ops on folders
+                or offline
   Alt+Right     Move focus into the preview column (Alt+Left back to the
                 file list) once it's visible
 

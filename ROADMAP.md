@@ -51,46 +51,16 @@ just checking it off here, so ROADMAP.md only ever shows what's still open.
   `messages().get(format="raw")` to see its actual MIME tree, then come
   back with that before writing a fix.
 
-## P2 — Drive
-
-- [ ] **Better binary-vs-image detection in the file preview**, instead of
-  the current single "(binary/image file — no text preview)" message for
-  everything `_is_previewable()` (`main.py:925-926`) says no to. Split the
-  message (and eventually the handling) by mimetype: an actual image
-  (`image/*`) vs. a real binary (executables, archives, etc.) are different
-  situations for a user, even though neither gets a text preview today. Full
-  in-terminal image rendering is the bigger P4 item below (needs
-  `textual-image`); this is just the smaller "say what kind of file it is"
-  fix using the mimetype already fetched via `gauth.get_file_metadata`.
-- [ ] **Download a Drive file to the local filesystem** — no such action
-  exists today; `gauth.read_drive_text`/`get_file_metadata` only read for
-  in-app preview. Would need a new `gauth` download helper (`files().get_media`
-  for binary, `files().export_media` for native Google Docs/Sheets/Slides —
-  same `_MIME_EXPORT` table `gauth.py:633+` already uses for text preview)
-  and a destination-path prompt, likely reusing whatever prompt/modal pattern
-  Navigation's `_export_itinerary` (`main.py:~350`) already established for
-  "write a file to `user_documents_dir()`."
-
-## P2 — General UI
-
-- [ ] **Drop the underline on clickable/link text** — makes it harder to
-  read, not easier. Best candidate found: `render._LINK_STYLE = "underline
-  bright_cyan"` (`render.py:1023`), used for every numbered `[N]` link in
-  `DocumentView` (Browser pages, Gopher/Gemini menus, search results, News
-  entries, HTML email bodies) — try `bright_cyan` alone, no underline, and
-  confirm that's the element being reported (vs. e.g. a `Button` label)
-  before changing it.
-
 ## P3 — Browser
 
 - [ ] **SFTP/SCP** — the FTP/SFTP/SCP browser item shipped `[2026-07-18]`
   scoped down to plain FTP only (see Done below); SFTP/SCP still need a new
   dependency (`paramiko` — nothing like it is in `pyproject.toml` today) and
-  are unbuilt. Also still open: **download a Drive/FTP file to the local
-  filesystem** — no such action exists for either protocol yet (shares the
-  destination-path-prompt need with the `## P2 — Drive` download item
-  above); `fetch_ftp` (`fetchers.py`) only reads for in-app preview, same
-  gap `gauth.read_drive_text` has for Drive.
+  are unbuilt. Also still open: **download an FTP file to the local
+  filesystem** — no such action exists yet; `fetch_ftp` (`fetchers.py`) only
+  reads for in-app preview. The Drive-side equivalent shipped `[2026-07-17]`
+  (see Done below) — same `EXPORT_DIR`/no-destination-prompt pattern would
+  apply here.
 
 ## P4 — Nice-to-have
 
@@ -98,9 +68,10 @@ just checking it off here, so ROADMAP.md only ever shows what's still open.
   week grid (`#cal-week-grid`) is hour-granularity; an event's summary fills
   every hour row it spans, so start/end times aren't visually precise within
   the hour.
-- [ ] **Drive image preview** — currently images show metadata only ("no text
-  preview"); in-terminal rendering would need the `textual-image` package
-  (not a current dependency).
+- [ ] **Drive image preview** — currently images show metadata only ("(image
+  file — no text preview)" since `[2026-07-17]`, was a generic binary/image
+  message before); in-terminal rendering would need the `textual-image`
+  package (not a current dependency).
 - [ ] **Config file** (`config.toml`) for: default LLM model, timezone, pane
   order, searxng URL, refresh interval.
 - [ ] **Markdown detection + rendering** in Drive file preview, calendar/task
@@ -185,6 +156,14 @@ just checking it off here, so ROADMAP.md only ever shows what's still open.
 
 ## Done
 
+- [x] **P2 batch: link underline, Drive preview split, Drive download**
+  (`[2026-07-17]`) — dropped the underline from `render._LINK_STYLE`
+  (now just `bright_cyan`); split the Drive preview's binary/image message
+  by mimetype ("(image file — no text preview)" vs. "(binary file — no text
+  preview)"); added Drive → local-filesystem download (`gauth.
+  download_drive_file`, new `d` keybinding, writes to `EXPORT_DIR` —
+  `main.py`'s former `NAV_EXPORT_DIR`, renamed since it's now shared with
+  Navigation's itinerary export — no destination prompt). See CHANGELOG.
 - [x] **Plain FTP browsing** (`[2026-07-18]`) — new `fetchers.fetch_ftp`
   (`ftplib`, stdlib) browses `ftp://` directories (MLSD, falling back to
   parsing classic Unix `LIST` output) and previews files, wired into the

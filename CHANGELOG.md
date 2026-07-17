@@ -3,6 +3,36 @@
 Format: keep newest at top. One entry per meaningful change. Reference files
 touched and any breaking notes.
 
+## [2026-07-17] — P2 batch: link underline, Drive preview split, Drive download
+
+Three P2 ROADMAP items, unblocked while the P1 bugs sit on live repros.
+
+- **Dropped the underline on clickable link text.** `render._LINK_STYLE`
+  (`render.py:1023`) is now just `"bright_cyan"` — the underline made
+  `[N]`-marked links harder to read, not easier, across every `DocumentView`
+  consumer (Browser, Gopher/Gemini menus, search results, News, HTML email
+  bodies).
+- **Split the Drive preview's binary/image message by mimetype.**
+  `_drive_preview_fetch` (`main.py`) now says "(image file — no text
+  preview)" vs. "(binary file — no text preview)" instead of one generic
+  message, using the mimetype `get_file_metadata` already fetched — no new
+  API call.
+- **Download a Drive file to the local filesystem.** New `gauth.
+  download_drive_file(svc, file_id)` (`files().get_media` for real files,
+  `files().export_media` via the existing `_MIME_EXPORT` table for
+  Google-native Docs/Sheets/Slides/Drawings) plus a new `d` keybinding
+  (`action_download_drive_file`, Drive tab only) that writes the highlighted
+  file into `EXPORT_DIR` (`~/Documents/google-tui/` — `main.py`'s former
+  `NAV_EXPORT_DIR`, renamed since it's now shared with Navigation's
+  itinerary export). No destination prompt, matching the app's existing
+  no-native-picker-widget precedent; no-ops on folders and while offline.
+
+Verified with an isolated `run_test` pilot (platformdirs config/cache/
+**documents** dirs redirected to a temp dir before import, per AGENTS.md §6
+— `download_drive_file` writes to `EXPORT_DIR`, which needed the
+`user_documents_dir` patch too, not just config/cache) against fabricated
+Drive files covering all three message/download paths.
+
 ## [2026-07-18] — Plain FTP browsing (`ftp://`)
 
 Last `## P3 — Browser` item, scoped down to plain FTP only (no SFTP/SCP —
