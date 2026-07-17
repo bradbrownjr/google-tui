@@ -3,6 +3,31 @@
 Format: keep newest at top. One entry per meaningful change. Reference files
 touched and any breaking notes.
 
+## [2026-07-18] — Custom `default_label_id` no longer resets to Inbox on launch
+
+Found while fixing the Dashboard MAIL card bug just below. `#email-label-
+select`'s `value=` at compose time (`main.py`) only recognized `"ALL"`/
+`"INBOX"` as valid presets — if `Settings.default_label_id` was ever a
+custom label id, the Select mounted showing `"INBOX"` instead, and the
+mount-time `Select.Changed` echo Textual fires even with no real user change
+(see the existing `on_select_changed` comment) then overwrote
+`_current_label_id`/`Settings.default_label_id` back to `"INBOX"` and saved
+it — silently discarding a saved "default to a custom label" preference
+every single launch.
+
+New `_initial_label_select_options` (`main.py`) always includes All Mail/
+Inbox, plus the raw `default_label_id` itself as a placeholder option when
+it's a custom label, so the Select can validly hold that value from the
+start; `_apply_labels` (unchanged) replaces the placeholder with the real
+display name once the actual label list loads, same as it always did for
+ALL/INBOX.
+
+Files: `google_tui/main.py`. Verified via an isolated, fully-mocked
+`run_test` pilot: preset `default_label_id="Label_1"` before launch,
+confirmed `_current_label_id`/`Select.value`/`Settings.default_label_id` all
+stayed `"Label_1"` through the full startup sequence instead of flipping to
+`"INBOX"`.
+
 ## [2026-07-18] — Dashboard MAIL card always means Inbox
 
 The Dashboard's MAIL card (unread count + top unread threads) used to be fed
@@ -26,15 +51,11 @@ switched the Email tab to a custom label mid-session, forced a full refresh,
 and confirmed the Email list showed that label's thread while the Dashboard
 MAIL card kept showing only the Inbox thread.
 
-Separately noticed but NOT fixed here (different bug, out of scope): the
-`email-label-select` Select's initial `value=` at compose time
-(`main.py:1754-1757`) only recognizes `"ALL"`/`"INBOX"` as valid presets — if
-`Settings.default_label_id` is a custom label, the Select mounts showing
-`"INBOX"` instead, and the mount-time `Select.Changed` echo (Textual fires
-one even though nothing was user-changed) then overwrites
-`_current_label_id`/`Settings.default_label_id` back to `"INBOX"` and saves
-it, silently discarding a saved "default to a custom label" preference on
-every launch. Worth its own fix if that's ever a real default anyone sets.
+Separately noticed along the way (different bug, not fixed in this same
+commit): the `email-label-select` Select's initial `value=` at compose time
+only recognized `"ALL"`/`"INBOX"` as valid presets, silently resetting a
+custom `default_label_id` back to `"INBOX"` on every launch — see the entry
+just above, fixed the same day.
 
 ## [2026-07-18] — P1 bug batch from the 2026-07-17 live-usage testing pass
 

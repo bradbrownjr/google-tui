@@ -999,6 +999,20 @@ def _label_display_name(label: dict) -> str:
     return ("  " * depth) + leaf
 
 
+def _initial_label_select_options(default_label_id: str) -> list[tuple[str, str]]:
+    """Options for `#email-label-select` at compose time, before the real
+    label list (with proper display names) has loaded from cache/API.
+    Always includes All Mail/Inbox; also includes `default_label_id` itself
+    as a raw-id placeholder option when it's a custom label, so the Select
+    can validly hold a saved custom-label default instead of silently
+    falling back to Inbox — `_apply_labels` replaces these placeholder
+    options with the real display names once the label list arrives."""
+    options = [("All Mail", "ALL"), ("Inbox", "INBOX")]
+    if default_label_id not in ("ALL", "INBOX"):
+        options.append((default_label_id, default_label_id))
+    return options
+
+
 def _label_select_options(labels: list[dict]) -> list[tuple[str, str]]:
     system = [l for l in labels if l.get("type") == "system"]
     user = [l for l in labels if l.get("type") != "system"]
@@ -1752,9 +1766,8 @@ class GoogleTUI(App):
                         with Container(id="email", classes="pane"):
                             yield self._pane_title_row("EMAIL  (threads)", 1)
                             yield Select(
-                                [("All Mail", "ALL"), ("Inbox", "INBOX")],
-                                value=self.settings.default_label_id
-                                if self.settings.default_label_id in ("ALL", "INBOX") else "INBOX",
+                                _initial_label_select_options(self.settings.default_label_id),
+                                value=self.settings.default_label_id,
                                 allow_blank=False, id="email-label-select",
                                 classes="hidden",
                             )
