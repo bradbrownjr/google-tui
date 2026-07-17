@@ -53,9 +53,6 @@ just checking it off here, so ROADMAP.md only ever shows what's still open.
 
 ## P2 — Calendar
 
-- [ ] **Highlight today's date** on the Month grid — `#cal-grid`
-  (`_apply_cal_month`, `main.py:4051+`) has no special styling for the
-  current day's cell today.
 - [ ] **Better multi-day event display** — Week view currently repeats an
   event's summary text into every hour row it spans (a text-cell
   approximation, see AGENTS.md §1), which doesn't read well for all-day/
@@ -236,6 +233,12 @@ just checking it off here, so ROADMAP.md only ever shows what's still open.
 
 ## Done
 
+- [x] **Highlight today's date** on the Month grid (`[2026-07-18]`) —
+  `_day_cell_text`/`_apply_cal_month` now bold-reverses just the day-number
+  line of today's cell (via `rich.text.Text.stylize`, not the constructor's
+  whole-cell `style=`) whenever the grid is showing the current year/month.
+  Reverse video adapts to any theme instead of hardcoding a color. See
+  CHANGELOG.
 - [x] **Quote the last message below new reply text** (`[2026-07-18]`) —
   `ComposeModal.on_mount`'s reply/reply-all path now fetches the thread with
   `format="full"` (was `"metadata"`) and, when the new

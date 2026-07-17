@@ -33,6 +33,7 @@ import platformdirs
 from google.auth.exceptions import RefreshError
 from googleapiclient.errors import HttpError
 from rapidfuzz import fuzz
+from rich.text import Text
 from textual import events
 from textual.actions import SkipAction
 from textual.app import App, ComposeResult
@@ -4172,7 +4173,7 @@ class GoogleTUI(App):
                 self._cal_year += 1
             self._build_cal_month()
 
-    def _day_cell_text(self, day: int, events: list[dict]) -> str:
+    def _day_cell_text(self, day: int, events: list[dict], *, is_today: bool = False) -> str | Text:
         lines = [str(day)]
         for e in events[:2]:
             start = _fmt_date(e.get("start", {}).get("dateTime") or e.get("start", {}).get("date", ""))
@@ -4182,7 +4183,17 @@ class GoogleTUI(App):
             lines.append(f"+{len(events) - 2} more")
         while len(lines) < 4:
             lines.append("")
-        return "\n".join(lines)
+        joined = "\n".join(lines)
+        if not is_today:
+            return joined
+        # "reverse" swaps whatever fg/bg the cell already has rather than a
+        # hardcoded color, so today's highlight still works under any theme.
+        # stylize() (not the Text(..., style=...) constructor) is required
+        # here so the span covers only the day-number line, not the whole
+        # multi-line cell -- the constructor's style applies to all text.
+        text = Text(joined)
+        text.stylize("bold reverse", 0, len(lines[0]))
+        return text
 
     def _fetch_cal_month(self) -> list[dict]:
         return gauth.month_events(self.svc, self._cal_year, self._cal_month)
@@ -4217,8 +4228,12 @@ class GoogleTUI(App):
             cells.append(d)
         while len(cells) % 7:
             cells.append(None)
+        today = dt.date.today()
+        this_month_is_current = (self._cal_year, self._cal_month) == (today.year, today.month)
         for i in range(0, len(cells), 7):
-            row = [self._day_cell_text(d, by_day.get(d, [])) if d else "" for d in cells[i:i + 7]]
+            row = [self._day_cell_text(d, by_day.get(d, []),
+                                        is_today=this_month_is_current and d == today.day)
+                   if d else "" for d in cells[i:i + 7]]
             grid.add_row(*row, height=4)
 
     def _fetch_cal_week(self) -> list[dict]:

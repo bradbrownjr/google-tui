@@ -3,6 +3,42 @@
 Format: keep newest at top. One entry per meaningful change. Reference files
 touched and any breaking notes.
 
+## [2026-07-18] — Highlight today's date on the Month grid
+
+First `## P2 — Calendar` item: the Month grid gave no visual indication of
+which cell was the current day, so finding "today" meant reading the header
+row's Mon/Tue/... and counting.
+
+`_day_cell_text` (`main.py`) takes a new `is_today: bool = False` keyword. When
+true, it returns a `rich.text.Text` instead of a plain string: the day-number
+line gets a `"bold reverse"` span via `Text.stylize(..., 0, len(lines[0]))`,
+leaving the event-summary lines below it unstyled. Reverse video was chosen
+over a hardcoded color specifically because it swaps whatever fg/bg the
+current Textual theme already has for that cell, so the highlight looks
+right regardless of theme — consistent with this app's existing preference
+for `$accent`/`$panel` theme variables over literal colors elsewhere in the
+CSS.
+
+One subtlety: `Text(text, style=...)` (the constructor kwarg) applies that
+style to the *whole* Text object, not just the substring passed in — so
+building the day-number span that way and then `.append()`-ing the rest of
+the cell's lines would have reversed the entire cell, not just the first
+line. `stylize()` with explicit start/end offsets was needed instead to scope
+the style correctly.
+
+`_apply_cal_month` computes `today = dt.date.today()` once per grid build and
+only passes `is_today=True` for the exact day when `(self._cal_year,
+self._cal_month) == (today.year, today.month)` — so navigating to another
+month correctly shows no highlighted cell at all, rather than misapplying it
+to a same-numbered day in a different month.
+
+Verified with a new scratchpad pilot: built the Month grid, located the
+`Text`-typed cell (plain strings otherwise), confirmed its first span is
+`(0, 2, 'bold reverse')` covering just the day number, then advanced to next
+month and confirmed zero `Text` cells remain (all plain strings again). Files:
+`google_tui/main.py`.
+
+
 ## [2026-07-18] — Quote the original message in Reply/Reply All
 
 ROADMAP's last open P2 — Email item: replying gave you a blank compose box
