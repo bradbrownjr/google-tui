@@ -1352,6 +1352,7 @@ class GoogleTUI(App):
         self._cal_year, self._cal_month = now.year, now.month
         self._cal_by_day: dict[int, list[dict]] = {}
         self._cal_week_cells: dict[tuple[int, int], list[dict]] = {}
+        self._cal_week_allday: dict[int, list[dict]] = {}
         # Calendar tab "/" jump-to-next-match state (find-next over the grid,
         # mirrors ThreadModal._find). _cal_search_matches is the last query's
         # ordered (row, col) hit list; a repeat-Enter of the SAME query
@@ -4250,20 +4251,45 @@ class GoogleTUI(App):
         grid.add_column("Hour")
         for label in ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"):
             grid.add_column(label)
-        # Overlay offline-created events falling in the displayed week (all-day
-        # ones are skipped just below, same as real all-day events).
+        # Overlay offline-created events falling in the displayed week.
         events = list(events) + [e for e in _pending_event_creates(self._pending_mutations)
                                  if _event_in_week(e, self._cal_week_start)]
         cells: dict[tuple[int, int], list[dict]] = {}
+        # All-day events (date-only start/end) and multi-day *timed* events
+        # (start/end dateTimes on different calendar dates -- e.g. an
+        # overnight or multi-day conference session) both go here instead of
+        # into the hour grid: repeating a summary into every hour row it
+        # spans reads fine for an ordinary same-day meeting, but not for
+        # something that covers a whole day or several of them.
+        allday_by_col: dict[int, list[dict]] = {}
         for e in events:
             s = e.get("start", {}).get("dateTime")
             en = e.get("end", {}).get("dateTime")
             if not s or not en:
-                continue  # all-day events show up in the Month view instead
+                try:
+                    sd = dt.date.fromisoformat(e.get("start", {}).get("date", ""))
+                    end_raw = e.get("end", {}).get("date")
+                    # Calendar's all-day end.date is EXCLUSIVE (matches the
+                    # create-event convention already used elsewhere, e.g.
+                    # CreateEventModal._try_create).
+                    ed = dt.date.fromisoformat(end_raw) if end_raw else sd + dt.timedelta(days=1)
+                except Exception:
+                    continue
+                for col in range(7):
+                    day = self._cal_week_start + dt.timedelta(days=col)
+                    if sd <= day < ed:
+                        allday_by_col.setdefault(col, []).append(e)
+                continue
             try:
                 sdt = dt.datetime.fromisoformat(s)
                 edt = dt.datetime.fromisoformat(en)
             except Exception:
+                continue
+            if sdt.date() != edt.date():
+                for col in range(7):
+                    day = self._cal_week_start + dt.timedelta(days=col)
+                    if sdt.date() <= day <= edt.date():
+                        allday_by_col.setdefault(col, []).append(e)
                 continue
             col = (sdt.date() - self._cal_week_start).days
             if not (0 <= col < 7):
@@ -4274,6 +4300,22 @@ class GoogleTUI(App):
             for hour in range(start_hour, min(end_hour, 24)):
                 cells.setdefault((hour, col), []).append(e)
         self._cal_week_cells = cells
+        self._cal_week_allday = allday_by_col
+
+        # Dedicated all-day row above the hour grid (row 0 -- _cal_week_cell_selected
+        # and _cal_week_matches below both account for this +1 offset against
+        # the hour rows that follow).
+        allday_row = ["All day"]
+        for col in range(7):
+            evs = allday_by_col.get(col, [])
+            if not evs:
+                allday_row.append("")
+            elif len(evs) == 1:
+                allday_row.append(evs[0].get("summary", "")[:16])
+            else:
+                allday_row.append(f"{len(evs)} events")
+        grid.add_row(*allday_row)
+
         for hour in range(24):
             label = dt.time(hour).strftime("%I %p").lstrip("0")
             row = [label]
@@ -4307,7 +4349,11 @@ class GoogleTUI(App):
         col = event.coordinate.column - 1  # column 0 is the Hour label
         if col < 0:
             return
-        evs = self._cal_week_cells.get((event.coordinate.row, col), [])
+        row = event.coordinate.row
+        if row == 0:  # the dedicated all-day row above the hour grid
+            evs = self._cal_week_allday.get(col, [])
+        else:
+            evs = self._cal_week_cells.get((row - 1, col), [])
         if not evs:
             return
         if len(evs) == 1:
@@ -4349,14 +4395,19 @@ class GoogleTUI(App):
 
     def _cal_week_matches(self, query_lower: str, threshold: int) -> list[tuple[int, int]]:
         # #cal-week-grid column 0 is the Hour label, so a stored week-cell col
-        # (0..6) maps to DataTable column col+1; the row IS the hour. A
-        # multi-hour event spans several hour-cells, each a distinct jump
-        # target — deliberate, so find-next steps through the block hour by hour.
+        # (0..6) maps to DataTable column col+1; row 0 is the dedicated
+        # all-day row, so hour h lives at row h+1. A multi-hour event spans
+        # several hour-cells, each a distinct jump target — deliberate, so
+        # find-next steps through the block hour by hour.
         matches: list[tuple[int, int]] = []
+        for col in sorted(self._cal_week_allday):
+            if any(self._event_matches(e, query_lower, threshold)
+                   for e in self._cal_week_allday[col]):
+                matches.append((0, col + 1))
         for (hour, col) in sorted(self._cal_week_cells):
             if any(self._event_matches(e, query_lower, threshold)
                    for e in self._cal_week_cells[(hour, col)]):
-                matches.append((hour, col + 1))
+                matches.append((hour + 1, col + 1))
         return matches
 
     def _cal_find(self, query: str) -> None:

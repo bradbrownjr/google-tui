@@ -3,6 +3,47 @@
 Format: keep newest at top. One entry per meaningful change. Reference files
 touched and any breaking notes.
 
+## [2026-07-18] — Dedicated all-day row in the Calendar Week view
+
+Second `## P2 — Calendar` item. Two related gaps in `_apply_cal_week`
+(`main.py`): all-day events (date-only `start`/`end`, no `dateTime`) were
+silently `continue`d out of Week view entirely — the comment even said "all-day
+events show up in the Month view instead," but there was no way to see them
+alongside a given week's timed schedule. Multi-day *timed* events (e.g. a Fri
+20:00 -> Sun 10:00 offsite) fared worse: the code computed `end_hour` from
+`edt.hour` alone, which for a cross-midnight span is often *less* than
+`start_hour`, so `max(end_hour, start_hour + 1)` silently clamped the event to
+a single one-hour block on its start day and it never appeared on any later
+day at all.
+
+`_apply_cal_week` now splits events into two buckets before building rows.
+Ordinary same-day timed events go through the existing per-hour `cells` dict
+unchanged. All-day events and multi-day timed events (detected via
+`sdt.date() != edt.date()`) go into a new `allday_by_col: dict[int, list[dict]]`,
+populated for every day column the event's date range actually covers within
+the displayed week — using the same exclusive-end `date` convention
+(`dt.date.fromisoformat`, `end` exclusive) already established by
+`_todays_events`/`CreateEventModal._try_create` elsewhere in this file.
+
+A new row is added to `#cal-week-grid` above the 24 hour rows: `"All day"` in
+the Hour column, then one cell per day showing that day's all-day/multi-day
+event summary (or `"N events"` for more than one) — mirroring the existing
+single-event/multi-event cell text convention from the hour rows. This shifts
+every hour row down by one, so `_cal_week_cell_selected` (row 0 → look up
+`_cal_week_allday[col]`, row *r>0* → hour *r-1* in `_cal_week_cells`) and
+`_cal_week_matches` (the "/" find-next jump list, now also yielding `(0, col+1)`
+matches for the all-day row) both account for the offset. `_cal_week_allday`
+is a new instance attribute initialized in `GoogleTUI.__init__` alongside the
+pre-existing `_cal_week_cells`.
+
+Verified with a new scratchpad pilot covering all three cases in one week:
+a Wednesday-only all-day event, a Friday-20:00-to-Sunday-10:00 multi-day timed
+event (must appear in the all-day row on Fri/Sat/Sun and *not* be duplicated
+into any hour cell), and an ordinary Monday 9-10am meeting (must still land in
+its normal hour row, now row 10 instead of row 9 because of the new offset).
+Re-ran all prior Calendar/Email pilots afterward with no regressions. Files:
+`google_tui/main.py`.
+
 ## [2026-07-18] — Highlight today's date on the Month grid
 
 First `## P2 — Calendar` item: the Month grid gave no visual indication of

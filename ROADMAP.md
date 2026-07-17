@@ -53,11 +53,6 @@ just checking it off here, so ROADMAP.md only ever shows what's still open.
 
 ## P2 — Calendar
 
-- [ ] **Better multi-day event display** — Week view currently repeats an
-  event's summary text into every hour row it spans (a text-cell
-  approximation, see AGENTS.md §1), which doesn't read well for all-day/
-  multi-day spans specifically; consider a dedicated all-day row above the
-  hour grid instead (how Google Calendar's own web week view does it).
 - [ ] **Background-color events by their source calendar** — `list_events`
   would need to also return each event's calendar id/color
   (`colorId`/calendar's own color), threaded through `_apply_cal_month`/
@@ -233,6 +228,15 @@ just checking it off here, so ROADMAP.md only ever shows what's still open.
 
 ## Done
 
+- [x] **Better multi-day event display** (`[2026-07-18]`) — Week view's
+  `#cal-week-grid` now has a dedicated "All day" row above the hour grid.
+  `_apply_cal_week` routes all-day events (date-only start/end) and
+  multi-day *timed* events (start/end `dateTime`s on different calendar
+  dates, e.g. an overnight session) into that row instead of the hour cells
+  — spanning every day column they cover within the displayed week. Ordinary
+  same-day timed events are unaffected. `_cal_week_cell_selected` and
+  `_cal_week_matches` (the "/" find-next) both account for the new row-0
+  offset (hour *h* is now grid row *h+1*). See CHANGELOG.
 - [x] **Highlight today's date** on the Month grid (`[2026-07-18]`) —
   `_day_cell_text`/`_apply_cal_month` now bold-reverses just the day-number
   line of today's cell (via `rich.text.Text.stylize`, not the constructor's
