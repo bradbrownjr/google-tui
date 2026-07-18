@@ -3,6 +3,100 @@
 Format: keep newest at top. One entry per meaningful change. Reference files
 touched and any breaking notes.
 
+## [2026-07-18] — Unified Drive-tab sources: Google Drive + FTP + SSH (SFTP/SCP)
+
+The Drive tab is source-agnostic now. A new `Select#drive-source-select`
+picker at the top of the tab ("Google Drive" + any saved FTP/SSH hosts +
+"+ Add remote host…") drives everything below it — file list, preview,
+search, download, folder navigation — unchanged regardless of which source
+is active. This closes the last open P3 ROADMAP item (SFTP/SCP) and, as a
+side effect, the separate "download an FTP file to local filesystem" item,
+since download is source-agnostic too.
+
+**New `google_tui/drive_sources.py`** — a `DriveBackend` protocol
+(`list_children`/`get_metadata`/`read_preview_text`/`download`/`close`,
+plus `source_key`/`label`/`root_id`/`root_path`) normalizes every source to
+the shape Drive's existing UI already expected, with a normalized item dict
+(`is_folder: bool` replacing Google's `mimeType == "...folder"` sentinel
+check). Three implementations:
+- `GoogleDriveSource` — thin wrapper over the existing, unmodified `gauth`
+  Drive functions.
+- `FtpSource` — moved out of `fetchers.py` (which used to build a
+  `render.Document` for inline Browser-tab rendering); per-call
+  connect/login/quit, same as before, now returning normalized dicts.
+- `SshSource` (new protocol support) — one persistent `paramiko.SSHClient`
+  behind a `threading.Lock` (Drive's listing/preview/download run in
+  independent worker groups, so two calls can race against the same
+  backend instance — `paramiko.SFTPClient` isn't safe for unsynchronized
+  concurrent use). Tries the SFTP subsystem first (real mtime/size, true
+  partial-read preview via `SFTPFile.seek`/`.read`); only if a server
+  refuses the subsystem outright (not any transient error) does it fall
+  back, for that connection's lifetime, to an exec-channel mode: `find
+  -maxdepth 1 -printf '%f\t%y\t%s\t%T@\n'` for listing (falling back
+  further to `ls -la`, parsed via a new `_parse_unix_ls_lines` factored out
+  of the old FTP-only listing parser, if `find` isn't available), `head -c`
+  for a bounded preview read, and the new `scp` package's `SCPClient` (via
+  a temp file — paramiko itself doesn't implement the legacy SCP wire
+  protocol, only the SFTP subsystem) for a full download. Best-effort
+  against varied remote shells (BusyBox/GNU coreutils/BSD), not
+  exhaustively tested. New dependencies: `paramiko`, `scp`.
+
+**`google_tui/ftp_creds.py` → `google_tui/remote_creds.py`** — generalized:
+value dicts gain `protocol`/`port`, keyed by a composite `f"{protocol}:
+{host}:{port}"` instead of bare hostname (a bare hostname could otherwise
+collide across FTP and SSH, or two ports), with a fallback to the old
+bare-host lookup so existing saved FTP logins survive the upgrade
+untouched. New `list_hosts()` backs both the Drive-tab picker and Settings'
+renamed "Saved remote hosts" list (`#settings-remote-hosts-list`/
+`#settings-remove-remote-host`, was `#settings-ftp-hosts-list`).
+
+**Browser tab**: `ftp://`/`sftp://` addresses (typed or bookmarked) no
+longer fetch inline — `_classify_address`/`_browser_navigate` route them to
+a new `_redirect_to_drive_source`, which switches to the Drive tab and
+connects there instead (fixing a latent bug as a side effect: `sftp://`
+previously fell through `_classify_address` into a literal web search for
+the whole URL string, since only `ftp://` was recognized). Reuses
+`RemoteHostModal` (generalized from the old `FtpLoginModal` — adds a
+protocol `RadioSet` + port field) pre-filled from the URL, rather than
+inventing session-scoped ephemeral picker state; its existing "save
+credentials" `Switch` does double duty as "save this host." `fetch_ftp`/
+`FtpAuthRequired`/the listing-`Document` builders are deleted from
+`fetchers.py` (moved into `drive_sources.py`, see above);
+`_browser_prompt_ftp_login`/`_browser_resume_ftp_login`/
+`_browser_ftp_retry_thread` deleted from `main.py`, fully superseded.
+
+**Two correctness fixes surfaced by generalizing beyond Google-only ids**:
+`main.py`'s Drive row lookups used to reverse `_mk_id`'s sanitized widget id
+back into a real file id via `cid[2:]` string-slicing — safe enough for
+Google's near-alnum opaque ids, but lossy for FTP/SSH's path-shaped ids
+(`_mk_id` collapses `/` and other punctuation to `-`, so `/a/b.txt` and
+`/a-b.txt` could collide). Replaced with `self._drive_items_by_cid`, a dict
+rebuilt every `_append_drive_items` call, at every lookup site
+(`_drive_open_selected`/`_drive_on_highlight`/`action_download_drive_file`).
+Separately, the preview's per-file cache (`drive_file_meta`/
+`drive_file_text`) used to key on a bare file id — fine with one source,
+but two different FTP/SSH hosts can share a path like `/readme.txt`; the
+cache CATEGORY string is now namespaced with `self.drive_backend.
+source_key` (matching this codebase's existing `f"thread_summary:
+{label_id}"` precedent for the same pattern), not the key itself, since an
+SSH id can itself contain `:`.
+
+Verified with an isolated `run_test` pilot (`platformdirs.user_config_dir`/
+`user_cache_dir`/`user_documents_dir` all redirected to a temp dir before
+import, per AGENTS.md §6) covering: Google-only regression after the
+`is_folder`/cid-lookup refactor, a source-picker switch to a mocked FTP
+host with preview/download/cache-namespacing assertions, an `sftp://`
+Browser-tab redirect landing on `RemoteHostModal` pre-filled from the URL,
+and `_parse_unix_ls_lines` against sample `ls -la` output including a
+filename with spaces. Caught and fixed one real bug along the way:
+`remote_creds.set()` (mirroring `ftp_creds.py`'s original `get`/`set`/
+`remove` naming) shadowed the builtin `set` within that module's own
+namespace, breaking `list_hosts`'s internal dedup — renamed to
+`set_credentials`. The app's own `_handle_exception` silently caught and
+logged the resulting `TypeError` during startup rather than crashing
+visibly, which looked exactly like a hang from the outside; worth
+remembering next time something "hangs" instead of erroring.
+
 ## [2026-07-17] — P2 batch: link underline, Drive preview split, Drive download
 
 Three P2 ROADMAP items, unblocked while the P1 bugs sit on live repros.

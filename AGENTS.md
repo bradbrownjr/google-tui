@@ -215,22 +215,44 @@ Other tabs:
   as `ThreadModal._find`). Searches only what the active view has loaded
   (`_cal_by_day`/`_cal_week_cells`), never a new fetch. See CHANGELOG
   `[2026-07-15]`.
-- **Drive tab**: `ListView#drive-list` (left) + live preview pane (right).
-  Preview updates on `ListView.Highlighted` (cursor movement), not just
-  `Selected` — metadata (who/what/where/when) always shown; text preview
-  only for `_is_previewable()` mime types. "Up" always reloads root, not the
-  true parent folder (pre-existing simplification, not fixed by the tab
-  redesign — see §7). Offline: reads `drive_file_meta`/`drive_file_text`
-  from cache instead of `gauth`; shows "not available offline" for a file
-  that was never viewed while online. A folder capped at `max_results=200`
-  (`gauth.list_drive`) gets a "↓ Load more files…" row at the bottom
-  (`LOAD_MORE_DRIVE_ID`, hidden while `/`-filtered) that fetches the next
-  page via `self._drive_next_page_token` — see CHANGELOG `[2026-07-16]`.
-  - `gauth.get_file_metadata(svc, file_id)` — added for the preview's
-    who/what/where/when: `fields="id,name,mimeType,size,owners,
-    modifiedTime,createdTime,parents,webViewLink"`.
+- **Drive tab**: source-agnostic since `[2026-07-18]` — a `Select#drive
+  -source-select` picker ("Google Drive" + saved FTP/SSH hosts + "+ Add
+  remote host…") switches `self.drive_backend` (a `drive_sources.
+  DriveBackend`: `GoogleDriveSource`/`FtpSource`/`SshSource`, see
+  `drive_sources.py`'s module docstring), and every call below goes through
+  it (`self.drive_backend.list_children`/`.get_metadata`/
+  `.read_preview_text`/`.download`) instead of `gauth.*` directly. Item
+  dicts are normalized (`is_folder: bool`, not a Google-mimeType sentinel
+  check) across all three sources. `ListView#drive-list` (left) + live
+  preview pane (right); rows are looked up by widget id via
+  `self._drive_items_by_cid` (built fresh in `_append_drive_items`), NOT by
+  reversing `_mk_id`'s sanitized id — that reversal is lossy for FTP/SSH ids
+  (full remote paths), even though it happened to work for Google's
+  near-alnum opaque ids. Preview updates on `ListView.Highlighted` (cursor
+  movement), not just `Selected` — metadata (who/what/where/when, with
+  Owner/Created omitted for sources that don't have the concept) always
+  shown; text preview only for `_is_previewable()` mime types. "Up"
+  navigates to the true parent folder via `self._drive_folder_stack`
+  (ancestor `(folder_id, path)` pairs), or the active source's
+  `root_id`/`root_path` at the top. Preview's per-file cache
+  (`drive_file_meta`/`drive_file_text`) is namespaced by
+  `self.drive_backend.source_key` in the cache CATEGORY string (not the
+  key) — two different FTP/SSH hosts can share a path like `/readme.txt`.
+  Offline: reads from cache instead of the backend — Google Drive only; FTP/
+  SSH sources are live-connect-on-demand with no offline story (same gap
+  Browser's old inline FTP browsing had). A folder capped at
+  `max_results=200` (Google only — FTP/SSH return everything in one MLSD/
+  `listdir_attr`/`find` call, no pagination) gets a "↓ Load more files…" row
+  at the bottom (`LOAD_MORE_DRIVE_ID`, hidden while `/`-filtered) that
+  fetches the next page via `self._drive_next_page_token` — see CHANGELOG
+  `[2026-07-16]`. `d` (`action_download_drive_file`) downloads the
+  highlighted file to `EXPORT_DIR` via `self.drive_backend.download()` —
+  online-gated on `self._online` (Google reachability) for the Google
+  backend only; FTP/SSH connect live regardless and surface their own
+  errors. See CHANGELOG `[2026-07-18]`.
 - **Browser tab** (`Ctrl+4`, P1 M2): address bar (`Input#browser-url`) + a
-  mode badge (`Static#browser-mode`: WEB/GOPHER/GEMINI/FTP/SEARCH) + a
+  mode badge (`Static#browser-mode`: WEB/GOPHER/GEMINI/SEARCH — FTP/SFTP
+  never reach this update, see below) + a
   `render.DocumentView` (`#browser-doc`) rendering whatever came back. A
   bookmarks `ListView` (`#browser-bookmarks`, between `#browser-bar` and
   `#browser-doc`, P3 2026-07-18 — was a flat row of starter-destination
@@ -252,23 +274,23 @@ Other tabs:
   navigation), `Ctrl+B` (`action_browser_bookmark_page` +
   `BookmarkLabelModal`) adds the current `#browser-url` as a new top-level
   bookmark. Address-bar submission is classified by `_classify_address()`
-  (omnibox heuristic: explicit `http(s)://`/`gopher://`/`gemini://`/`ftp://`
-  wins; a single dotted-word-with-no-space gets `https://` prepended;
-  everything else, including any text containing a space, is a web search
-  via `fetchers.run_search` — see below). Fetching lives in
-  `google_tui/fetchers.py` (`fetch_http`/`fetch_gopher`/`fetch_gemini`/
-  `fetch_ftp`/`run_search` and its three backends), never in `render.py`
-  (which stays I/O-free) or `main.py` directly — every `fetch_*`/search call
-  is blocking and run via `self.run_worker(fn, thread=True, exclusive=True,
-  group="browser-fetch")`, same fetch/apply split as the rest of the app.
-  `fetch_ftp` (P3, 2026-07-18, plain FTP only — SFTP/SCP still open, needs a
-  new `paramiko` dependency) tries anonymous login by default; a login
-  failure raises `FtpAuthRequired` (distinct from `BrowserFetchError`) so
-  `_browser_fetch_thread` can pop `FtpLoginModal` instead of just erroring,
-  and a successful login can be saved via `ftp_creds.py` (Fernet-encrypted
-  with the same key `Settings → General`'s cache encrypt-at-rest uses,
-  tracked in `GoogleTUI._encrypt_key`; stored in its own file, deliberately
-  NOT as `Cache` rows, so "Clear Cache" can't wipe a saved login). History is
+  (omnibox heuristic: explicit `http(s)://`/`gopher://`/`gemini://` fetches
+  inline; `ftp://`/`sftp://` does NOT — see below; a single dotted-word-with
+  -no-space gets `https://` prepended; everything else, including any text
+  containing a space, is a web search via `fetchers.run_search` — see
+  below). Fetching lives in `google_tui/fetchers.py` (`fetch_http`/
+  `fetch_gopher`/`fetch_gemini`/`run_search` and its three backends), never
+  in `render.py` (which stays I/O-free) or `main.py` directly — every
+  `fetch_*`/search call is blocking and run via `self.run_worker(fn,
+  thread=True, exclusive=True, group="browser-fetch")`, same fetch/apply
+  split as the rest of the app. `ftp://`/`sftp://` addresses (typed or
+  bookmarked) route to `_redirect_to_drive_source` instead, which switches
+  to the Drive tab and connects there — see the Drive tab bullet above and
+  `drive_sources.py`; remote-filesystem browsing lives in Drive now (proper
+  file list/preview/download), not as a Browser page (`[2026-07-18]`, moved
+  from the plain-FTP-only Browser support that shipped `[2026-07-18]`
+  earlier the same day — see ROADMAP's Done list for the supersession
+  note). History is
   an in-memory `list[BrowserHistoryEntry]` (already-fetched `Document`s, not
   just URLs — Back/Forward never re-fetches) — session-lifetime only, no
   SQLite cache category for page content. `Alt+Left/Right` are back/forward
@@ -400,8 +422,9 @@ Other tabs:
     Input+save-button pattern as the Nous/Routes API key rows) +
     `Select#settings-browser-start-page` (bookmarks-vs-home on first Browser
     tab visit each session, P3 2026-07-18 — backs `Settings.browser_start_page`)
-    + `ListView#settings-ftp-hosts-list` / `Button#settings-remove-ftp-host`
-    (saved FTP logins, view/remove only — see `ftp_creds.py`) +
+    + `ListView#settings-remote-hosts-list` / `Button#settings-remove-remote-host`
+    (saved FTP/SSH logins, view/remove only — added via the Drive tab's
+    source picker, see `remote_creds.py`) +
     `Switch#settings-encrypt-switch`
     (encrypt-at-rest on/off) + `RadioSet#settings-key-method` (passphrase
     vs. keyfile, hidden via `.hidden` CSS class when encryption is off) + a
@@ -974,10 +997,13 @@ user_cache_dir("google-tui")/cache.db`; `KEY_FILE_PATH` and `SETTINGS_PATH`
   `page_token`/`next_page_token` back the Drive tab's "Load more" row
   (`action_load_more_drive`); the `fields` mask explicitly includes
   `nextPageToken` — Drive's partial-response filtering drops it otherwise,
-  unlike Gmail's `threads().list` which returns it regardless.
+  unlike Gmail's `threads().list` which returns it regardless. Called via
+  `drive_sources.GoogleDriveSource.list_children`, not directly from
+  `main.py`, since `[2026-07-18]`'s source-agnostic Drive tab (see above).
 - `get_file_metadata(svc, file_id)` — `files.get` with an expanded `fields`
   string (`owners`, `createdTime`, `modifiedTime`, `parents`, ...); backs the
-  Drive tab's who/what/where/when preview panel.
+  Drive tab's who/what/where/when preview panel (via `GoogleDriveSource.
+  get_metadata`, same as above).
 - `read_drive_text(svc, file_id)` — returns `(name, mime, text)`; Google-native
   files exported via `files.export` (Docs→text/plain, Sheets→text/csv,
   Slides→text/plain), others fetched as bytes then decoded best-effort. Its

@@ -51,17 +51,6 @@ just checking it off here, so ROADMAP.md only ever shows what's still open.
   `messages().get(format="raw")` to see its actual MIME tree, then come
   back with that before writing a fix.
 
-## P3 — Browser
-
-- [ ] **SFTP/SCP** — the FTP/SFTP/SCP browser item shipped `[2026-07-18]`
-  scoped down to plain FTP only (see Done below); SFTP/SCP still need a new
-  dependency (`paramiko` — nothing like it is in `pyproject.toml` today) and
-  are unbuilt. Also still open: **download an FTP file to the local
-  filesystem** — no such action exists yet; `fetch_ftp` (`fetchers.py`) only
-  reads for in-app preview. The Drive-side equivalent shipped `[2026-07-17]`
-  (see Done below) — same `EXPORT_DIR`/no-destination-prompt pattern would
-  apply here.
-
 ## P4 — Nice-to-have
 
 - [ ] **Week view sub-hour granularity** (30/15-minute rows) — the current
@@ -156,6 +145,32 @@ just checking it off here, so ROADMAP.md only ever shows what's still open.
 
 ## Done
 
+- [x] **Unified Drive-tab sources: Google Drive + FTP + SSH (SFTP/SCP)**
+  (`[2026-07-18]`) — the Drive tab is source-agnostic now, via a new
+  `Select#drive-source-select` picker ("Google Drive" + any saved FTP/SSH
+  hosts + "+ Add remote host…"). New `drive_sources.py` `DriveBackend`
+  abstraction (`GoogleDriveSource`/`FtpSource`/`SshSource`) normalizes every
+  source to the shape the existing file list/preview/download UI already
+  expected — closes the SFTP/SCP item below AND the still-open
+  "download an FTP file" item, since download is source-agnostic too.
+  `SshSource` tries the SFTP subsystem first (real mtime/size, true
+  partial-read preview); only if a server refuses the subsystem outright
+  does it fall back, for that connection's lifetime, to an exec-channel
+  mode (`find -printf`, falling back further to `ls -la`, for listing;
+  `head -c` for preview; the new `scp` package's `SCPClient` for download —
+  best-effort against varied remote shells, not exhaustively tested). New
+  deps: `paramiko`, `scp`. `ftp_creds.py` generalized into `remote_creds.py`
+  (adds protocol/port, composite `source_key`, backward-compatible with
+  existing saved FTP logins). Browser's `ftp://` handling is fully
+  reassigned: an `ftp://`/`sftp://` address (typed or bookmarked) now
+  switches to the Drive tab and connects there (`RemoteHostModal`,
+  generalized from `FtpLoginModal`) instead of fetching inline — fixes a
+  latent bug too, where `sftp://` previously fell through `_classify_address`
+  into a literal web search for the whole URL string. Also fixed two
+  correctness gaps the old Google-only code got away with: `_drive_items_by_
+  cid` replaces a lossy `cid[2:]`-reversal id lookup (broke for FTP/SSH's
+  path-shaped ids), and Drive's preview cache is now namespaced by source
+  (two different hosts can share a path like `/readme.txt`). See CHANGELOG.
 - [x] **P2 batch: link underline, Drive preview split, Drive download**
   (`[2026-07-17]`) — dropped the underline from `render._LINK_STYLE`
   (now just `bright_cyan`); split the Drive preview's binary/image message
@@ -173,7 +188,10 @@ just checking it off here, so ROADMAP.md only ever shows what's still open.
   cache's encrypt-at-rest uses, in their own file — not cache rows — so
   "Clear Cache" can't wipe them; new `ftp_creds.py`). Settings → General
   gained a "Saved FTP hosts" view/remove list. SFTP/SCP deliberately
-  deferred — still open above. See CHANGELOG.
+  deferred. **Superseded `[2026-07-18]`** by the unified Drive-tab sources
+  entry above — FTP browsing moved from Browser into Drive, `fetch_ftp`/
+  `FtpLoginModal`/`ftp_creds.py` all replaced by `drive_sources.py`/
+  `RemoteHostModal`/`remote_creds.py`. See CHANGELOG.
 - [x] **Browser bookmarks: real list view with folders, `H`/`B`/`Ctrl+B`,
   start-page setting** (`[2026-07-18]`) — the flat 4-`Button` starter row is
   now a `ListView` backed by persisted, user-editable `Settings.

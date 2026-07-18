@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import calendar
 import datetime as dt
-import ftplib
 import hashlib
 import re
 import socket
@@ -294,168 +293,11 @@ def fetch_gemini(url: str, tofu: GeminiTofuStore, timeout: int = 15, _hop: int =
     raise BrowserFetchError(f"Unknown gemini status: {status}")
 
 
-# ---------------------------------------------------------------------------
-# FTP (plain FTP only — no SFTP/SCP yet, see ROADMAP P3)
-# ---------------------------------------------------------------------------
-
-FTP_DEFAULT_PORT = 21
-# A file preview is read into memory in one shot (ftplib has no streaming
-# Document reader) and capped the same way Drive's text preview is bounded —
-# see main.py's _is_previewable / gauth's text-preview size cap for the
-# precedent. Binary files will just render as replacement-char garbage past
-# whatever's readable as UTF-8; there's no binary/text sniffing here yet
-# (same gap as ROADMAP's P2 Drive-preview item, not solved for FTP either).
-_FTP_MAX_PREVIEW_BYTES = 200_000
-
-
-class FtpAuthRequired(Exception):
-    """Login failed (anonymous or with whatever credentials were supplied).
-    Caught by main.py to pop a login-prompt modal — distinct from
-    BrowserFetchError so that case can be handled interactively instead of
-    just shown as an error toast.
-    """
-
-    def __init__(self, host: str, port: int, detail: str):
-        self.host = host
-        self.port = port
-        self.detail = detail
-        super().__init__(f"FTP login to {host}:{port} failed: {detail}")
-
-
-def fetch_ftp(url: str, credentials: tuple[str, str] | None = None, timeout: int = 15) -> render.Document:
-    """Browse (list) an FTP directory, or preview a file, as a
-    ``render.Document`` — mirrors ``fetch_gopher``'s menu-listing shape.
-
-    Anonymous login is tried when ``credentials`` is None and the URL itself
-    carries no ``user:pass@host`` — a login failure either way raises
-    ``FtpAuthRequired`` rather than ``BrowserFetchError`` so the caller can
-    offer a login prompt instead of just failing.
-    """
-    parsed = urlparse(url)
-    host = parsed.hostname
-    if not host:
-        raise BrowserFetchError(f"Invalid ftp URL: {url}")
-    port = parsed.port or FTP_DEFAULT_PORT
-    path = unquote(parsed.path) or "/"
-    user = parsed.username or (credentials[0] if credentials else "anonymous")
-    passwd = parsed.password or (credentials[1] if credentials else "anonymous@")
-
-    ftp = ftplib.FTP()
-    try:
-        ftp.connect(host, port, timeout=timeout)
-    except OSError as e:
-        raise BrowserFetchError(f"FTP connection to {host}:{port} failed: {e}") from e
-    try:
-        ftp.login(user, passwd)
-    except ftplib.error_perm as e:
-        try:
-            ftp.close()
-        except Exception:
-            pass
-        raise FtpAuthRequired(host, port, str(e)) from e
-
-    try:
-        try:
-            ftp.cwd(path)
-            is_dir = True
-        except ftplib.error_perm:
-            is_dir = False
-        if is_dir:
-            doc = _ftp_listing_document(ftp, host, port, path, url)
-        else:
-            doc = _ftp_file_document(ftp, path, url)
-    except ftplib.all_errors as e:
-        raise BrowserFetchError(f"FTP error: {e}") from e
-    finally:
-        try:
-            ftp.quit()
-        except Exception:
-            ftp.close()
-    return doc
-
-
-def _parse_unix_listing(ftp) -> list[tuple[str, dict]]:
-    """Parse classic ``LIST`` output (``ls -l``-style — the format nearly
-    every FTPD emits) into the same ``(name, facts)`` shape ``FTP.mlsd()``
-    yields, just with only "type" and (for files) "size" filled in.
-    Non-conforming lines (e.g. a Windows/MS-DOS-style listing, which uses a
-    different format entirely) are silently skipped rather than guessed at.
-    """
-    lines: list[str] = []
-    ftp.retrlines("LIST", lines.append)
-    entries: list[tuple[str, dict]] = []
-    for line in lines:
-        parts = line.split(None, 8)
-        if len(parts) < 9 or parts[0][:1] not in "dl-":
-            continue
-        perms, size_field, name = parts[0], parts[4], parts[8]
-        # A symlink ("l...") could point at either a file or a directory —
-        # with no cheap way to tell from LIST output alone, treat it as a
-        # file (the more common case for a symlink in an FTP archive tree).
-        facts = {"type": "dir" if perms.startswith("d") else "file"}
-        if not perms.startswith("d") and size_field.isdigit():
-            facts["size"] = int(size_field)
-        entries.append((name, facts))
-    return entries
-
-
-def _ftp_listing_document(ftp, host: str, port: int, path: str, source_url: str) -> render.Document:
-    norm_path = path if path.endswith("/") else path + "/"
-    blocks: list[render.Block] = []
-    links: list[render.Link] = []
-    n = 0
-    try:
-        entries = sorted(ftp.mlsd(), key=lambda e: e[0])
-    except Exception:
-        # MLSD (RFC 3659, 2007) is far from universal — confirmed live
-        # against ftp.gnu.org, which refuses it ("500 Unknown command").
-        # Fall back to the classic Unix `ls -l`-style LIST output every
-        # common FTPD (vsftpd/proftpd/pure-ftpd/...) understands, so
-        # directories vs. files are still distinguishable. A bare NLST
-        # fallback would show everything as a file (no type info at all) —
-        # tried that first, it's wrong often enough to not ship.
-        entries = sorted(_parse_unix_listing(ftp), key=lambda e: e[0])
-    for name, facts in entries:
-        if name in (".", ".."):
-            continue
-        kind = facts.get("type", "file")
-        n += 1
-        entry_path = norm_path + name + ("/" if kind == "dir" else "")
-        link_url = f"ftp://{host}:{port}{entry_path}"
-        size = facts.get("size")
-        size_txt = f"  ({size} bytes)" if size and kind != "dir" else ""
-        link = render.Link(number=n, url=link_url, text=name, kind="content")
-        links.append(link)
-        label = "DIR " if kind == "dir" else "FILE"
-        blocks.append(render.Block(kind="menu_item", text=f"[{n}] {label} {name}{size_txt}", link=link))
-    if not blocks:
-        blocks.append(render.Block(kind="paragraph", text="(empty directory)"))
-    return render.Document(title=f"ftp://{host}{norm_path}", blocks=blocks, links=links, source_url=source_url)
-
-
-def _ftp_file_document(ftp, path: str, source_url: str) -> render.Document:
-    chunks: list[bytes] = []
-    total = 0
-
-    def _collect(data: bytes) -> None:
-        nonlocal total
-        total += len(data)
-        if total <= _FTP_MAX_PREVIEW_BYTES:
-            chunks.append(data)
-
-    try:
-        ftp.retrbinary(f"RETR {path}", _collect)
-    except ftplib.error_perm as e:
-        raise BrowserFetchError(f"Cannot retrieve {path}: {e}") from e
-    text = b"".join(chunks).decode("utf-8", errors="replace")
-    blocks = [render.Block(kind="paragraph", text=line) for line in text.split("\n") if line.strip()]
-    if total > _FTP_MAX_PREVIEW_BYTES:
-        blocks.append(render.Block(
-            kind="paragraph",
-            text=f"[truncated — file exceeds the {_FTP_MAX_PREVIEW_BYTES:,}-byte preview limit]"))
-    if not blocks:
-        blocks.append(render.Block(kind="paragraph", text="(empty file)"))
-    return render.Document(title=path, blocks=blocks, source_url=source_url)
+# FTP (and SFTP/SCP) browsing used to live here for the Browser tab — moved
+# to google_tui/drive_sources.py and reassigned to the Drive tab (source
+# picker: Google Drive / FTP / SSH), since "browse folders, preview,
+# download" is Drive's model, not Browser's "follow hypertext links" one.
+# See ROADMAP/AGENTS.md and drive_sources.py's module docstring.
 
 
 # ---------------------------------------------------------------------------

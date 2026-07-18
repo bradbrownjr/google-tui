@@ -369,35 +369,44 @@ CALENDAR TAB
                 title + date + start/end time, or an all-day toggle
 
 DRIVE TAB
+  Source picker  A Select at the top of the tab: "Google Drive" plus any
+                 saved FTP/SSH (SFTP, falling back to legacy SCP if a
+                 server disables the SFTP subsystem) hosts, plus "+ Add
+                 remote host…" to connect a new one. Switching sources
+                 reloads the file list/preview/download against whichever
+                 backend is selected — everything below works the same
+                 regardless of source.
   Up/Down       Move selection — preview pane updates live
   Enter/click   Open a folder, or re-load a file's preview
   / search      Live filter by name over the CURRENT folder's file list
-                (not the whole Drive tree)
+                (not the whole tree)
   p             Toggle the preview/info column — hide it to give the file
                 list the full width
   d             Download the selected file to Documents/google-tui/ (a
                 Google-native Doc/Sheet/Slide/Drawing is exported first,
                 same conversion the text preview uses); no-ops on folders
-                or offline
-  Alt+Right     Move focus into the preview column (Alt+Left back to the
-                file list) once it's visible
+                or offline (Google source only — FTP/SSH connect live
+                regardless of Google's reachability)
 
 BROWSER TAB
   Enter (address bar)    Load URL, or run a search (bare text w/ no scheme searches)
   Bookmarks list         A folder-nested list (arrow keys + Enter to descend,
                          "up" row to go back) of saved destinations across
-                         web/Gopher/Gemini/FTP, color-coded by protocol. Shown
-                         on first Browser-tab visit if Settings -> General's
-                         start page is "Bookmarks" (the default); B re-shows
-                         it any time; Ctrl+B saves the current page into it.
+                         web/Gopher/Gemini/FTP/SSH, color-coded by protocol.
+                         Shown on first Browser-tab visit if Settings ->
+                         General's start page is "Bookmarks" (the default);
+                         B re-shows it any time; Ctrl+B saves the current
+                         page into it.
   Alt+Left / Alt+Right   Back / forward through this session's history
   H                      Go to your configured home page (Settings -> General)
   Tab                    Toggle focus: address bar <-> page content
   0-9 then Enter (page)  Jump to numbered link
   Esc (page)             Cancel a pending number entry
-  ftp:// URL             Browse an FTP site (anonymous by default; prompts
-                         for a login if that's refused, with an option to
-                         save it). SFTP/SCP aren't supported yet.
+  ftp:// / sftp:// URL   Switches to the Drive tab instead of loading inline
+                         — remote-filesystem browsing (FTP/SSH) lives there
+                         now, with a proper file list/preview/download, not
+                         as a Browser page. Prompts to connect (and
+                         optionally save) the host if it isn't saved yet.
 
 NEWS TAB
   Enter/Space   Open the selected entry (rendered via the shared Document view)

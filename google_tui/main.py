@@ -52,7 +52,8 @@ from . import ask
 from .ask import needs_agent
 from . import setup_instructions
 from . import fetchers
-from . import ftp_creds
+from . import drive_sources
+from . import remote_creds
 from . import render
 from . import updater
 from .render import DocumentView
@@ -879,18 +880,27 @@ def _append_today_event_items(event_list, events) -> None:
     event_list.extend(items)
 
 
-def _append_drive_items(drive_list, files, path: str) -> None:
+def _append_drive_items(drive_list, files, path: str, items_by_cid: dict) -> None:
     # Same extend()-once rationale as _append_email_items/_append_task_items/
     # _append_today_event_items above. The "up" row is NOT part of the filterable
     # file list — it's chrome, always present (except at "/") regardless of
     # what #drive-search's current query is, same as it always was before
     # search existed.
+    #
+    # items_by_cid is populated here (caller clears it first) rather than
+    # reversing _mk_id's sanitized widget id back into a real id via string
+    # slicing: _mk_id collapses every non-alnum/-/_ character to "-", which
+    # is lossy for FTP/SSH ids (full remote paths -- "/a/b.txt" and
+    # "/a-b.txt" sanitize to the same id). Looking the real item up by cid
+    # through this dict instead is correct for every source.
     items = []
     if path != "/":
         items.append(ListItem(Label("📂 .. (up)"), id="d-up"))
     for f in files:
-        icon = "📁" if f["mimeType"] == "application/vnd.google-apps.folder" else "📄"
-        items.append(ListItem(Label(f"{icon} {f['name'][:50]}"), id=_mk_id("d", f["id"])))
+        icon = "📁" if f["is_folder"] else "📄"
+        cid = _mk_id("d", f["id"])
+        items.append(ListItem(Label(f"{icon} {f['name'][:50]}"), id=cid))
+        items_by_cid[cid] = f
     drive_list.extend(items)
 
 
@@ -1031,12 +1041,15 @@ _BARE_DOMAIN_RE = re.compile(
 def _classify_address(raw: str) -> tuple[str, str]:
     """Omnibox-style classification of Browser-tab address-bar input.
 
-    -> (mode, target) where mode is 'http'|'gopher'|'gemini'|'search'.
-    An explicit scheme always wins; a single dotted-word-with-no-space is
-    treated as a bare domain and gets "https://" prepended; everything else
-    (including any input containing a space) is a web search via
-    ``fetchers.run_search``. ``search:`` is an explicit escape hatch for the
-    rare case of wanting to search for literally "example.com".
+    -> (mode, target) where mode is 'http'|'gopher'|'gemini'|'ftp'|'sftp'|
+    'search'. An explicit scheme always wins; a single dotted-word-with-no
+    -space is treated as a bare domain and gets "https://" prepended;
+    everything else (including any input containing a space) is a web
+    search via ``fetchers.run_search``. ``search:`` is an explicit escape
+    hatch for the rare case of wanting to search for literally
+    "example.com". ftp/sftp don't fetch inline (see
+    GoogleTUI._redirect_to_drive_source) — remote-filesystem browsing lives
+    in the Drive tab now, not Browser.
     """
     raw = raw.strip()
     if raw.startswith(("http://", "https://")):
@@ -1047,6 +1060,12 @@ def _classify_address(raw: str) -> tuple[str, str]:
         return "gemini", raw
     if raw.startswith("ftp://"):
         return "ftp", raw
+    if raw.startswith("sftp://"):
+        # Previously fell through to the bare-domain regex below (which
+        # requires no "://", so never matched) and got silently treated as
+        # a literal web search for the whole URL string — a latent bug,
+        # fixed as a side effect of adding real sftp:// support.
+        return "sftp", raw
     if raw.startswith("search:"):
         return "search", raw[len("search:"):].strip()
     if " " not in raw and _BARE_DOMAIN_RE.match(raw):
@@ -1063,6 +1082,7 @@ _BOOKMARK_PROTOCOL_STYLE = {
     "gopher": ("🕳", "magenta"),
     "gemini": ("♊", "green"),
     "ftp": ("📁", "yellow"),
+    "sftp": ("🔒", "yellow"),
 }
 
 
@@ -1106,6 +1126,40 @@ def _initial_label_select_options(default_label_id: str) -> list[tuple[str, str]
     if default_label_id not in ("ALL", "INBOX"):
         options.append((default_label_id, default_label_id))
     return options
+
+
+_DRIVE_ADD_HOST_VALUE = "__add__"
+_DRIVE_SOURCE_SEED_OPTIONS = [("Google Drive", "google"), ("+ Add remote host…", _DRIVE_ADD_HOST_VALUE)]
+
+
+def _drive_source_select_options(key: bytes | None,
+                                  active: "drive_sources.DriveBackend | None" = None) -> list[tuple[str, str]]:
+    """Options for `#drive-source-select`: Google Drive, one per saved
+    FTP/SSH host (value = the same source_key drive_sources.build_source's
+    callers use), then the add-host sentinel. `active` (the currently
+    connected backend, which may be an unsaved ephemeral connection made via
+    "+ Add remote host…" with "Save this host" off) is included even if it
+    has no saved entry, so the Select can validly display it."""
+    options = [("Google Drive", "google")]
+    seen = {"google"}
+    for protocol, host, port in remote_creds.list_hosts(key):
+        source_key = drive_sources.source_key_for(protocol, host, port)
+        if source_key not in seen:
+            options.append((f"{protocol}://{host}", source_key))
+            seen.add(source_key)
+    if active is not None and active.source_key not in seen:
+        options.append((active.label, active.source_key))
+    options.append(("+ Add remote host…", _DRIVE_ADD_HOST_VALUE))
+    return options
+
+
+def _split_source_key(source_key: str) -> tuple[str, str, int]:
+    """"protocol:host:port" -> (protocol, host, port) -- the inverse of
+    drive_sources.source_key_for. Doesn't handle a bare (unbracketed) IPv6
+    host, which would itself contain extra colons -- out of scope for v1."""
+    protocol, rest = source_key.split(":", 1)
+    host, port_s = rest.rsplit(":", 1)
+    return protocol, host, int(port_s)
 
 
 def _label_select_options(labels: list[dict]) -> list[tuple[str, str]]:
@@ -1232,7 +1286,7 @@ class GoogleTUI(App):
     #help-bar { height: auto; background: $panel; padding: 0 1; }
     #help-context { color: $text; }
     #help-global { color: $text-muted; }
-    #settings-ftp-hosts-list { height: auto; max-height: 8; border: round $panel-darken-1; margin-bottom: 1; }
+    #settings-remote-hosts-list { height: auto; max-height: 8; border: round $panel-darken-1; margin-bottom: 1; }
     .settings-row { height: 3; align: left middle; }
     .settings-row Label { width: auto; margin-right: 2; }
     #settings-nous-key { width: 40; margin-right: 2; }
@@ -1420,6 +1474,20 @@ class GoogleTUI(App):
         self._drive_preview_timer = None
         self._drive_preview_gen = 0
         self._drive_preview_cache: dict[str, tuple[str, str]] = {}
+        # Which source (Google Drive / a saved FTP or SSH host) the Drive tab
+        # is currently browsing -- lazily defaults to Google Drive on first
+        # access (drive_backend property below), same lazy-init idiom as
+        # self.svc, so there's no startup-ordering dependency on when
+        # self.svc itself becomes available.
+        self._drive_backend: "drive_sources.DriveBackend | None" = None
+        # cid -> normalized item dict for the CURRENTLY RENDERED #drive-list
+        # rows, rebuilt every _append_drive_items call. Needed because
+        # _mk_id's sanitizing (non-alnum/-/_ -> "-") is lossy for FTP/SSH ids
+        # (full remote paths, e.g. "/a/b.txt" and "/a-b.txt" collide) -- a
+        # plain cid[2:] reversal, safe enough for Google's near-alnum opaque
+        # ids, is NOT safe in general. Look files up by cid via this dict
+        # instead everywhere a row's real item is needed.
+        self._drive_items_by_cid: dict[str, dict] = {}
         self.settings: Settings = load_settings()
         self._current_label_id = self.settings.default_label_id
         # Full Gmail label list from the last _apply_labels call — backs both
@@ -1461,9 +1529,10 @@ class GoogleTUI(App):
         self._browser_hist_pos: int = -1
         self._browser_tofu: fetchers.GeminiTofuStore | None = None
         # Mirrors whatever key self._cache was last constructed/rekeyed with
-        # (None if encrypt-at-rest is off) — kept alongside it so ftp_creds.py
-        # can reuse the SAME derived key without re-deriving/re-prompting,
-        # without ftp_creds needing to know anything about Cache/UnlockModal.
+        # (None if encrypt-at-rest is off) — kept alongside it so
+        # remote_creds.py can reuse the SAME derived key without
+        # re-deriving/re-prompting, without remote_creds needing to know
+        # anything about Cache/UnlockModal.
         self._encrypt_key: bytes | None = None
         # True once the Browser tab's first-activation-this-session logic
         # (auto-navigate home, or just render the bookmarks list) has run —
@@ -1586,6 +1655,12 @@ class GoogleTUI(App):
     @cached_property
     def svc(self):
         return gauth.services()
+
+    @property
+    def drive_backend(self) -> "drive_sources.DriveBackend":
+        if self._drive_backend is None:
+            self._drive_backend = drive_sources.GoogleDriveSource(self.svc)
+        return self._drive_backend
 
     # ---- pane helpers (Mail tab) ----
     def _pane_title_row(self, text: str, num: int, *, text_id: str | None = None) -> Horizontal:
@@ -1908,6 +1983,15 @@ class GoogleTUI(App):
                             yield DataTable(id="cal-week-grid")
             with TabPane(_tab_label("Drive", 4, self.settings.ascii_mode), id="tab-drive"):
                 with Container(id="drive-section", classes="section"):
+                    # Seeded with just Google Drive + the add-host sentinel at
+                    # compose time -- self._encrypt_key isn't set yet this
+                    # early (needed to decrypt any saved hosts), so saved
+                    # FTP/SSH entries are filled in by
+                    # _refresh_drive_source_select() once unlock completes,
+                    # same "compose seeds a placeholder, a later _apply_*
+                    # repopulates it" pattern #email-label-select uses.
+                    yield Select(_DRIVE_SOURCE_SEED_OPTIONS, value="google",
+                                 allow_blank=False, id="drive-source-select")
                     yield Label("/", id="drive-path", classes="muted")
                     with Horizontal(id="drive-search-bar", classes="btnrow hidden"):
                         yield Input(placeholder="Search this folder (name)… (/)", id="drive-search")
@@ -2020,13 +2104,13 @@ class GoogleTUI(App):
                                         allow_blank=False, id="settings-browser-start-page",
                                     )
                                 yield Static(
-                                    "Saved FTP logins (added via the login prompt when an FTP site "
-                                    "refuses an anonymous connection):",
+                                    "Saved remote hosts (FTP/SSH — added from the Drive tab's "
+                                    "source picker, \"+ Add remote host…\"):",
                                     classes="muted",
                                 )
-                                yield ListView(id="settings-ftp-hosts-list")
+                                yield ListView(id="settings-remote-hosts-list")
                                 with Horizontal(classes="btnrow"):
-                                    yield Button("Remove selected host", id="settings-remove-ftp-host")
+                                    yield Button("Remove selected host", id="settings-remove-remote-host")
                                 with Horizontal(classes="settings-row"):
                                     yield Label("Encrypt local cache at rest")
                                     yield Switch(value=self.settings.encrypt_at_rest, id="settings-encrypt-switch")
@@ -2269,6 +2353,10 @@ class GoogleTUI(App):
         self._browser_tofu = fetchers.GeminiTofuStore(self._cache)
         if reset:
             self._cache.clear_all()
+        # Compose-time couldn't decrypt any saved FTP/SSH hosts (no key yet)
+        # -- now that self._encrypt_key is real, repopulate the Drive-tab
+        # source picker with whatever's actually saved.
+        self._refresh_drive_source_select()
         # Enforce the retention window / size cap once per launch, quietly and
         # off-thread. Deliberately AFTER _load_from_cache paints: pruning is
         # housekeeping, and it should never be the thing standing between you
@@ -2728,6 +2816,15 @@ class GoogleTUI(App):
             self.settings.browser_start_page = event.value
             save_settings(self.settings)
             return
+        if event.select.id == "drive-source-select":
+            value = event.value
+            if value == self.drive_backend.source_key:
+                return  # mount-time echo, or re-selecting the active source
+            if value == _DRIVE_ADD_HOST_VALUE:
+                self.push_screen(RemoteHostModal(), self._on_remote_host_modal_result)
+                return
+            self._drive_switch_source(value)
+            return
         if event.select.id != "email-label-select":
             return
         new_id = event.value
@@ -3004,7 +3101,7 @@ class GoogleTUI(App):
             self.query_one("#nav-origin").focus()
         elif tab_id == "tab-settings":
             self._update_settings_cache_info()
-            self._refresh_ftp_hosts_list()
+            self._refresh_remote_hosts_list()
             self.query_one("#settings-encrypt-switch").focus()
         elif tab_id == "tab-contacts":
             self.query_one("#contacts-search").focus()
@@ -4193,6 +4290,13 @@ class GoogleTUI(App):
         if push_history:
             self._browser_capture_scroll()
         mode, target = _classify_address(raw)
+        if mode in ("ftp", "sftp"):
+            # Remote-filesystem browsing lives in the Drive tab now (source
+            # picker), not Browser — see _redirect_to_drive_source. No
+            # worker spun up here; that function does its own fetch/connect
+            # via the Drive tab's existing machinery.
+            self._redirect_to_drive_source(mode, target)
+            return
         display_url = target if mode != "search" else raw
         try:
             self.query_one("#browser-mode", Static).update(mode.upper())
@@ -4204,6 +4308,42 @@ class GoogleTUI(App):
             thread=True, exclusive=True, group="browser-fetch",
         )
 
+    def _redirect_to_drive_source(self, mode: str, url: str) -> None:
+        """An ftp://sftp:// address typed in the Browser tab (or clicked
+        from a bookmark) switches to the Drive tab instead of fetching
+        inline. Reuses RemoteHostModal (pre-filled from the URL) rather than
+        inventing session-scoped ephemeral picker state; its existing "save"
+        Switch does double duty as "save this host." Note: unlike the old
+        Browser-tab ftp:// flow, URL-embedded credentials (user:pass@host)
+        no longer silently override a differing saved login for the same
+        host — a rare-enough case (bookmarks essentially never embed a real
+        password) that RemoteHostModal's pre-filled username + one extra
+        keystroke for the password is an acceptable trade for not needing a
+        second credential-precedence rule.
+        """
+        try:
+            self.query_one("#browser-status", Static).update("")
+        except Exception:
+            pass
+        if mode == "ftp":
+            host, port, path, username, _ = drive_sources.parse_ftp_url(url)
+            protocol = "ftp"
+        else:
+            host, port, path, username, _ = drive_sources.parse_sftp_url(url)
+            protocol = "ssh"
+        self._goto_tab("tab-drive")
+        saved = remote_creds.get(self._encrypt_key, protocol, host, port)
+        if saved is not None:
+            saved_username, saved_password = saved
+            self.call_after_refresh(self._drive_connect_new_source, protocol, host, port,
+                                     saved_username, saved_password, path)
+            return
+        self.call_after_refresh(
+            self.push_screen,
+            RemoteHostModal(protocol=protocol, host=host, port=port, username=username),
+            lambda result: self._on_remote_host_modal_result(result, path),
+        )
+
     def _browser_fetch_dispatch(self, mode: str, target: str) -> render.Document:
         if mode == "http":
             return fetchers.fetch_http(target, ascii_mode=self.settings.ascii_mode)
@@ -4211,10 +4351,6 @@ class GoogleTUI(App):
             return fetchers.fetch_gopher(target)
         if mode == "gemini":
             return fetchers.fetch_gemini(target, self._browser_tofu)
-        if mode == "ftp":
-            host = urllib.parse.urlparse(target).hostname or ""
-            saved = ftp_creds.get(self._encrypt_key, host)
-            return fetchers.fetch_ftp(target, credentials=saved)
         return fetchers.run_search(target, self.settings)
 
     def _browser_fetch_thread(self, mode: str, target: str, display_url: str, push_history: bool) -> None:
@@ -4225,9 +4361,6 @@ class GoogleTUI(App):
             return
         except fetchers.GeminiRedirectConfirm as e:
             self.call_from_thread(self._browser_confirm_redirect, e, push_history)
-            return
-        except fetchers.FtpAuthRequired as e:
-            self.call_from_thread(self._browser_prompt_ftp_login, e, target, display_url, push_history)
             return
         except fetchers.BrowserFetchError as e:
             self.call_from_thread(self._browser_apply_error, str(e))
@@ -4299,45 +4432,6 @@ class GoogleTUI(App):
             f"{exc.url}?{urllib.parse.quote(result, safe='')}",
             push_history=push_history,
         )
-
-    def _browser_prompt_ftp_login(self, exc: fetchers.FtpAuthRequired, target: str, display_url: str,
-                                   push_history: bool) -> None:
-        try:
-            self.query_one("#browser-status", Static).update("")
-        except Exception:
-            pass
-        self.push_screen(
-            FtpLoginModal(exc.host),
-            lambda result: self._browser_resume_ftp_login(target, display_url, push_history, result),
-        )
-
-    def _browser_resume_ftp_login(self, target: str, display_url: str, push_history: bool, result) -> None:
-        if result is None:
-            self.notify("Cancelled", severity="warning")
-            return
-        username, password, save = result
-        host = urllib.parse.urlparse(target).hostname or ""
-        if save and host:
-            ftp_creds.set(self._encrypt_key, host, username, password)
-        self.run_worker(
-            lambda: self._browser_ftp_retry_thread(target, display_url, push_history, username, password),
-            thread=True, exclusive=True, group="browser-fetch",
-        )
-
-    def _browser_ftp_retry_thread(self, target: str, display_url: str, push_history: bool,
-                                   username: str, password: str) -> None:
-        try:
-            doc = fetchers.fetch_ftp(target, credentials=(username, password))
-        except fetchers.FtpAuthRequired as e:
-            self.call_from_thread(self._browser_apply_error, f"FTP login to {e.host} failed: {e.detail}")
-            return
-        except fetchers.BrowserFetchError as e:
-            self.call_from_thread(self._browser_apply_error, str(e))
-            return
-        except Exception as e:
-            self.call_from_thread(self._browser_apply_error, f"Unexpected error: {e}")
-            return
-        self.call_from_thread(self._browser_apply_document, doc, "ftp", display_url, push_history)
 
     def _browser_confirm_redirect(self, exc: fetchers.GeminiRedirectConfirm, push_history: bool) -> None:
         try:
@@ -4845,14 +4939,18 @@ class GoogleTUI(App):
         cid = item.id or "" if item is not None else ""
         if not cid.startswith("d-") or cid == "d-up":
             return
-        fid = cid[2:]
-        f = next((x for x in self._drive_files if x["id"] == fid), None)
+        f = self._drive_items_by_cid.get(cid)
         if f is None:
             return
-        if f["mimeType"] == "application/vnd.google-apps.folder":
+        if f["is_folder"]:
             self.notify("Select a file, not a folder, to download.", severity="warning")
             return
-        if not self._online:
+        # self._online specifically tracks GOOGLE reachability (AGENTS.md
+        # §1a) -- only gate on it for the Google backend. FTP/SSH connect
+        # live per-call regardless of Google's status; a real connection
+        # failure there surfaces through _drive_download_thread's own
+        # try/except instead.
+        if self.drive_backend.source_key == "google" and not self._online:
             self.notify("Downloading needs a network connection.", severity="warning")
             return
         self.notify(f"Downloading {f['name']}…")
@@ -4861,7 +4959,7 @@ class GoogleTUI(App):
 
     def _drive_download_thread(self, f: dict) -> None:
         try:
-            name, data = gauth.download_drive_file(self.svc, f["id"])
+            name, data = self.drive_backend.download(f["id"])
             EXPORT_DIR.mkdir(parents=True, exist_ok=True)
             path = EXPORT_DIR / name
             path.write_bytes(data)
@@ -4869,6 +4967,60 @@ class GoogleTUI(App):
             self.call_from_thread(self.notify, f"Download failed: {e}", severity="error")
             return
         self.call_from_thread(self.notify, f"Downloaded to {path}")
+
+    # ---- Drive-tab source picker (Google Drive / FTP / SSH) ----
+    def _drive_switch_source(self, source_key: str) -> None:
+        if source_key == "google":
+            self._set_drive_backend(drive_sources.GoogleDriveSource(self.svc))
+            return
+        protocol, host, port = _split_source_key(source_key)
+        saved = remote_creds.get(self._encrypt_key, protocol, host, port)
+        if saved is None:
+            self.notify("No saved credentials for this host.", severity="error")
+            self._refresh_drive_source_select()  # snap the Select back
+            return
+        username, password = saved
+        self._set_drive_backend(drive_sources.build_source(protocol, host, port, username, password))
+
+    def _set_drive_backend(self, backend: "drive_sources.DriveBackend", *,
+                            folder_id: str | None = None, path: str | None = None) -> None:
+        old = self._drive_backend
+        if old is not None and old is not backend:
+            old.close()
+        self._drive_backend = backend
+        self._drive_folder_stack = []
+        self._drive_preview_cache.clear()
+        self._drive_load(folder_id if folder_id is not None else backend.root_id,
+                          path if path is not None else backend.root_path)
+
+    def _on_remote_host_modal_result(self, result, path: str | None = None) -> None:
+        # push_screen's callback fires BEFORE the modal is actually popped
+        # off the stack (§2's NOTE) — defer past it like every other
+        # modal-result relay in this app. `path` threads through from
+        # _redirect_to_drive_source (open at the URL's path, not the
+        # source's root) — None from the Drive tab's own "+ Add remote
+        # host…" flow, which always starts a new source at its root.
+        if result is None:
+            self.call_after_refresh(self._refresh_drive_source_select)
+            return
+        protocol, host, port, username, password, save = result
+        if save:
+            remote_creds.set_credentials(self._encrypt_key, protocol, host, port, username, password)
+        self.call_after_refresh(self._drive_connect_new_source, protocol, host, port, username, password, path)
+
+    def _drive_connect_new_source(self, protocol: str, host: str, port: int,
+                                   username: str, password: str, path: str | None = None) -> None:
+        backend = drive_sources.build_source(protocol, host, port, username, password)
+        self._set_drive_backend(backend, folder_id=path, path=path)
+        self._refresh_drive_source_select()
+
+    def _refresh_drive_source_select(self) -> None:
+        try:
+            sel = self.query_one("#drive-source-select", Select)
+        except Exception:
+            return
+        sel.set_options(_drive_source_select_options(self._encrypt_key, self.drive_backend))
+        sel.value = self.drive_backend.source_key
 
     def _apply_drive_preview_visibility(self) -> None:
         try:
@@ -4881,7 +5033,7 @@ class GoogleTUI(App):
         list_col.set_class(hidden, "drive-list-full")
 
     def _fetch_drive_files(self, folder_id: str) -> list[dict]:
-        files, next_page_token = gauth.list_drive(self.svc, folder_id)
+        files, next_page_token = self.drive_backend.list_children(folder_id, None)
         # Plain attribute write from a (possibly) worker thread — same
         # pattern as self._email_next_page_token. A folder navigation
         # always fetches page 1 fresh, so this always reflects the
@@ -4915,7 +5067,8 @@ class GoogleTUI(App):
             query = ""
         visible = _fuzzy_filter_drive_files(files, query) if query.strip() else files
         drive_list = self.query_one("#drive-list")
-        _append_drive_items(drive_list, visible, path)
+        self._drive_items_by_cid.clear()
+        _append_drive_items(drive_list, visible, path, self._drive_items_by_cid)
         _append_load_more_row(drive_list, bool(self._drive_next_page_token) and not query.strip(),
                               LOAD_MORE_DRIVE_ID, "↓ Load more files…")
 
@@ -4940,7 +5093,7 @@ class GoogleTUI(App):
         folder_id = self._drive_folder_id
         token = self._drive_next_page_token
         try:
-            new_files, next_page_token = gauth.list_drive(self.svc, folder_id, page_token=token)
+            new_files, next_page_token = self.drive_backend.list_children(folder_id, token)
         except Exception as e:
             self.call_from_thread(self.notify, f"Load more error: {e}", severity="error")
             return
@@ -4955,7 +5108,10 @@ class GoogleTUI(App):
         for f in new_files:
             merged[f["id"]] = f
         combined = list(merged.values())
-        if self._cache:
+        # Only Google Drive's listing participates in the offline cache —
+        # FTP/SSH sources are live-connect-on-demand only, same as Browser's
+        # old ftp:// handling never had offline support either.
+        if self._cache and self.drive_backend.source_key == "google":
             self._cache.put("drive_listing", folder_id, combined)
         self.call_from_thread(self._apply_drive_files, combined, folder_id, self._drive_path)
 
@@ -4983,7 +5139,8 @@ class GoogleTUI(App):
             query = ""
         visible = _fuzzy_filter_drive_files(files, query) if query.strip() else files
         drive_list = self.query_one("#drive-list")
-        _append_drive_items(drive_list, visible, path)
+        self._drive_items_by_cid.clear()
+        _append_drive_items(drive_list, visible, path, self._drive_items_by_cid)
         _append_load_more_row(drive_list, bool(self._drive_next_page_token) and not query.strip(),
                               LOAD_MORE_DRIVE_ID, "↓ Load more files…")
 
@@ -4996,14 +5153,13 @@ class GoogleTUI(App):
             if self._drive_folder_stack:
                 parent_id, parent_path = self._drive_folder_stack.pop()
             else:
-                parent_id, parent_path = "root", "/"
+                parent_id, parent_path = self.drive_backend.root_id, self.drive_backend.root_path
             self._drive_load(parent_id, parent_path)
             return
         if not cid.startswith("d-"):
             return
-        fid = cid[2:]
-        f = next((x for x in self._drive_files if x["id"] == fid), None)
-        if f and f["mimeType"] == "application/vnd.google-apps.folder":
+        f = self._drive_items_by_cid.get(cid)
+        if f and f["is_folder"]:
             self._drive_folder_stack.append((self._drive_folder_id, self._drive_path))
             self._drive_load(f["id"], self._drive_path + f["name"] + "/")
 
@@ -5018,8 +5174,7 @@ class GoogleTUI(App):
             return
         if not cid.startswith("d-"):
             return
-        fid = cid[2:]
-        f = next((x for x in self._drive_files if x["id"] == fid), None)
+        f = self._drive_items_by_cid.get(cid)
         if not f:
             return
         # DEBOUNCE. This fires on every highlight change — i.e. on every arrow
@@ -5069,8 +5224,17 @@ class GoogleTUI(App):
 
     def _drive_preview_fetch(self, f: dict) -> tuple[str, str]:
         """Blocking; returns the (meta_text, body_text) pair to render."""
-        is_folder = f["mimeType"] == "application/vnd.google-apps.folder"
+        is_folder = f["is_folder"]
         fid = f["id"]
+        backend = self.drive_backend
+        # Cache categories are namespaced by source_key (not the key itself,
+        # since an SSH id can contain ":") -- two different FTP/SSH hosts can
+        # share a path like "/readme.txt", so a bare fid would collide once
+        # more than one source exists. Same "category string carries the
+        # discriminator" precedent as f"thread_summary:{label_id}" elsewhere
+        # in this file.
+        meta_category = f"drive_file_meta:{backend.source_key}"
+        text_category = f"drive_file_text:{backend.source_key}"
         # The folder listing already told us this file's modifiedTime, for free.
         # Drive stamps a new one on every edit, so it revalidates the cache the
         # same way a thread's historyId does: if what we cached was stamped with
@@ -5078,7 +5242,7 @@ class GoogleTUI(App):
         # download. Previously the cache was consulted ONLY when offline, so the
         # normal (online) path re-downloaded every file on every look.
         listed_mtime = str(f.get("modifiedTime") or "")
-        cached_meta = self._cache.get("drive_file_meta", fid) if self._cache else None
+        cached_meta = self._cache.get(meta_category, fid) if self._cache else None
         fresh = bool(
             cached_meta and listed_mtime
             and str(cached_meta.get("modifiedTime") or "") == listed_mtime
@@ -5088,28 +5252,39 @@ class GoogleTUI(App):
             meta = cached_meta
         elif self._online:
             try:
-                meta = gauth.get_file_metadata(self.svc, fid)
+                meta = backend.get_metadata(fid)
             except Exception as ex:
                 return f"(metadata error: {ex})", ""
+            # Persistent per-file caching applies to every source (it's a
+            # perf/revalidation optimization keyed off modifiedTime, not an
+            # offline-availability guarantee) -- unlike the root LISTING
+            # cache below, which stays Google-only since FTP/SSH sources are
+            # live-connect-on-demand with no offline browsing story.
             if self._cache:
-                self._cache.put("drive_file_meta", fid, meta)
+                self._cache.put(meta_category, fid, meta)
         else:
             meta = cached_meta
             if meta is None:
                 return (f"Name: {f.get('name','')}\n(offline — never viewed online, "
                         "no cached details)", "(not available offline)")
 
-        owners = ", ".join(
-            o.get("displayName", o.get("emailAddress", "?")) for o in meta.get("owners", []))
-        created = _fmt_date(meta.get("createdTime", ""))
-        modified = _fmt_date(meta.get("modifiedTime", ""))
+        # owner/createdTime are Google-only concepts (FTP has no owner
+        # notion; SSH's st_ctime is "inode change time," not creation time,
+        # so it's not surfaced as one either) -- omit rather than show a
+        # misleading value when a backend can't supply them.
+        modified = _fmt_date(meta.get("modifiedTime") or "")
         kind = "Folder" if is_folder else meta.get("mimeType", "")
-        info = (f"Name:     {meta.get('name','')}\n"
-                f"Type:     {kind}\n"
-                f"Where:    {self._drive_path}\n"
-                f"Owner:    {owners or '(unknown)'}\n"
-                f"Created:  {created}\n"
-                f"Modified: {modified}")
+        info_lines = [
+            f"Name:     {meta.get('name','')}",
+            f"Type:     {kind}",
+            f"Where:    {backend.label} — {self._drive_path}",
+        ]
+        if meta.get("owner"):
+            info_lines.append(f"Owner:    {meta['owner']}")
+        if meta.get("createdTime"):
+            info_lines.append(f"Created:  {_fmt_date(meta['createdTime'])}")
+        info_lines.append(f"Modified: {modified}")
+        info = "\n".join(info_lines)
         if not self._online:
             info += "\n(offline — showing cached details)"
         if is_folder:
@@ -5123,17 +5298,17 @@ class GoogleTUI(App):
         # The body is the expensive part (a full file download). Reuse the
         # cached text whenever the modifiedTime says the file hasn't changed —
         # `fresh` was decided against the listing's modifiedTime above.
-        cached_text = self._cache.get("drive_file_text", fid) if self._cache else None
+        cached_text = self._cache.get(text_category, fid) if self._cache else None
         if fresh and cached_text:
             return info, cached_text["text"][:8000]
 
         if self._online:
             try:
-                _, _, text = gauth.read_drive_text(self.svc, fid)
+                text = backend.read_preview_text(fid)
             except Exception as ex:
                 return info, f"(preview error: {ex})"
             if self._cache:
-                self._cache.put("drive_file_text", fid, {"text": text})
+                self._cache.put(text_category, fid, {"text": text})
             return info, text[:8000]
 
         if cached_text:
@@ -5558,23 +5733,24 @@ class GoogleTUI(App):
         if isinstance(self.screen, OnboardingWizardModal):
             self.screen.dismiss("resolved")
 
-    def _refresh_ftp_hosts_list(self) -> None:
+    def _refresh_remote_hosts_list(self) -> None:
         try:
-            lv = self.query_one("#settings-ftp-hosts-list", ListView)
+            lv = self.query_one("#settings-remote-hosts-list", ListView)
         except Exception:
             return
         lv.clear()
-        hosts = sorted(ftp_creds.load_all(self._encrypt_key).keys())
+        hosts = remote_creds.list_hosts(self._encrypt_key)
         if not hosts:
-            lv.append(ListItem(Label("(no saved FTP logins)")))
+            lv.append(ListItem(Label("(no saved remote hosts)")))
             return
-        for host in hosts:
+        for protocol, host, port in hosts:
+            display = f"{protocol}://{host}:{port}"
             # Same "_mk_id for a sanitized widget id, raw value stashed as a
             # plain attribute" pattern _feed_list_item uses -- a hostname
             # isn't reversible from a Textual widget id either (dots aren't
             # a valid id character).
-            item = ListItem(Label(host, markup=False), id=_mk_id("ftphost", host))
-            item.ftp_host = host
+            item = ListItem(Label(display, markup=False), id=_mk_id("remotehost", display))
+            item.remote_host = (protocol, host, port)
             lv.append(item)
 
     def _update_settings_cache_info(self) -> None:
@@ -5852,16 +6028,18 @@ class GoogleTUI(App):
             self._add_feed_url()
         elif event.button.id == "settings-remove-feed":
             self._remove_selected_feed()
-        elif event.button.id == "settings-remove-ftp-host":
-            lst = self.query_one("#settings-ftp-hosts-list", ListView)
+        elif event.button.id == "settings-remove-remote-host":
+            lst = self.query_one("#settings-remote-hosts-list", ListView)
             item = lst.highlighted_child
-            host = getattr(item, "ftp_host", None) if item is not None else None
-            if host is None:
-                self.notify("Select a saved FTP host to remove first", severity="warning")
+            triple = getattr(item, "remote_host", None) if item is not None else None
+            if triple is None:
+                self.notify("Select a saved remote host to remove first", severity="warning")
                 return
-            ftp_creds.remove(self._encrypt_key, host)
-            self._refresh_ftp_hosts_list()
-            self.notify(f"Removed saved FTP login for {host}.")
+            protocol, host, port = triple
+            remote_creds.remove(self._encrypt_key, protocol, host, port)
+            self._refresh_remote_hosts_list()
+            self._refresh_drive_source_select()
+            self.notify(f"Removed saved login for {protocol}://{host}:{port}.")
         elif event.button.id == "settings-save-search":
             key = self.query_one("#settings-google-cse-key", Input).value.strip()
             cx = self.query_one("#settings-google-cse-id", Input).value.strip()
@@ -7699,37 +7877,75 @@ class BookmarkLabelModal(ModalScreen):
             self.dismiss(None)
 
 
-class FtpLoginModal(ModalScreen):
-    """Browser tab: prompts for FTP credentials after an anonymous (or
-    previously-saved) login attempt is refused (``fetchers.FtpAuthRequired``).
-    Dismisses with ``(username, password, save: bool)``, or None if cancelled.
+class RemoteHostModal(ModalScreen):
+    """Drive tab: add a new remote-filesystem source (FTP or SSH), or
+    re-prompt for credentials after a login is refused
+    (``drive_sources.RemoteAuthRequired``). Dismisses with ``(protocol, host,
+    port, username, password, save: bool)``, or None if cancelled.
+    Generalizes the former Browser-tab-only ``FtpLoginModal`` — FTP/SSH
+    remote-filesystem browsing lives in the Drive tab now (source picker),
+    reached both from there directly and via a Browser ftp://sftp:// address
+    redirecting in. See drive_sources.py / ROADMAP.
     """
 
-    def __init__(self, host: str):
+    def __init__(self, protocol: str = "ftp", host: str = "", port: int | None = None,
+                 username: str = ""):
         super().__init__()
+        self._protocol = protocol
         self._host = host
+        self._port = port if port is not None else (
+            drive_sources.FTP_DEFAULT_PORT if protocol == "ftp" else drive_sources.SSH_DEFAULT_PORT)
+        self._username = username
 
     def compose(self) -> ComposeResult:
-        with Container(id="ftp-login-box", classes="pane"):
-            yield Label("FTP LOGIN REQUIRED", classes="pane-title-text")
-            yield Static(self._host, id="ftp-login-host", classes="muted")
-            yield Input(placeholder="Username", id="ftp-login-user")
-            yield Input(placeholder="Password", password=True, id="ftp-login-pass")
+        with Container(id="remote-host-box", classes="pane"):
+            yield Label("ADD REMOTE HOST", classes="pane-title-text")
+            with RadioSet(id="remote-host-protocol"):
+                yield RadioButton("FTP", value=(self._protocol == "ftp"), id="rb-remote-ftp")
+                yield RadioButton("SSH (SFTP/SCP)", value=(self._protocol == "ssh"), id="rb-remote-ssh")
+            yield Input(value=self._host, placeholder="Host", id="remote-host-host")
+            yield Input(value=str(self._port), placeholder="Port", id="remote-host-port")
+            yield Input(value=self._username, placeholder="Username (blank = anonymous, FTP only)",
+                        id="remote-host-user")
+            yield Input(placeholder="Password", password=True, id="remote-host-pass")
             with Horizontal(classes="settings-row"):
-                yield Label("Save these credentials")
-                yield Switch(value=True, id="ftp-login-save")
+                yield Label("Save this host")
+                yield Switch(value=True, id="remote-host-save")
         with Horizontal(classes="btnrow"):
             yield Button("Connect", id="connect")
             yield Button("Cancel", id="cancel")
 
     def on_mount(self) -> None:
-        self.query_one("#ftp-login-user", Input).focus()
+        target = "remote-host-host" if not self._host else "remote-host-user"
+        self.query_one(f"#{target}", Input).focus()
+
+    def on_radio_set_changed(self, event: RadioSet.Changed) -> None:
+        if event.radio_set.id != "remote-host-protocol":
+            return
+        new_protocol = "ftp" if event.pressed.id == "rb-remote-ftp" else "ssh"
+        old_default = str(drive_sources.SSH_DEFAULT_PORT if new_protocol == "ftp" else drive_sources.FTP_DEFAULT_PORT)
+        new_default = str(drive_sources.FTP_DEFAULT_PORT if new_protocol == "ftp" else drive_sources.SSH_DEFAULT_PORT)
+        port_input = self.query_one("#remote-host-port", Input)
+        # Only auto-fill if the port still holds the OTHER protocol's
+        # default (or is empty) -- don't clobber a port the user already
+        # typed themselves.
+        if port_input.value.strip() in ("", old_default):
+            port_input.value = new_default
+        self._protocol = new_protocol
 
     def _submit(self) -> None:
-        user = self.query_one("#ftp-login-user", Input).value.strip()
-        password = self.query_one("#ftp-login-pass", Input).value
-        save = self.query_one("#ftp-login-save", Switch).value
-        self.dismiss((user, password, save))
+        host = self.query_one("#remote-host-host", Input).value.strip()
+        if not host:
+            self.notify("Enter a host.", severity="warning")
+            return
+        try:
+            port = int(self.query_one("#remote-host-port", Input).value.strip())
+        except ValueError:
+            port = drive_sources.FTP_DEFAULT_PORT if self._protocol == "ftp" else drive_sources.SSH_DEFAULT_PORT
+        username = self.query_one("#remote-host-user", Input).value.strip()
+        password = self.query_one("#remote-host-pass", Input).value
+        save = self.query_one("#remote-host-save", Switch).value
+        self.dismiss((self._protocol, host, port, username, password, save))
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         self._submit()

@@ -43,10 +43,10 @@ class Settings:
     # activated each session. Defaults to "bookmarks" to match the app's
     # original (pre-this-setting) behavior.
     browser_start_page: str = "bookmarks"
-    # Saved FTP host credentials are NOT stored here -- see ftp_creds.py's
-    # module docstring for why (Settings is plaintext; credentials need the
-    # same optional encryption the local cache uses, in their own file so
-    # Settings' "Clear Cache" button can't wipe them).
+    # Saved remote-host (FTP/SSH) credentials are NOT stored here -- see
+    # remote_creds.py's module docstring for why (Settings is plaintext;
+    # credentials need the same optional encryption the local cache uses,
+    # in their own file so Settings' "Clear Cache" button can't wipe them).
     check_for_updates: bool = True  # fast-forward the git checkout on launch (see updater.py)
     ascii_mode: bool = False  # ASCII-safe rendering (plain borders/digits/arrows/punctuation) for terminals that mangle Unicode
     # Cache limits (Outlook-style). Both are opt-in; 0 == no limit. Enforced on
