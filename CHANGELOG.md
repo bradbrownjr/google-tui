@@ -3,6 +3,53 @@
 Format: keep newest at top. One entry per meaningful change. Reference files
 touched and any breaking notes.
 
+## [2026-07-19] — RSS subscription list: browse popular feeds by category
+
+Closes out ROADMAP P4's "RSS subscription list." Settings -> News Feeds
+gained a "Browse popular feeds…" button next to the existing manual
+add-by-URL box, opening `FeedPickerModal` — a filterable checklist over a
+new hand-curated, hand-verified table (every URL checked for a live 200 +
+`<rss`/`<feed`/`<?xml` response before being added):
+
+- **`google_tui/popular_feeds.py`** (new) — `POPULAR_FEEDS: dict[str,
+  list[dict]]`, 8 categories requested: General News, World News, Local News
+  (US — deliberately labeled as national outlets, since no single feed is
+  "local" for every user; true local coverage still needs the manual-URL
+  box), Tech News, Cybersecurity, Amateur Radio, Electronics, Sports.
+
+`FeedPickerModal` clones the existing `LabelPickerModal` filter+`SelectionList`
+pattern (search `Input` + checklist + Apply/Cancel), but unlike that
+assign-only picker this one is a genuine two-way toggle: checking a box
+subscribes, unchecking an already-subscribed one unsubscribes — the caller
+(`GoogleTUI._on_feed_pick_result`) diffs the modal's full returned selection
+against `Settings.feed_urls` on Apply rather than looking only at what's
+newly checked. Feeds added manually outside the curated table (the existing
+`#settings-feed-url` box) never appear in the picker's list, so they can't be
+toggled off by it. Each row's `SelectionList` id is the feed's URL (globally
+unique); the visible label is "Category — Title" so the same filter box
+doubles as a category filter (typing "cybersecurity" surfaces every
+Cybersecurity row) and a title filter — reuses the same rapidfuzz-backed
+`_fuzzy_score` idiom as `_fuzzy_filter_labels`, factored into a parallel
+`_fuzzy_filter_feeds`.
+
+`_add_feed_url`/`_remove_selected_feed` (the pre-existing manual-URL flow)
+were refactored into shared `_subscribe_feed(url)`/`_unsubscribe_feed(url)`
+helpers, so the picker and the manual box both go through one code path —
+single place that appends/removes from `Settings.feed_urls`, calls
+`save_settings`, refreshes `#settings-feed-list`, and (subscribe only) kicks
+the existing background merge fetch (`_fetch_and_merge_one_feed`) so a newly
+added feed isn't empty in the News tab until the next full refresh; unsubscribe
+purges that feed's cached entries the same way it already did.
+
+New pilot scenario `tests/pilot/popular_feeds_picker.py`: verifies the picker
+starts pre-checked for whatever's already subscribed, that the category
+filter narrows correctly, that checking/unchecking + Apply updates both
+`Settings.feed_urls` and the Settings-tab list, and that a manually-added
+feed outside the curated table survives an Apply with no changes selected.
+`tests/pilot/fakes.py` gained a `fetch_feed` patch (`_fake_fetch_feed`,
+per-url synthetic entry) to `base_patches()` — previously untouched since no
+existing scenario ever populated `Settings.feed_urls`, but this one does.
+
 ## [2026-07-19] — Dashboard tab: the four external cards (weather/stocks/word of the day/picture of the day)
 
 Closes out ROADMAP P4's "Dashboard tab: the external cards" — the half of

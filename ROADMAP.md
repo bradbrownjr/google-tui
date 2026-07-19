@@ -73,10 +73,6 @@ just checking it off here, so ROADMAP.md only ever shows what's still open.
 - [ ] **News card per-category selection.** The Dashboard NEWS card pulls
   from ALL subscribed feeds newest-first, not "top-5 by RSS category" —
   a possible refinement if the flat list proves too noisy in practice.
-- [ ] **RSS subscription list.** Categorized checklist of popular feeds to
-  toggle on/off, plus add-your-own custom feed URL (Settings already has a
-  feed list at `#settings-feed-list`, `main.py:569` — extend it rather than
-  replace it). *(Suggested model: Sonnet.)*
 - [ ] **Usenet support.** Needs a curated list of popular public Usenet
   servers plus support for an arbitrary/unlisted server URL, with credentials
   and API support. Should ship with a small curated server list rather than
@@ -85,6 +81,23 @@ just checking it off here, so ROADMAP.md only ever shows what's still open.
 
 ## Done
 
+- [x] **RSS subscription list** (`[2026-07-19]`) — Settings → News Feeds
+  gained a "Browse popular feeds…" button opening `FeedPickerModal`, a
+  filterable checklist (clone of the existing `LabelPickerModal` pattern)
+  over a new hand-curated, hand-verified table (`popular_feeds.py`,
+  `POPULAR_FEEDS`) spanning General News, World News, Local News (US —
+  necessarily national outlets, since no single feed is "local" for every
+  user), Tech News, Cybersecurity, Amateur Radio, Electronics, and Sports.
+  Unlike `LabelPickerModal` (assign-only), this picker is a genuine two-way
+  toggle: checking subscribes, unchecking unsubscribes, diffed against
+  `Settings.feed_urls` on Apply (`_on_feed_pick_result`) — manually-added
+  feeds outside the curated table are never touched by it. `_add_feed_url`/
+  `_remove_selected_feed` refactored into shared `_subscribe_feed`/
+  `_unsubscribe_feed` helpers so the picker and the existing manual-URL
+  Input+Button both go through one code path (single place that saves
+  Settings, refreshes the Settings-tab list, and kicks the background merge
+  fetch / cache purge). New pilot scenario
+  `tests/pilot/popular_feeds_picker.py`.
 - [x] **Dashboard tab: the external cards** (`[2026-07-19]`) — the four cards
   left over from the Google-native Dashboard grid (`[2026-07-17]`): WEATHER
   (Open-Meteo geocoding + forecast), STOCKS (Stooq CSV quotes), WORD OF THE

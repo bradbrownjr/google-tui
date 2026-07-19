@@ -64,6 +64,18 @@ FAKE_WORD_OF_DAY = {"word": "quixotic", "definition": "Exceedingly idealistic; u
 FAKE_WIKI_POTD = {"title": "Example Bridge", "description": "A scenic bridge at sunset.",
                    "link": "https://commons.wikimedia.org/wiki/File:Example.jpg"}
 
+
+def _fake_fetch_feed(url: str, timeout: int = 15) -> list[dict]:
+    """Stand-in for fetchers.fetch_feed -- one fabricated entry per url,
+    tagged with that same url as feed_url/link so cache keys and any
+    per-feed assertions stay meaningful regardless of which feed a scenario
+    subscribes to (e.g. via the popular-feeds picker)."""
+    return [{
+        "id": f"{url}#1", "title": "Fake headline", "link": url,
+        "summary": "Fake summary.", "published": dt_iso(-1),
+        "feed_title": "Fake Feed", "feed_url": url,
+    }]
+
 FAKE_CREDS = Credentials(token="fake-token", refresh_token=None, client_id="fake", client_secret="fake",
                           token_uri="https://example.com/token", scopes=[])
 
@@ -99,6 +111,7 @@ def base_patches() -> list:
         patch.object(fetchers, "fetch_stocks", return_value=FAKE_STOCKS),
         patch.object(fetchers, "fetch_word_of_day", return_value=FAKE_WORD_OF_DAY),
         patch.object(fetchers, "fetch_wiki_potd", return_value=FAKE_WIKI_POTD),
+        patch.object(fetchers, "fetch_feed", side_effect=_fake_fetch_feed),
     ]
 
 

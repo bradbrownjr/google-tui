@@ -54,6 +54,7 @@ from . import setup_instructions
 from . import fetchers
 from . import drive_sources
 from . import remote_creds
+from .popular_feeds import POPULAR_FEEDS
 from . import render
 from . import updater
 from .render import DocumentView
@@ -575,6 +576,24 @@ def _fuzzy_filter_labels(labels: list[dict], query: str, threshold: int = 75) ->
             scored.append((score, l))
     scored.sort(key=lambda pair: -pair[0])
     return [l for _, l in scored]
+
+
+def _fuzzy_filter_feeds(feeds: list[dict], query: str, threshold: int = 75) -> list[dict]:
+    """Same _fuzzy_score idiom as _fuzzy_filter_labels, backing FeedPickerModal's
+    search box. Scored against each feed's combined "Category — Title" label,
+    so a query matches on either half."""
+    query = query.strip()
+    if not query:
+        return list(feeds)
+    query_lower = query.lower()
+    scored = []
+    for f in feeds:
+        target = f["label"]
+        score = _fuzzy_score(query_lower, target.lower(), threshold)
+        if score is not None:
+            scored.append((score, f))
+    scored.sort(key=lambda pair: -pair[0])
+    return [f for _, f in scored]
 
 
 def _fuzzy_filter_events(events: list[dict], query: str, limit: int | None = None,
@@ -1330,6 +1349,8 @@ class GoogleTUI(App):
     #thread-help { color: $text-muted; height: auto; margin-top: 1; }
     #labelpick-box { height: auto; max-height: 80%; }
     #labelpick-list { height: auto; max-height: 20; border: round $panel-darken-1; margin-bottom: 1; }
+    #feedpick-box { height: auto; max-height: 80%; }
+    #feedpick-list { height: auto; max-height: 20; border: round $panel-darken-1; margin-bottom: 1; }
     .thread-msg-header { color: $text-muted; text-style: bold; margin-top: 1; border-bottom: solid $panel-darken-2; }
     #help-bar { height: auto; background: $panel; padding: 0 1; }
     #help-context { color: $text; }
@@ -2266,6 +2287,7 @@ class GoogleTUI(App):
                                     yield Input(placeholder="https://example.com/feed.xml", id="settings-feed-url")
                                     yield Button("Add feed", id="settings-add-feed")
                                 yield Button("Remove selected feed", id="settings-remove-feed")
+                                yield Button("Browse popular feeds…", id="settings-browse-feeds")
                         with TabPane("Search", id="settings-tab-search"):
                             with VerticalScroll(id="settings-search-scroll"):
                                 yield Label("Web search provider (Browser tab)", classes="pane-title-text")
@@ -5836,6 +5858,37 @@ class GoogleTUI(App):
             all_entries = new_entries
         self.call_from_thread(self._apply_news_data, all_entries)
 
+    def _subscribe_feed(self, url: str) -> None:
+        """Add `url` to `Settings.feed_urls`, refresh the Settings-tab list,
+        and kick a background merge fetch. Shared by the manual add-by-URL
+        flow (`_add_feed_url`) and the popular-feeds picker
+        (`_on_feed_pick_result`) so both go through one code path."""
+        if url in self.settings.feed_urls:
+            return
+        self.settings.feed_urls.append(url)
+        save_settings(self.settings)
+        self.query_one("#settings-feed-list", ListView).append(_feed_list_item(url))
+        self.run_worker(
+            lambda: self._fetch_and_merge_one_feed(url),
+            thread=True, exclusive=False, group="news-fetch-one",
+        )
+
+    def _unsubscribe_feed(self, url: str) -> None:
+        """Remove `url` from `Settings.feed_urls`, refresh the Settings-tab
+        list, and purge its cached entries from the News tab/Dashboard card.
+        Shared by `_remove_selected_feed` and the popular-feeds picker."""
+        if url not in self.settings.feed_urls:
+            return
+        self.settings.feed_urls.remove(url)
+        save_settings(self.settings)
+        try:
+            self.query_one(f"#{_mk_id('sf', url)}", ListItem).remove()
+        except Exception:
+            pass
+        if self._cache:
+            remaining = [e for e in self._cache.get_all("feed_entry").values() if e.get("feed_url") != url]
+            self._apply_news_data(remaining)
+
     def _add_feed_url(self) -> None:
         inp = self.query_one("#settings-feed-url", Input)
         url = inp.value.strip()
@@ -5844,15 +5897,9 @@ class GoogleTUI(App):
         if url in self.settings.feed_urls:
             self.notify("Already subscribed to that feed", severity="warning")
             return
-        self.settings.feed_urls.append(url)
-        save_settings(self.settings)
+        self._subscribe_feed(url)
         inp.value = ""
-        self.query_one("#settings-feed-list", ListView).append(_feed_list_item(url))
         self.notify(f"Added feed: {url}")
-        self.run_worker(
-            lambda: self._fetch_and_merge_one_feed(url),
-            thread=True, exclusive=False, group="news-fetch-one",
-        )
 
     def _remove_selected_feed(self) -> None:
         lst = self.query_one("#settings-feed-list", ListView)
@@ -5863,13 +5910,31 @@ class GoogleTUI(App):
         url = getattr(item, "feed_url", None)
         if url is None or url not in self.settings.feed_urls:
             return
-        self.settings.feed_urls.remove(url)
-        save_settings(self.settings)
-        item.remove()
+        self._unsubscribe_feed(url)
         self.notify(f"Removed feed: {url}")
-        if self._cache:
-            remaining = [e for e in self._cache.get_all("feed_entry").values() if e.get("feed_url") != url]
-            self._apply_news_data(remaining)
+
+    def _open_feed_picker(self) -> None:
+        applied = frozenset(self.settings.feed_urls)
+        self.push_screen(FeedPickerModal(applied_urls=applied), self._on_feed_pick_result)
+
+    def _on_feed_pick_result(self, urls: list[str] | None) -> None:
+        if urls is None:
+            return
+        picked = set(urls)
+        curated_urls = {f["url"] for feeds in POPULAR_FEEDS.values() for f in feeds}
+        added = 0
+        removed = 0
+        for url in curated_urls:
+            subscribed = url in self.settings.feed_urls
+            wanted = url in picked
+            if wanted and not subscribed:
+                self._subscribe_feed(url)
+                added += 1
+            elif subscribed and not wanted:
+                self._unsubscribe_feed(url)
+                removed += 1
+        if added or removed:
+            self.notify(f"Feeds updated: +{added} / -{removed}")
 
     # ---- contacts tab (P1 M5) ----
     def _fetch_contacts_data(self) -> list[dict]:
@@ -6362,6 +6427,8 @@ class GoogleTUI(App):
             self._add_feed_url()
         elif event.button.id == "settings-remove-feed":
             self._remove_selected_feed()
+        elif event.button.id == "settings-browse-feeds":
+            self._open_feed_picker()
         elif event.button.id == "settings-remove-remote-host":
             lst = self.query_one("#settings-remote-hosts-list", ListView)
             item = lst.highlighted_child
@@ -6790,6 +6857,71 @@ class LabelPickerModal(ModalScreen):
             sel_list = self.query_one("#labelpick-list", SelectionList)
             checked = (self._checked_ids - self._visible_ids) | set(sel_list.selected)
             self.dismiss(list(checked - self._applied_ids))
+        else:
+            self.dismiss(None)
+
+    def on_key(self, e) -> None:
+        if e.key == "escape":
+            self.dismiss(None)
+
+
+class FeedPickerModal(ModalScreen):
+    """Multi-select picker over `popular_feeds.POPULAR_FEEDS` for Settings ->
+    News Feeds' "Browse popular feeds…" button (ROADMAP: RSS subscription
+    list). Unlike LabelPickerModal this is a genuine two-way toggle, not an
+    assign-only add: checking a box subscribes, unchecking one already
+    subscribed unsubscribes, so on Apply the caller (`GoogleTUI._on_feed_pick_
+    result`) diffs the FULL returned selection against `Settings.feed_urls`
+    rather than just looking at what's newly checked. Manually-added feeds
+    outside this curated table are untouched either way — they never appear
+    in this list, so they can't be toggled off by it.
+
+    Each row's `SelectionList` id is the feed's URL (globally unique, unlike
+    title). The visible label is "Category — Title" so the same filter box
+    doubles as a category filter (typing "cyber" surfaces every Cybersecurity
+    row) and a title filter (typing "bbc" surfaces every BBC feed)."""
+
+    def __init__(self, applied_urls: frozenset[str] = frozenset()):
+        super().__init__()
+        self._feeds: list[dict] = [
+            {"category": cat, "title": f["title"], "url": f["url"], "label": f"{cat} — {f['title']}"}
+            for cat, feeds in POPULAR_FEEDS.items() for f in feeds
+        ]
+        self._checked_urls: set[str] = set(applied_urls) & {f["url"] for f in self._feeds}
+        self._visible_urls: set[str] = {f["url"] for f in self._feeds}
+
+    def compose(self) -> ComposeResult:
+        with Container(id="feedpick-box", classes="pane"):
+            yield Label("BROWSE POPULAR FEEDS", classes="pane-title-text")
+            yield Input(placeholder="Filter by category or title…", id="feedpick-search")
+            yield SelectionList(
+                *[(f["label"], f["url"], f["url"] in self._checked_urls) for f in self._feeds],
+                id="feedpick-list")
+            with Horizontal(classes="btnrow"):
+                yield Button("Apply", id="feedpick-apply")
+                yield Button("Cancel", id="feedpick-cancel")
+
+    def _rebuild_list(self, query: str) -> None:
+        filtered = _fuzzy_filter_feeds(self._feeds, query)
+        self._visible_urls = {f["url"] for f in filtered}
+        sel_list = self.query_one("#feedpick-list", SelectionList)
+        sel_list.clear_options()
+        sel_list.add_options(
+            [(f["label"], f["url"], f["url"] in self._checked_urls) for f in filtered])
+
+    def on_input_changed(self, e: Input.Changed) -> None:
+        if e.input.id == "feedpick-search":
+            self._rebuild_list(e.value)
+
+    def on_selection_list_selection_toggled(self, e: SelectionList.SelectionToggled) -> None:
+        sel_list = self.query_one("#feedpick-list", SelectionList)
+        self._checked_urls = (self._checked_urls - self._visible_urls) | set(sel_list.selected)
+
+    def on_button_pressed(self, e: Button.Pressed) -> None:
+        if e.button.id == "feedpick-apply":
+            sel_list = self.query_one("#feedpick-list", SelectionList)
+            checked = (self._checked_urls - self._visible_urls) | set(sel_list.selected)
+            self.dismiss(list(checked))
         else:
             self.dismiss(None)
 

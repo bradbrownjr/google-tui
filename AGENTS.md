@@ -438,11 +438,20 @@ Other tabs:
     `Button#settings-save-nous-key`.
   - `TabPane#settings-tab-feeds`: a News-feed subscription manager
     (`ListView#settings-feed-list` + `Input#settings-feed-url` +
-    `Button#settings-add-feed` + `Button#settings-remove-feed`) that edits
-    `Settings.feed_urls` directly (append/remove + `save_settings`) and kicks
-    a one-off background fetch (`_fetch_and_merge_one_feed`, `thread=True`,
-    group `"news-fetch-one"`) for a newly-added feed so the News tab isn't
-    empty for it until the next full refresh.
+    `Button#settings-add-feed` + `Button#settings-remove-feed` +
+    `Button#settings-browse-feeds`). Manual add/remove and the picker both
+    go through shared `_subscribe_feed`/`_unsubscribe_feed` helpers (edit
+    `Settings.feed_urls` + `save_settings` + refresh `#settings-feed-list` +,
+    for subscribe, kick a one-off background fetch —
+    `_fetch_and_merge_one_feed`, `thread=True`, group `"news-fetch-one"` —
+    so the News tab isn't empty for a newly-added feed until the next full
+    refresh). "Browse popular feeds…" pushes `FeedPickerModal`, a filterable
+    checklist over the hand-curated `popular_feeds.POPULAR_FEEDS` table
+    (General/World/Local(US)/Tech/Cybersecurity/Amateur Radio/Electronics/
+    Sports) — a genuine two-way toggle (check subscribes, uncheck
+    unsubscribes), diffed against `Settings.feed_urls` on Apply
+    (`_on_feed_pick_result`); feeds added manually outside that table are
+    never touched by the picker.
   - `TabPane#settings-tab-search` (Browser tab search provider, added
     2026-07-14): `RadioSet#settings-search-provider`
     (`rb-search-google`/`rb-search-duckduckgo`/`rb-search-searxng`, backing

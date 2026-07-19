@@ -451,6 +451,9 @@ SETTINGS TAB
   Input+Button  Set/save the Nous API key (AI Provider)
   Input+Button  Add a News-tab feed subscription (URL) (News Feeds)
   Button        Remove the selected feed subscription (News Feeds)
+  Button        Browse popular feeds — categorized checklist (general/world/
+                local/tech/cybersecurity/ham radio/electronics/sports news),
+                check to subscribe, uncheck to unsubscribe (News Feeds)
   RadioSet      Choose the Browser tab's search provider: Google /
                 DuckDuckGo / SearXNG (Search)
   Input+Button  Set Google Custom Search API key + Search Engine ID, or a
