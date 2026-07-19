@@ -3,6 +3,41 @@
 Format: keep newest at top. One entry per meaningful change. Reference files
 touched and any breaking notes.
 
+## [2026-07-19] — Offline email body cache also covers the inline preview pane
+
+ROADMAP's "Cache email bodies for offline reading" item turned out to be
+mostly already done: `[2026-07-14]`'s cache-revalidation work added a
+`thread_body` category, historyId-stamped, that `ThreadModal._fetch_thread`
+already reads/writes — a previously-opened thread has been reopenable
+offline for a while. What it missed was the *other* way to read a thread:
+the inline preview pane (`_email_on_highlight` → `_email_preview_thread`,
+the "p"-toggle pane that shows a body as you arrow through the list without
+opening `ThreadModal`). That path only ever consulted an in-memory
+`_thread_full_cache` dict — empty after every restart — so offline it fell
+straight to `_apply_email_preview_offline`'s snippet-only fallback ("this
+thread hasn't been opened yet, so no cached body is available"), even when
+a full body for that exact thread was sitting right there in the persistent
+`thread_body` cache from an earlier session or from `ThreadModal`.
+
+Fix (`main.py`): a new `GoogleTUI._cached_thread_body(thread_id)` runs the
+same historyId-revalidation `ThreadModal._fetch_thread` does (cached row's
+`historyId` must match the thread summary's current one) and is now checked
+first in `_email_preview_thread`, online or offline — offline, a hit renders
+the full body instead of the snippet fallback; online, a hit skips a
+redundant `gauth.get_thread` round trip entirely (previously refetched on
+every first-preview-of-session even when nothing had changed, unlike
+`ThreadModal`). The online fetch path also now writes its result back to the
+persistent cache (previously only `ThreadModal` did), so the preview pane
+alone — without ever opening the full thread — is now enough to make a
+thread available offline.
+
+Verified via a new pilot scenario, `tests/pilot/email_offline_preview.py`:
+seeds `_threads_cache`/persistent `thread_body` the way a real prior session
+would have left them, clears the in-memory `_thread_full_cache`, forces
+`_online = False`, and asserts the preview pane renders the full cached body
+rather than the offline snippet fallback. 78 tests total, all green; real
+`~/.config`/`~/.cache/google-tui` confirmed untouched via mtime diff.
+
 ## [2026-07-19] — Markdown detection + rendering (Drive preview, event/task descriptions, email bodies)
 
 `render.py` gained a Markdown parser and a conservative sniffer, closing the

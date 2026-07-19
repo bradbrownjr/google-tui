@@ -3696,9 +3696,35 @@ class GoogleTUI(App):
         self.run_worker(lambda: self._email_preview_thread(gen, thread_id),
                         thread=True, exclusive=True, group="email-preview")
 
+    def _cached_thread_body(self, thread_id: str) -> list[dict] | None:
+        """The persistent thread_body row for thread_id, but only if its
+        stamped historyId still matches the (also cached) thread summary --
+        same revalidation ThreadModal._fetch_thread uses. Returns None if
+        this thread was never opened before or the cached body is stale, so
+        callers can tell "no current body cached" apart from "cache hit"."""
+        summary = self._threads_cache.get(thread_id) or {}
+        hid = str(summary.get("historyId") or "")
+        if not (self._cache and hid):
+            return None
+        hit = self._cache.get("thread_body", thread_id)
+        if hit and str(hit.get("historyId") or "") == hid:
+            return hit.get("msgs")
+        return None
+
     def _email_preview_thread(self, gen: int, thread_id: str) -> None:
         """MUST run with thread=True -- gauth.get_thread is an HTTPS round
         trip, same fetch/apply-split reasoning as _drive_preview_thread."""
+        # _thread_full_cache is in-memory only (empty after a restart), but
+        # the persistent thread_body cache (shared with ThreadModal) may
+        # already have a current body -- e.g. from an earlier session, or
+        # from opening the full thread before just arrowing back over it.
+        # Checking it here, online or offline, avoids a needless refetch and
+        # (offline) avoids falling back to a snippet-only view.
+        cached_msgs = self._cached_thread_body(thread_id)
+        if cached_msgs is not None:
+            self._thread_full_cache[thread_id] = cached_msgs
+            self.call_from_thread(self._apply_email_preview, gen, thread_id, cached_msgs)
+            return
         if not self._online:
             self.call_from_thread(self._apply_email_preview_offline, gen, thread_id)
             return
@@ -3708,6 +3734,10 @@ class GoogleTUI(App):
             self.call_from_thread(self._apply_email_preview_error, gen, thread_id, ex)
             return
         self._thread_full_cache[thread_id] = msgs
+        summary = self._threads_cache.get(thread_id) or {}
+        hid = str(summary.get("historyId") or "")
+        if self._cache and hid:
+            self._cache.put("thread_body", thread_id, {"historyId": hid, "msgs": msgs})
         self.call_from_thread(self._apply_email_preview, gen, thread_id, msgs)
 
     def _apply_email_preview(self, gen: int, thread_id: str, msgs: list[dict]) -> None:

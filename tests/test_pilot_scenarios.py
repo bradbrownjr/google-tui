@@ -15,6 +15,7 @@ SCENARIOS = [
     "tests.pilot.startup_smoke",
     "tests.pilot.email_reply_modal",
     "tests.pilot.event_task_markdown",
+    "tests.pilot.email_offline_preview",
     "tests.pilot.drive_google_regression",
     "tests.pilot.drive_markdown_preview",
     "tests.pilot.drive_remote_source_switch",

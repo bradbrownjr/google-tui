@@ -70,10 +70,6 @@ just checking it off here, so ROADMAP.md only ever shows what's still open.
   already fully keyboard-accessible; confirmed `[2026-07-16]` via a
   keyboard-only pilot, no code change needed. What's left, if anything, is
   unaudited — re-scope once something concrete turns up.
-- [ ] **Cache email bodies for offline reading.** Only thread summaries
-  (subject/from/date) are cached today, not full bodies — opening a thread
-  while offline isn't possible yet. Would follow the same lazy,
-  cache-on-view pattern as `drive_file_text`.
 - [ ] **Dashboard tab: the external cards.** The Google-native half shipped
   `[2026-07-17]` (see CHANGELOG / the Done list below): a 2×2 card grid —
   TODAY (today's events), TASKS (grouped overdue/today/upcoming/unscheduled),
@@ -307,7 +303,9 @@ just checking it off here, so ROADMAP.md only ever shows what's still open.
 - [x] **Local cache + offline mode.** Cache-first startup (`google_tui/
   cache.py`, SQLite), `Header.sub_title` Connecting/Synced/Offline
   indicator, mutating actions disabled while offline, Drive preview reads
-  from cache when offline.
+  from cache when offline. Thread bodies are also cached (`thread_body`
+  category, historyId-stamped, see `[2026-07-14]`) so a previously-opened
+  email reopens instantly and reads offline.
 - [x] **Offline mutation queue — full CREATE/DELETE.** New Event, Add
   subtask, Delete subtask, Delete task now queue offline (temp-id placeholders
   overlaid at render, replayed on reconnect; a delete whose target is itself a
