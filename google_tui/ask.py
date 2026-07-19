@@ -47,13 +47,15 @@ def _read_api_key() -> str | None:
 _API_KEY = _read_api_key()
 
 
-def ask_llm(system: str, question: str, api_key: str | None = None, timeout: int = 90) -> str:
-    """Call the Nous chat endpoint. Returns the assistant text."""
+def ask_llm(system: str, question: str, api_key: str | None = None, model: str | None = None,
+            timeout: int = 90) -> str:
+    """Call the Nous chat endpoint. Returns the assistant text. `model`
+    overrides the default (config.toml's llm_model, see app_config.py)."""
     key = api_key or _API_KEY
     if not key:
         return "(no Nous API key — set one in Settings, or in ~/.hermes/config.yaml)"
     payload = {
-        "model": _MODEL,
+        "model": model or _MODEL,
         "messages": [
             {"role": "system", "content": system},
             {"role": "user", "content": question},
@@ -118,14 +120,15 @@ class HermesProvider(AIProvider):
     id = "hermes"
     display_name = "Hermes"
 
-    def __init__(self, api_key: str | None = None):
+    def __init__(self, api_key: str | None = None, model: str | None = None):
         self._api_key = api_key
+        self._model = model
 
     def is_reachable(self) -> bool:
         return bool(self._api_key or _API_KEY) or shutil.which("hermes") is not None
 
     def ask(self, system: str, question: str, timeout: int = 90) -> str:
-        return ask_llm(system, question, api_key=self._api_key, timeout=timeout)
+        return ask_llm(system, question, api_key=self._api_key, model=self._model, timeout=timeout)
 
     def run_action(self, message: str, timeout: int = 120) -> str:
         return ask_hermes_agent(message, timeout=timeout)
@@ -204,10 +207,11 @@ PROVIDER_CHOICES = [
 ]
 
 
-def get_provider(provider_id: str, *, nous_api_key: str | None = None) -> AIProvider:
+def get_provider(provider_id: str, *, nous_api_key: str | None = None,
+                  model: str | None = None) -> AIProvider:
     cls = PROVIDER_CLASSES.get(provider_id, HermesProvider)
     if cls is HermesProvider:
-        return HermesProvider(api_key=nous_api_key)
+        return HermesProvider(api_key=nous_api_key, model=model)
     return cls()
 
 

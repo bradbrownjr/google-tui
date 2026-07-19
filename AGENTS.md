@@ -77,6 +77,17 @@ of blocking on that.
   settings.json` (`encrypt_at_rest`, `key_method`, `kdf_salt`, `canary`).
   Must stay plaintext: the app needs to know the key method before it can
   derive or verify any key.
+- **`google_tui/app_config.py`** (`[2026-07-19]`) — `AppConfig`
+  dataclass/`load_config()`, reading an OPTIONAL, hand-edited
+  `.../config.toml` (stdlib `tomllib` — read-only, the app never writes
+  this file, unlike `settings.json`). Covers `llm_model`, `timezone`,
+  `pane_order` (Dashboard Tab/Shift+Tab cycle order only, not visual grid
+  position — see `DASH_ADJACENCY` below), `refresh_interval_minutes`
+  (drives a new periodic-refresh `set_interval`, gated on `self._online`),
+  and `searxng_url` (fallback default only — `Settings.searxng_url` /
+  Settings -> Search is the primary, already-working control). A missing
+  file or any bad field value falls back to defaults with a logged warning,
+  never blocks startup. See `config.toml.example` at the repo root.
 - **Key methods** (`Settings.key_method`): `"keyfile"` — a random Fernet key
   at `.../cache.key`, chmod 0600, no prompt ever. `"passphrase"` — a key
   derived via scrypt from a passphrase typed at launch (`UnlockModal`,
@@ -987,7 +998,9 @@ almost certainly why — the fix would be routing that result through
 │   ├── setup_instructions.py  # shared Google-account/AI-provider onboarding text
 │   ├── cache.py               # SQLite local cache, optional per-row Fernet encryption
 │   ├── settings.py            # plaintext Settings dataclass (settings.json)
+│   ├── app_config.py          # optional, hand-edited AppConfig (config.toml) -- app never writes it
 │   └── main.py                # Textual app: tabs, panes, modals, CSS, bindings
+├── config.toml.example        # documented config.toml template (repo root, never auto-copied)
 └── .venv/                     # Python 3.13 venv (system-site-packages)
 ```
 
@@ -995,6 +1008,9 @@ almost certainly why — the fix would be routing that result through
 methods, canary verification). `CACHE_DB_PATH` = `platformdirs.
 user_cache_dir("google-tui")/cache.db`; `KEY_FILE_PATH` and `SETTINGS_PATH`
 = `platformdirs.user_config_dir("google-tui")/{cache.key,settings.json}`.
+`app_config.py`'s `CONFIG_PATH` is the sibling `config.toml` in that same
+config dir — but unlike `settings.json`, nothing in the app ever writes to
+it; it's read once at startup and only exists if the user hand-creates it.
 
 `gauth.py`:
 - `services()` — returns cached `{gmail, calendar, tasks, drive}` via

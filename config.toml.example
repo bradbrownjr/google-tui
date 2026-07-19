@@ -1,0 +1,40 @@
+# google-tui advanced configuration (optional, hand-edited).
+#
+# Copy this file to your config dir as config.toml:
+#   Linux:   ~/.config/google-tui/config.toml
+#   macOS:   ~/Library/Application Support/google-tui/config.toml
+#
+# The app never writes to this file -- Settings (Ctrl+5) covers everything
+# meant to be changed at runtime; this is for the handful of things that
+# aren't. A missing file, a syntax error, or any single bad value below all
+# fall back to defaults silently (a warning is logged to google-tui.log),
+# so it's always safe to comment a line out or delete the file entirely.
+
+# Overrides the default model used by the Hermes/Nous AI provider
+# (Settings -> AI Provider). Has no effect on the other providers (Claude
+# Code / opencode / Gemini CLI), which use whichever model their own CLI is
+# configured for.
+# llm_model = "tencent/hy3:free"
+
+# IANA timezone name. Overrides the OS-local timezone used to decide which
+# events are "today" (Dashboard TODAY card) and to attach a wall-clock time
+# when creating a new Calendar event. Leave unset to keep using the system's
+# local timezone (the default, and almost always what you want).
+# timezone = "America/Los_Angeles"
+
+# Reorders the Dashboard's Tab/Shift+Tab cycle (and Alt-digit jump) between
+# its cards. Any id not in this repo's current Dashboard card set is
+# ignored; any card missing from this list is appended after it, so nothing
+# ever becomes unreachable. This does NOT change the cards' visual grid
+# position, only which one Tab lands on next. Valid ids: "events", "tasks",
+# "dash-mail", "dash-news", "dash-weather", "dash-stocks", "dash-word",
+# "dash-potd", "hermes".
+# pane_order = ["dash-weather", "dash-stocks", "events", "tasks"]
+
+# Automatically re-fetch Google/news/dashboard data on a timer, in addition
+# to the manual Ctrl+R refresh. Off (no periodic refresh) unless set.
+# refresh_interval_minutes = 15
+
+# Fallback default SearXNG instance URL, used only if Settings -> Search
+# hasn't already set one (Settings' own value always wins).
+# searxng_url = "https://searx.example.org"

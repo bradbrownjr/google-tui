@@ -689,7 +689,7 @@ def search_searxng(query: str, base_url: str, timeout: int = 15, ascii_mode: boo
         return render.parse_html(resp.text, base_url=resp.url, ascii_mode=ascii_mode)
 
 
-def run_search(query: str, settings, timeout: int = 15) -> render.Document:
+def run_search(query: str, settings, timeout: int = 15, searxng_url_fallback: str | None = None) -> render.Document:
     """Dispatch to the configured search provider, with DuckDuckGo as the
     reliable no-config-needed fallback for every path — see AGENTS.md /
     the task brief for the exact fallback chain. This is what replaces the
@@ -713,9 +713,10 @@ def run_search(query: str, settings, timeout: int = 15) -> render.Document:
         return search_duckduckgo(query, timeout=timeout, ascii_mode=ascii_mode)
 
     if provider == "searxng":
-        if settings.searxng_url:
+        searxng_url = settings.searxng_url or searxng_url_fallback
+        if searxng_url:
             try:
-                return search_searxng(query, settings.searxng_url, timeout=timeout, ascii_mode=ascii_mode)
+                return search_searxng(query, searxng_url, timeout=timeout, ascii_mode=ascii_mode)
             except Exception:
                 return search_duckduckgo(query, timeout=timeout, ascii_mode=ascii_mode)
         return search_duckduckgo(query, timeout=timeout, ascii_mode=ascii_mode)

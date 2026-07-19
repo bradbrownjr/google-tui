@@ -18,6 +18,7 @@ SCENARIOS = [
     "tests.pilot.email_offline_preview",
     "tests.pilot.dashboard_external_cards",
     "tests.pilot.popular_feeds_picker",
+    "tests.pilot.config_toml_overrides",
     "tests.pilot.drive_google_regression",
     "tests.pilot.drive_markdown_preview",
     "tests.pilot.drive_remote_source_switch",

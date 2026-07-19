@@ -61,8 +61,6 @@ just checking it off here, so ROADMAP.md only ever shows what's still open.
   file — no text preview)" since `[2026-07-17]`, was a generic binary/image
   message before); in-terminal rendering would need the `textual-image`
   package (not a current dependency).
-- [ ] **Config file** (`config.toml`) for: default LLM model, timezone, pane
-  order, searxng URL, refresh interval.
 - [ ] **Multiple accounts** switch (if a second token appears).
 - [ ] **Keyboard-first everywhere** — audit remaining tabs/modals for
   mouse-only actions. Drive folder nav (arrow keys + Enter) and Calendar
@@ -81,6 +79,31 @@ just checking it off here, so ROADMAP.md only ever shows what's still open.
 
 ## Done
 
+- [x] **Config file (`config.toml`)** (`[2026-07-19]`) — new, optional,
+  hand-edited `google_tui/app_config.py` (`AppConfig`/`load_config`), read
+  once at startup with stdlib `tomllib` (no new dependency — the app never
+  writes to this file, unlike `settings.json`). Covers the five ROADMAP
+  fields: `llm_model` (overrides the Hermes/Nous provider's default model,
+  threaded through `ask.py`'s `ask_llm`/`HermesProvider`/`get_provider`),
+  `timezone` (an IANA name, resolved via `zoneinfo.ZoneInfo`, overriding
+  OS-local for the Dashboard TODAY card's date filter and the New-Event
+  modal's wall-clock-to-`dateTime` conversion), `pane_order`, and
+  `refresh_interval_minutes` (genuinely new — no periodic auto-refresh loop
+  existed before; `on_mount` schedules `_periodic_refresh`, which skips
+  while offline rather than spamming per-section error toasts on a timer),
+  and `searxng_url` (a fallback default only — `Settings.searxng_url` /
+  Settings -> Search already fully covers this, config.toml just seeds it
+  when the user hasn't set one there). `pane_order` deliberately only
+  reorders the Dashboard's Tab/Shift+Tab cycle (and Alt-digit-jump/"first
+  enabled pane" fallback) — the visual 2-column grid position and
+  `DASH_ADJACENCY`'s Alt-arrow spatial navigation are hand-tuned to pair
+  semantically related cards and stay exactly as authored regardless of
+  config; see `config.toml.example` at the repo root for the documented
+  format. A missing file, TOML syntax error, or any single bad field value
+  (bad timezone name, non-positive interval, non-list pane_order) all fall
+  back to defaults with a logged warning rather than blocking startup. New
+  `tests/unit/test_app_config.py` and pilot scenario
+  `tests/pilot/config_toml_overrides.py`.
 - [x] **RSS subscription list** (`[2026-07-19]`) — Settings → News Feeds
   gained a "Browse popular feeds…" button opening `FeedPickerModal`, a
   filterable checklist (clone of the existing `LabelPickerModal` pattern)

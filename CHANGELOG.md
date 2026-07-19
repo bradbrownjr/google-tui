@@ -3,6 +3,79 @@
 Format: keep newest at top. One entry per meaningful change. Reference files
 touched and any breaking notes.
 
+## [2026-07-19] — Config file (`config.toml`): LLM model, timezone, pane order, refresh interval, SearXNG fallback
+
+Closes out ROADMAP P4's "Config file." Unlike `Settings` (`settings.py`,
+plaintext JSON the app itself reads AND writes on every Settings-tab
+change), `config.toml` is optional and hand-edited — the app only ever reads
+it, once, at startup, same spirit as `~/.hermes/config.yaml` (`ask.py`
+already reads an API key out of that one).
+
+- **`google_tui/app_config.py`** (new) — `AppConfig` dataclass + `load_config()`,
+  reading `platformdirs.user_config_dir("google-tui")/config.toml` with
+  stdlib `tomllib` (Python 3.11+, no new dependency — this file is
+  read-only). A missing file returns all-`None` defaults silently; a TOML
+  syntax error or any single field with a bad type/value (invalid IANA
+  `timezone` via `zoneinfo.ZoneInfo`, non-positive
+  `refresh_interval_minutes`, a non-list `pane_order`) logs one warning and
+  falls back to that field's default rather than blocking startup — nothing
+  in this file should ever be load-bearing for the app to even start.
+  `config.toml.example` (repo root, never auto-copied) documents every key.
+  New `tests/unit/test_app_config.py`.
+
+Five fields, wired into `main.py`/`ask.py`/`fetchers.py`:
+
+- **`llm_model`** — overrides the Hermes/Nous provider's hardcoded default
+  model (`ask.py`'s `_MODEL`). `ask_llm`/`HermesProvider.__init__`/
+  `get_provider` all gained an optional `model` param; the one call site
+  (`main.py`'s Hermes-ask dispatch) passes `self.app_config.llm_model`. Has
+  no effect on the other three providers (Claude Code/opencode/Gemini
+  CLI) — those shell out to CLIs that pick their own model.
+- **`timezone`** — an IANA name, resolved once via `zoneinfo.ZoneInfo` into
+  `AppConfig.tzinfo`, overriding the OS-local timezone this app previously
+  always inferred via `datetime.now().astimezone()`. Two call sites: the
+  Dashboard TODAY card's date filter (`_todays_events` gained a `tz` param)
+  and the New-Event modal's wall-clock-to-`dateTime` conversion (needed
+  since Calendar's API requires an offset-bearing `dateTime`, and
+  `create_event()` deliberately omits an explicit `timeZone` field).
+- **`pane_order`** — reorders the Dashboard's Tab/Shift+Tab cycle (and
+  Alt-digit-jump / "first enabled pane" fallback) between its nine cards.
+  Deliberately does NOT touch visual grid position: the 2-column grid is
+  driven by `compose()`'s DOM/yield order plus a hand-authored spatial map,
+  `DASH_ADJACENCY`, tuned so each row pairs semantically related cards
+  (events+tasks, mail+news, weather+stocks, word+potd) — reordering that
+  safely would mean restructuring `compose()`'s bespoke per-card yield
+  blocks and regenerating adjacency, real risk for a nice-to-have with a
+  much simpler cycle-order-only interpretation available. New
+  `GoogleTUI._resolve_dash_cycle_ids()` filters `pane_order` to known
+  `DASH_PANE_IDS` (dropping/warning on unknowns) and appends any missing
+  ids so nothing becomes unreachable; the result (`self._dash_cycle_ids`)
+  replaces `DASH_PANE_IDS` as the one order-sensitive source list in
+  `_apply_dashboard_panes_enabled`.
+- **`refresh_interval_minutes`** — genuinely new functionality; no periodic
+  auto-refresh loop existed before this (only the manual Ctrl+R
+  `action_refresh`, and a handful of one-shot triggers). `on_mount`
+  schedules `self.set_interval(... * 60, self._periodic_refresh)` when set;
+  the new `_periodic_refresh` skips silently while offline (`self._online`)
+  rather than firing `_live_refresh_thread`'s per-section network calls and
+  spamming an "X error" toast every interval when there's nothing to
+  refresh — unlike a manual Ctrl+R, the user didn't just ask for this one.
+- **`searxng_url`** — a fallback default only. `Settings.searxng_url` /
+  Settings -> Search already fully implements this (this ROADMAP sub-item
+  was effectively done already); `config.toml`'s value is consulted at
+  `fetchers.run_search`'s one dispatch site (`searxng_url_fallback` param)
+  only when `Settings.searxng_url` is unset, never overriding a value the
+  user has actually set via the Settings UI.
+
+New pilot scenario `tests/pilot/config_toml_overrides.py`: writes a real
+`config.toml` into the isolated config dir before constructing `GoogleTUI()`,
+asserts `AppConfig` loaded it correctly, that `_dash_cycle_ids`/
+`_dash_enabled_ids` reflect the custom `pane_order`, and that
+`_periodic_refresh` is properly gated on `self._online` (skips while offline,
+runs while online). 88 tests total, all green; verified real
+`~/.config/google-tui`/`~/.cache/google-tui` untouched (mtime + content hash
+unchanged before/after).
+
 ## [2026-07-19] — RSS subscription list: browse popular feeds by category
 
 Closes out ROADMAP P4's "RSS subscription list." Settings -> News Feeds

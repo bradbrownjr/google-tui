@@ -61,6 +61,7 @@ from .render import DocumentView
 from .cache import Cache, derive_key_from_passphrase, make_canary, new_salt, read_or_create_keyfile, verify_canary
 from . import cache as cache_mod
 from .settings import Settings, load_settings, save_settings
+from .app_config import AppConfig, load_config
 
 # The Mail tab is single-purpose (Email only, `2026-07-16`) -- Events/Tasks/
 # Hermes live on the Dashboard tab (`tab-dashboard`). The Dashboard grew from
@@ -879,13 +880,15 @@ def _append_task_items(task_list, tasks) -> None:
     task_list.extend(items)
 
 
-def _todays_events(events: list[dict]) -> list[dict]:
+def _todays_events(events: list[dict], tz: dt.tzinfo | None = None) -> list[dict]:
     """Filter an upcoming-events list down to just TODAY's (local date), for
     the Dashboard's TODAY card. Handles both all-day events (`start.date` /
     `end.date`, end exclusive per the Calendar API) and timed events
     (`start.dateTime`, compared in local time). Sorted all-day-first, then by
-    start time. Malformed date strings are skipped rather than raising."""
-    today = dt.date.today()
+    start time. Malformed date strings are skipped rather than raising.
+    `tz` overrides the OS-local timezone (config.toml's `timezone`, see
+    app_config.py); defaults to OS-local when not given."""
+    today = dt.datetime.now(tz).date() if tz else dt.date.today()
     out = []
     for e in events:
         start = e.get("start", {})
@@ -903,7 +906,7 @@ def _todays_events(events: list[dict]) -> list[dict]:
                 sdt = dt.datetime.fromisoformat(start["dateTime"].replace("Z", "+00:00"))
             except Exception:
                 continue
-            local = sdt.astimezone() if sdt.tzinfo else sdt
+            local = sdt.astimezone(tz) if sdt.tzinfo else sdt
             if local.date() == today:
                 out.append(e)
 
@@ -1495,6 +1498,12 @@ class GoogleTUI(App):
         super().__init__()
         self.active = 0
         self._dash_active = "events"  # which DASH_PANE_IDS card is focused on tab-dashboard
+        self.app_config: AppConfig = load_config()
+        # Tab/Shift+Tab cycle order for the Dashboard's cards -- DASH_PANE_IDS
+        # unless config.toml's pane_order customizes it (see app_config.py).
+        # Only reorders the cycle, never the fixed visual grid position/
+        # DASH_ADJACENCY, which stay exactly as authored regardless.
+        self._dash_cycle_ids: list[str] = self._resolve_dash_cycle_ids()
         # Enabled Dashboard cards, library order, filtered/defaulted from
         # Settings.dashboard_panes_enabled by _apply_dashboard_panes_enabled
         # (called from on_mount, and again whenever the Settings -> Dashboard
@@ -1831,6 +1840,26 @@ class GoogleTUI(App):
             except Exception:
                 pass
 
+    def _resolve_dash_cycle_ids(self) -> list[str]:
+        """config.toml's pane_order, filtered to real DASH_PANE_IDS entries
+        (unknowns dropped) with any DASH_PANE_IDS id missing from it appended
+        at the end (so nothing becomes unreachable) -- or DASH_PANE_IDS
+        unchanged if pane_order isn't set. See app_config.py / config.toml.
+        example. Only ever affects Tab/Shift+Tab cycle order and the Alt-
+        digit-jump/"first enabled pane" fallback -- never the fixed visual
+        grid position or DASH_ADJACENCY's Alt-arrow spatial navigation.
+        """
+        order = self.app_config.pane_order
+        if not order:
+            return list(DASH_PANE_IDS)
+        known = set(DASH_PANE_IDS)
+        resolved = [pid for pid in order if pid in known]
+        dropped = [pid for pid in order if pid not in known]
+        if dropped:
+            _logger.warning("config.toml: pane_order has unknown id(s) %s -- ignoring them", dropped)
+        resolved.extend(pid for pid in DASH_PANE_IDS if pid not in resolved)
+        return resolved
+
     def _apply_dashboard_panes_enabled(self) -> None:
         """Settings -> Dashboard checklist (Settings.dashboard_panes_enabled)
         made real: toggles ``.dash-pane-disabled`` (display: none, same class-
@@ -1855,7 +1884,7 @@ class GoogleTUI(App):
         just skipped that once, same as _load_from_cache would be.
         """
         enabled = set(self.settings.dashboard_panes_enabled)
-        self._dash_enabled_ids = [pid for pid in DASH_PANE_IDS if pid in enabled] or ["hermes"]
+        self._dash_enabled_ids = [pid for pid in self._dash_cycle_ids if pid in enabled] or ["hermes"]
         for pid in DASH_PANE_IDS:
             try:
                 self.query_one(f"#{pid}").set_class(pid not in self._dash_enabled_ids, "dash-pane-disabled")
@@ -2395,6 +2424,10 @@ class GoogleTUI(App):
         # (see _rotate_dash_news, which no-ops while the card is focused or
         # when there aren't enough entries to rotate).
         self.set_interval(self._DASH_NEWS_ROTATE_SECONDS, self._rotate_dash_news)
+        # Periodic auto-refresh (config.toml's refresh_interval_minutes, see
+        # app_config.py) — off by default; no such loop existed before this.
+        if self.app_config.refresh_interval_minutes:
+            self.set_interval(self.app_config.refresh_interval_minutes * 60, self._periodic_refresh)
         self._apply_email_preview_visibility()  # applies Settings.email_preview_default_visible
         self._apply_ascii_mode()  # applies whatever Settings.ascii_mode loaded from disk; also updates the help bar
         self._update_hermes_labels()  # applies whatever Settings.ai_provider loaded from disk
@@ -3494,6 +3527,19 @@ class GoogleTUI(App):
         self._render_sub_title()
         self.run_worker(self._live_refresh_thread, thread=True, exclusive=True)
 
+    def _periodic_refresh(self) -> None:
+        """Timer-driven counterpart to action_refresh (config.toml's
+        refresh_interval_minutes, see app_config.py / on_mount's
+        set_interval call). Skips silently while offline -- unlike a manual
+        Ctrl+R, the user didn't just ask for this, so it shouldn't spam
+        per-section "X error" toasts every interval when there's nothing to
+        refresh anyway; the next successful refresh (manual or reconnect)
+        picks the timer back up regardless."""
+        if not self._online:
+            return
+        self._last_manual_refresh = time.monotonic()
+        self.run_worker(self._live_refresh_thread, thread=True, exclusive=True)
+
     def action_help(self): self.push_screen(HelpModal())
 
     def action_hermes_popup(self) -> None:
@@ -4043,7 +4089,7 @@ class GoogleTUI(App):
         state when there's nothing today (but not when a search simply had no
         matches — that would misread as "no events today"). No "Load more" row:
         the card is today-scoped, so there's nothing to paginate into."""
-        disp = _todays_events(self._reconcile_events(events))
+        disp = _todays_events(self._reconcile_events(events), tz=self.app_config.tzinfo)
         try:
             query = self.query_one("#events-search", Input).value
         except Exception:
@@ -4436,7 +4482,8 @@ class GoogleTUI(App):
         `async def` worker (what this used to be) all of that ran on the event
         loop and locked the entire UI until the model answered.
         """
-        provider = ask.get_provider(self.settings.ai_provider, nous_api_key=self.settings.nous_api_key)
+        provider = ask.get_provider(self.settings.ai_provider, nous_api_key=self.settings.nous_api_key,
+                                     model=self.app_config.llm_model)
         try:
             if needs_agent(q):
                 self.call_from_thread(log.write, f"[running {provider.display_name} agent…]")
@@ -4675,7 +4722,7 @@ class GoogleTUI(App):
             return fetchers.fetch_gopher(target)
         if mode == "gemini":
             return fetchers.fetch_gemini(target, self._browser_tofu)
-        return fetchers.run_search(target, self.settings)
+        return fetchers.run_search(target, self.settings, searxng_url_fallback=self.app_config.searxng_url)
 
     def _browser_fetch_thread(self, mode: str, target: str, display_url: str, push_history: bool) -> None:
         try:
@@ -7727,12 +7774,13 @@ class CreateEventModal(ModalScreen):
                 except ValueError:
                     self.notify("End time must be HH:MM", severity="warning")
                     return
-            # Attach the system's local timezone -- the user typed a
-            # wall-clock time meaning "local time here", and Calendar's API
-            # needs a UTC-offset-bearing dateTime (or an explicit timeZone
-            # field, which create_event() deliberately omits) to place the
-            # event correctly rather than silently treating it as UTC.
-            local_tz = dt.datetime.now().astimezone().tzinfo
+            # Attach the local timezone -- the user typed a wall-clock time
+            # meaning "local time here", and Calendar's API needs a UTC-
+            # offset-bearing dateTime (or an explicit timeZone field, which
+            # create_event() deliberately omits) to place the event
+            # correctly rather than silently treating it as UTC. config.
+            # toml's `timezone` overrides OS-local if set (app_config.py).
+            local_tz = self.app.app_config.tzinfo or dt.datetime.now().astimezone().tzinfo
             start = dt.datetime.combine(day, start_time, tzinfo=local_tz)
             end = (dt.datetime.combine(day, end_time, tzinfo=local_tz)
                    if end_time is not None else start + dt.timedelta(hours=1))
