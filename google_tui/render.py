@@ -987,6 +987,180 @@ def parse_gemtext(content: str, base_url: str = "", title: str | None = None) ->
     return Document(title=detected_title, blocks=blocks, links=links, source_url=base_url)
 
 
+# --------------------------------------------------------------------------
+# Markdown (ROADMAP P4, 2026-07-19)
+# --------------------------------------------------------------------------
+
+_MD_ATX_HEADING_RE = re.compile(r"^(#{1,6})\s+(.*)$")
+_MD_ORDERED_ITEM_RE = re.compile(r"^\s*\d+\.\s+(.*)$")
+_MD_UNORDERED_ITEM_RE = re.compile(r"^\s*[-*+]\s+(.*)$")
+_MD_INLINE_LINK_RE = re.compile(r"\[([^\]\n]+)\]\(([^)\n]+)\)")
+_MD_BOLD_RE = re.compile(r"\*\*([^*\n]+)\*\*|__([^_\n]+)__")
+
+# Sniffer patterns used by ``_looks_like_markdown`` below. Each STRONG hit
+# (a syntax shape that essentially never occurs by accident in ordinary
+# prose) is worth 2 points and can trigger Markdown parsing on its own; each
+# WEAK hit is worth 1 and needs a second signal to combine with. Blockquote
+# lines are deliberately WEAK, not strong, even though the regex is
+# unambiguous: a plain-text email reply chain (lines starting with "> ")
+# is one of the most common shapes of real-world "not Markdown" text this
+# sniffer will see, so a lone quoted-reply block must not be enough by
+# itself to flip a whole email into Markdown rendering.
+_MD_SNIFF_HEADING_RE = re.compile(r"^#{1,6}\s+\S", re.MULTILINE)
+_MD_SNIFF_FENCE_RE = re.compile(r"^\s*```", re.MULTILINE)
+_MD_SNIFF_LINK_RE = re.compile(r"\[[^\]\n]+\]\(\w+://[^)\n]+\)")
+_MD_SNIFF_QUOTE_RE = re.compile(r"^\s*>\s?\S", re.MULTILINE)
+_MD_SNIFF_UNORDERED_RE = re.compile(r"^\s*[-*+]\s+\S", re.MULTILINE)
+_MD_SNIFF_ORDERED_RE = re.compile(r"^\s*\d+\.\s+\S", re.MULTILINE)
+_MD_SNIFF_BOLD_RE = re.compile(r"\*\*[^*\n]+\*\*|__[^_\n]+__")
+
+
+def _looks_like_markdown(text: str) -> bool:
+    """Conservative Markdown sniffer (ROADMAP P4).
+
+    A false-positive Markdown parse of an ordinary plain-text email (a
+    stray ``_word_`` or a single ``*note*``) would look worse than leaving
+    the text unrendered, so this deliberately does NOT even look for lone
+    emphasis markers — only ``**bold**``/``__bold__`` count, and only as a
+    weak (1-point) signal. Triggers at score >= 2: one strong hit (heading,
+    a real ```` ``` ```` fenced-code PAIR, or an inline ``[text](url)``
+    link) is enough on its own; weak hits (blockquote, 2+ list items,
+    bold) need to combine with something else.
+    """
+    score = 0
+    if _MD_SNIFF_HEADING_RE.search(text):
+        score += 2
+    if len(_MD_SNIFF_FENCE_RE.findall(text)) >= 2:
+        score += 2
+    if _MD_SNIFF_LINK_RE.search(text):
+        score += 2
+    if _MD_SNIFF_QUOTE_RE.search(text):
+        score += 1
+    if len(_MD_SNIFF_UNORDERED_RE.findall(text)) >= 2:
+        score += 1
+    if len(_MD_SNIFF_ORDERED_RE.findall(text)) >= 2:
+        score += 1
+    if _MD_SNIFF_BOLD_RE.search(text):
+        score += 1
+    return score >= 2
+
+
+def _md_inline(text: str, base_url: str, links: list[Link], counter: list[int]) -> str:
+    """Resolves ``[text](url)`` links (appending to ``links``, numbering via
+    ``counter[0]``) and strips ``**bold**``/``__bold__`` markers to plain
+    text. Shared by every block kind in ``parse_markdown`` that carries
+    inline text (headings, paragraphs, list items, quotes).
+
+    No italic (``*x*``/``_x_``) stripping — see ``_looks_like_markdown``'s
+    docstring; a single stray asterisk/underscore is exactly the ambiguous
+    case this module refuses to guess about, so it's left as literal text
+    rather than silently swallowed.
+    """
+    def _sub_link(m: re.Match) -> str:
+        counter[0] += 1
+        link_text, url = m.group(1), m.group(2)
+        links.append(Link(number=counter[0], url=_resolve_url(url, base_url), text=link_text, kind="content"))
+        return f"{link_text} [{counter[0]}]"
+
+    text = _MD_INLINE_LINK_RE.sub(_sub_link, text)
+    text = _MD_BOLD_RE.sub(lambda m: m.group(1) or m.group(2), text)
+    return text
+
+
+def parse_markdown(content: str, base_url: str = "", title: str | None = None) -> Document:
+    """Parse a Markdown (CommonMark-ish subset) document into a ``Document``.
+
+    Deliberately a subset, matching ``parse_gemtext``'s scope rather than
+    pulling in a full CommonMark implementation: ATX headings (``#`` through
+    ``######``), fenced code blocks (```` ``` ````, with any text after the
+    opening fence captured as a ``Block.caption`` language tag, same
+    convention as gemtext's alt-text), ``> `` blockquotes, ``-``/``*``/``+``
+    unordered and ``1.`` ordered list items, and ``[text](url)`` inline
+    links. Tables, task-list checkboxes, setext (``===``/``---``-underline)
+    headings, and nested/multi-paragraph list items are NOT handled — none
+    of this module's other parsers attempt their full spec either (see
+    ``parse_gemtext``'s docstring), and none of the ROADMAP's target
+    surfaces (Drive preview, event/task descriptions, email bodies) need
+    them to look reasonable.
+
+    Unlike gemtext, Markdown DOES reflow: consecutive non-blank plain lines
+    are meant to be read as one paragraph, but since ``DocumentView``
+    already wraps each ``Block`` individually and blank lines are the only
+    paragraph separator that matters for readability here, each non-blank
+    line is still emitted as its own paragraph ``Block`` (matching the
+    ``parse_feed_entry`` plain-text fallback's existing behavior) rather
+    than joining wrapped source lines back together.
+
+    Title falls back to the first level-1 (``#``) heading's text if the
+    caller didn't supply one.
+    """
+    blocks: list[Block] = []
+    links: list[Link] = []
+    counter = [0]
+    in_pre = False
+    pre_lines: list[str] = []
+    pre_caption: str | None = None
+    detected_title = title
+
+    for raw_line in content.split("\n"):
+        line = raw_line.rstrip("\r")
+        stripped = line.strip()
+
+        if stripped.startswith("```"):
+            if in_pre:
+                blocks.append(Block(kind="preformatted", text="\n".join(pre_lines), caption=pre_caption))
+                pre_lines = []
+                pre_caption = None
+                in_pre = False
+            else:
+                in_pre = True
+                pre_caption = stripped[3:].strip() or None
+            continue
+
+        if in_pre:
+            pre_lines.append(line)
+            continue
+
+        heading_m = _MD_ATX_HEADING_RE.match(line)
+        if heading_m:
+            level = len(heading_m.group(1))
+            text = _md_inline(heading_m.group(2).strip(), base_url, links, counter)
+            blocks.append(Block(kind="heading", text=text, level=level))
+            if detected_title is None and level == 1:
+                detected_title = text
+            continue
+
+        if line.startswith(">"):
+            text = _md_inline(line[1:].strip(), base_url, links, counter)
+            blocks.append(Block(kind="quote", text=text))
+            continue
+
+        ordered_m = _MD_ORDERED_ITEM_RE.match(line)
+        if ordered_m:
+            text = _md_inline(ordered_m.group(1).strip(), base_url, links, counter)
+            blocks.append(Block(kind="list_item", text=text, ordered=True))
+            continue
+
+        unordered_m = _MD_UNORDERED_ITEM_RE.match(line)
+        if unordered_m:
+            text = _md_inline(unordered_m.group(1).strip(), base_url, links, counter)
+            blocks.append(Block(kind="list_item", text=text, ordered=False))
+            continue
+
+        if not stripped:
+            continue
+
+        text = _md_inline(stripped, base_url, links, counter)
+        blocks.append(Block(kind="paragraph", text=text))
+
+    if in_pre and pre_lines:
+        # Unterminated fence at EOF: flush what we have rather than drop it
+        # (same choice parse_gemtext makes for its own ``` ``` ``` fences).
+        blocks.append(Block(kind="preformatted", text="\n".join(pre_lines), caption=pre_caption))
+
+    return Document(title=detected_title, blocks=blocks, links=links, source_url=base_url)
+
+
 _HTML_TAG_RE = re.compile(r"<[a-zA-Z][^>]*>")
 
 
@@ -994,12 +1168,19 @@ def parse_feed_entry(title: str, html_or_text: str, base_url: str = "", ascii_mo
     """Parse a single RSS/Atom entry body into a ``Document``.
 
     Sniffs for HTML tags; if any are found, routes through ``parse_html``.
-    Otherwise wraps each non-blank line as its own paragraph block. Never
-    imports ``feedparser`` — feed fetching/parsing-the-feed-itself stays
-    M3's job; this only handles a single entry's already-extracted body.
+    Otherwise sniffs for Markdown (``_looks_like_markdown``, conservative —
+    see its docstring) and routes through ``parse_markdown``. Otherwise
+    wraps each non-blank line as its own paragraph block. Never imports
+    ``feedparser`` — feed fetching/parsing-the-feed-itself stays M3's job;
+    this only handles a single entry's already-extracted body.
     """
     if _HTML_TAG_RE.search(html_or_text):
         doc = parse_html(html_or_text, base_url=base_url, ascii_mode=ascii_mode)
+        doc.title = title or doc.title
+        return doc
+
+    if _looks_like_markdown(html_or_text):
+        doc = parse_markdown(html_or_text, base_url=base_url, title=title)
         doc.title = title or doc.title
         return doc
 

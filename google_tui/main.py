@@ -1025,6 +1025,15 @@ def _is_previewable(mime: str) -> bool:
     return mime.startswith(_PREVIEWABLE_PREFIXES) or mime in _PREVIEWABLE_EXTRA
 
 
+def _is_markdown_file(name: str, mime: str) -> bool:
+    # mimetypes.guess_type (drive_sources._guess_mime) already resolves
+    # ".md" to "text/markdown" on systems whose /etc/mime.types knows it,
+    # but that registry lookup is platform-dependent -- the extension check
+    # is the reliable half of this, ``mime`` just widens it for a Drive
+    # file whose Google-assigned mimeType happens to already say so.
+    return mime == "text/markdown" or name.lower().endswith((".md", ".markdown"))
+
+
 # ---------------------------------------------------------------------------
 # Browser tab glue (M2) — address classification + search-result linkifying.
 # These live here (not render.py) because they're specific to this app's
@@ -1265,6 +1274,11 @@ class GoogleTUI(App):
     #drive-preview-col { width: 1fr; border: round $panel-darken-1; padding: 0 1; }
     #drive-preview-meta { height: auto; border-bottom: solid $panel-darken-2; padding-bottom: 1; }
     #drive-preview-text { height: 1fr; }
+    #drive-preview-doc { height: 1fr; }
+    /* EventModal/TaskModal already show Summary/Title in the fixed-fields
+       Static above; DocumentView's own auto-title bar would just repeat
+       that (or show "(untitled)" for the common no-heading case). */
+    #ev-desc #doc-title, #tk-desc #doc-title { display: none; }
     #drive-search { width: 1fr; }
     #browser-bar { height: 3; align: left middle; }
     #browser-mode { width: 10; color: $accent; text-style: bold; content-align: center middle; }
@@ -1473,7 +1487,7 @@ class GoogleTUI(App):
         # row the cursor has already visited.
         self._drive_preview_timer = None
         self._drive_preview_gen = 0
-        self._drive_preview_cache: dict[str, tuple[str, str]] = {}
+        self._drive_preview_cache: dict[str, tuple[str, str, bool]] = {}
         # Which source (Google Drive / a saved FTP or SSH host) the Drive tab
         # is currently browsing -- lazily defaults to Google Drive on first
         # access (drive_backend property below), same lazy-init idiom as
@@ -2001,6 +2015,7 @@ class GoogleTUI(App):
                         with VerticalScroll(id="drive-preview-col"):
                             yield Static(id="drive-preview-meta")
                             yield RichLog(id="drive-preview-text", markup=False, wrap=True)
+                            yield DocumentView(id="drive-preview-doc", classes="hidden")
             with TabPane(_tab_label("Browser", 5, self.settings.ascii_mode), id="tab-browser"):
                 with Container(id="browser-section", classes="section"):
                     with Horizontal(id="browser-bar"):
@@ -3177,7 +3192,11 @@ class GoogleTUI(App):
             if not self._drive_preview_visible:
                 self.notify("Preview pane is hidden — press \"p\" to show it.", severity="warning")
                 return
-            self.query_one("#drive-preview-text").focus()
+            doc_widget = self.query_one("#drive-preview-doc")
+            if not doc_widget.has_class("hidden"):
+                doc_widget.focus()
+            else:
+                self.query_one("#drive-preview-text").focus()
 
     def _focus_list_column(self, active_tab: str) -> None:
         if active_tab == "tab-mail":
@@ -5170,7 +5189,7 @@ class GoogleTUI(App):
         if cid == "d-up":
             self._drive_cancel_pending_preview()
             self.query_one("#drive-preview-meta").update("(parent folder)")
-            self.query_one("#drive-preview-text").clear()
+            self._drive_preview_reset()
             return
         if not cid.startswith("d-"):
             return
@@ -5192,6 +5211,22 @@ class GoogleTUI(App):
             self._drive_preview_timer.stop()
             self._drive_preview_timer = None
 
+    def _drive_preview_reset(self) -> None:
+        """Clears both preview widgets and leaves the plain RichLog visible.
+
+        Called whenever the preview pane is about to show a transient,
+        non-file state (parent-folder row, "Loading…") rather than a real
+        body — otherwise a Markdown ``DocumentView`` left rendered from the
+        previously highlighted file would stay on screen underneath the new
+        meta text until the fetch completes.
+        """
+        doc_widget = self.query_one("#drive-preview-doc", DocumentView)
+        doc_widget.document = None
+        doc_widget.add_class("hidden")
+        text_widget = self.query_one("#drive-preview-text", RichLog)
+        text_widget.remove_class("hidden")
+        text_widget.clear()
+
     def _drive_start_preview(self, f: dict) -> None:
         self._drive_preview_timer = None
         self._drive_preview_gen += 1
@@ -5202,9 +5237,9 @@ class GoogleTUI(App):
         # with no network call at all.
         hit = self._drive_preview_cache.get(fid)
         if hit is not None:
-            self._apply_drive_preview(gen, hit[0], hit[1])
+            self._apply_drive_preview(gen, hit[0], hit[1], hit[2])
             return
-        self.query_one("#drive-preview-text").clear()
+        self._drive_preview_reset()
         self.query_one("#drive-preview-meta").update(f"Name: {f.get('name','')}\nLoading…")
         self.run_worker(lambda: self._drive_preview_thread(gen, f),
                         thread=True, exclusive=True, group="drive-preview")
@@ -5217,13 +5252,17 @@ class GoogleTUI(App):
         answered. Pure fetch; all widget writes go through _apply_drive_preview
         on the main thread (AGENTS.md's fetch/apply-split NOTE).
         """
-        info, body = self._drive_preview_fetch(f)
+        info, body, is_markdown = self._drive_preview_fetch(f)
         if gen == self._drive_preview_gen:
-            self._drive_preview_cache[f["id"]] = (info, body)
-        self.call_from_thread(self._apply_drive_preview, gen, info, body)
+            self._drive_preview_cache[f["id"]] = (info, body, is_markdown)
+        self.call_from_thread(self._apply_drive_preview, gen, info, body, is_markdown)
 
-    def _drive_preview_fetch(self, f: dict) -> tuple[str, str]:
-        """Blocking; returns the (meta_text, body_text) pair to render."""
+    def _drive_preview_fetch(self, f: dict) -> tuple[str, str, bool]:
+        """Blocking; returns the (meta_text, body_text, is_markdown) tuple
+        to render. ``is_markdown`` is only ever True alongside a real
+        successfully-fetched file body — every placeholder/error message
+        path below returns False so it's never mistakenly run through
+        ``parse_markdown``."""
         is_folder = f["is_folder"]
         fid = f["id"]
         backend = self.drive_backend
@@ -5254,7 +5293,7 @@ class GoogleTUI(App):
             try:
                 meta = backend.get_metadata(fid)
             except Exception as ex:
-                return f"(metadata error: {ex})", ""
+                return f"(metadata error: {ex})", "", False
             # Persistent per-file caching applies to every source (it's a
             # perf/revalidation optimization keyed off modifiedTime, not an
             # offline-availability guarantee) -- unlike the root LISTING
@@ -5266,7 +5305,7 @@ class GoogleTUI(App):
             meta = cached_meta
             if meta is None:
                 return (f"Name: {f.get('name','')}\n(offline — never viewed online, "
-                        "no cached details)", "(not available offline)")
+                        "no cached details)", "(not available offline)", False)
 
         # owner/createdTime are Google-only concepts (FTP has no owner
         # notion; SSH's st_ctime is "inode change time," not creation time,
@@ -5288,38 +5327,50 @@ class GoogleTUI(App):
         if not self._online:
             info += "\n(offline — showing cached details)"
         if is_folder:
-            return info, "(folder — press Enter to open)"
+            return info, "(folder — press Enter to open)", False
         mime = meta.get("mimeType", "")
         if not _is_previewable(mime):
             if mime.startswith("image/"):
-                return info, "(image file — no text preview)"
-            return info, "(binary file — no text preview)"
+                return info, "(image file — no text preview)", False
+            return info, "(binary file — no text preview)", False
+        is_markdown = _is_markdown_file(meta.get("name") or f.get("name", ""), mime)
 
         # The body is the expensive part (a full file download). Reuse the
         # cached text whenever the modifiedTime says the file hasn't changed —
         # `fresh` was decided against the listing's modifiedTime above.
         cached_text = self._cache.get(text_category, fid) if self._cache else None
         if fresh and cached_text:
-            return info, cached_text["text"][:8000]
+            return info, cached_text["text"][:8000], is_markdown
 
         if self._online:
             try:
                 text = backend.read_preview_text(fid)
             except Exception as ex:
-                return info, f"(preview error: {ex})"
+                return info, f"(preview error: {ex})", False
             if self._cache:
                 self._cache.put(text_category, fid, {"text": text})
-            return info, text[:8000]
+            return info, text[:8000], is_markdown
 
         if cached_text:
-            return info, cached_text["text"][:8000]
-        return info, "(not available offline — open this file once while online to cache it)"
+            return info, cached_text["text"][:8000], is_markdown
+        return info, "(not available offline — open this file once while online to cache it)", False
 
-    def _apply_drive_preview(self, gen: int, info: str, body: str) -> None:
+    def _apply_drive_preview(self, gen: int, info: str, body: str, is_markdown: bool = False) -> None:
         if gen != self._drive_preview_gen:
             return  # cursor moved on; a newer preview owns the pane now
         self.query_one("#drive-preview-meta").update(info)
-        text_widget = self.query_one("#drive-preview-text")
+        doc_widget = self.query_one("#drive-preview-doc", DocumentView)
+        text_widget = self.query_one("#drive-preview-text", RichLog)
+        if is_markdown and body:
+            text_widget.add_class("hidden")
+            text_widget.clear()
+            doc_widget.remove_class("hidden")
+            doc_widget.document = render.parse_markdown(body)
+            doc_widget.scroll_home(animate=False)
+            return
+        doc_widget.add_class("hidden")
+        doc_widget.document = None
+        text_widget.remove_class("hidden")
         text_widget.clear()
         if body:
             text_widget.write(body)
@@ -7100,6 +7151,19 @@ class ComposeModal(ModalScreen):
 
 
 class EventModal(ModalScreen):
+    """Appointment detail. The description is routed through
+    ``render.parse_feed_entry`` into a ``DocumentView`` (ROADMAP P4,
+    2026-07-19) instead of being interpolated raw into the fixed-fields
+    ``Static`` above it — Google Calendar's rich-text event editor often
+    produces HTML descriptions, and this also lights up Markdown
+    descriptions for free, same `parse_feed_entry` entry point used by
+    ThreadModal/NewsEntryModal. `#ev-desc #doc-title` is hidden via CSS:
+    the Summary line above already names the event, so `DocumentView`'s own
+    auto-title bar (which would show "(untitled)" for the common case of a
+    plain-text description with no `#`-heading) would just be redundant/ugly
+    noise here.
+    """
+
     def __init__(self, event: dict):
         super().__init__()
         self.event = event
@@ -7108,6 +7172,7 @@ class EventModal(ModalScreen):
         with Container(id="ev-box", classes="pane"):
             yield Label("APPOINTMENT DETAIL", classes="pane-title-text")
             yield Static(id="ev-detail")
+            yield DocumentView(id="ev-desc")
             yield Button("Close", id="close")
 
     def on_mount(self) -> None:
@@ -7117,8 +7182,11 @@ class EventModal(ModalScreen):
         det = (f"Summary: {e.get('summary','')}\n"
                f"Start:   {start}\nEnd:     {end}\n"
                f"Location:{e.get('location','')}\n"
-               f"Link:    {e.get('htmlLink','')}\n\n{e.get('description','')}")
+               f"Link:    {e.get('htmlLink','')}")
         self.query_one("#ev-detail").update(det)
+        doc = render.parse_feed_entry("", e.get("description", "") or "",
+                                       ascii_mode=self.app.settings.ascii_mode)
+        self.query_one("#ev-desc", DocumentView).document = doc
 
     def on_button_pressed(self, e):
         self.dismiss(None)
@@ -7278,6 +7346,12 @@ class TaskModal(ModalScreen):
     the old version didn't show subtasks at all, despite ROADMAP.md's stale
     claim that it did; see CHANGELOG).
 
+    Notes are routed through ``render.parse_feed_entry`` into a
+    ``DocumentView`` (ROADMAP P4, 2026-07-19), same rationale/pattern as
+    ``EventModal``'s description — HTML/Markdown-aware rendering instead of
+    raw text interpolation, with `#tk-desc #doc-title` hidden via CSS since
+    the Title line above already covers it.
+
     `all_tasks` is the app's full `self._tasks_cache` (every tasklist
     combined) — subtasks are just plain tasks tagged with a `parent` field
     (see `_child_tasks`), so no extra gauth call is needed to find them at
@@ -7310,6 +7384,7 @@ class TaskModal(ModalScreen):
         with Container(id="tk-box", classes="pane"):
             yield Label("TASK DETAIL", classes="pane-title-text")
             yield Static(id="tk-detail")
+            yield DocumentView(id="tk-desc")
             yield Label("Subtasks — Space: toggle complete, Delete: remove",
                         classes="muted")
             yield ListView(id="tk-subtask-list")
@@ -7323,8 +7398,11 @@ class TaskModal(ModalScreen):
     async def on_mount(self) -> None:
         t = self.task_data
         det = (f"Title: {t.get('title','')}\nStatus: {t.get('status','')}\n"
-               f"Due:   {t.get('due','')}\n\nNotes:\n{t.get('notes','')}")
+               f"Due:   {t.get('due','')}")
         self.query_one("#tk-detail").update(det)
+        doc = render.parse_feed_entry("", t.get("notes", "") or "",
+                                       ascii_mode=self.app.settings.ascii_mode)
+        self.query_one("#tk-desc", DocumentView).document = doc
         await self._render_subtasks()
 
     async def _render_subtasks(self) -> None:

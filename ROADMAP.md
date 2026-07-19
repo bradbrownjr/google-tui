@@ -63,39 +63,6 @@ just checking it off here, so ROADMAP.md only ever shows what's still open.
   package (not a current dependency).
 - [ ] **Config file** (`config.toml`) for: default LLM model, timezone, pane
   order, searxng URL, refresh interval.
-- [ ] **Markdown detection + rendering** in Drive file preview, calendar/task
-  descriptions, and (cautiously) email bodies. `render.py` today only
-  understands HTML (`parse_html`), Gemtext (`parse_gemtext`), and Gopher
-  (`parse_gopher_menu`) — no Markdown parser exists. The natural entry
-  point is `parse_feed_entry` (`render.py:953`): it already sniffs
-  `_HTML_TAG_RE` and routes to `parse_html`, else wraps each line as an
-  unstyled paragraph `Block` — add a Markdown sniffer + `parse_markdown()`
-  as a second branch there, producing the same `Block`/`Link` vocabulary
-  `DocumentView` already renders. Doing just that lights up Markdown in
-  email bodies for free, since `ThreadModal` already routes every message
-  through `parse_feed_entry` (`main.py:3420-3423`, added for HTML email
-  rendering — P1 M4, `bec0aae`). Two more surfaces don't go through the
-  shared Document/`DocumentView` pipeline at all yet and need that wiring
-  first:
-  - **Drive file preview** (`#drive-preview-text`, `main.py:826`) is a
-    plain `RichLog(markup=False)` — a `.md` file's raw source is dumped
-    verbatim today. Detect by extension/mimetype and switch to
-    `DocumentView`.
-  - **`EventModal`'s description** (`main.py:3663`) interpolates
-    `e.get('description','')` raw into an f-string on a plain `Static` —
-    no rendering of any kind yet, not even HTML. Moving it onto
-    `DocumentView`/`parse_feed_entry` gets HTML-sniffing (Google Calendar's
-    rich-text editor often produces HTML descriptions) for free, with
-    Markdown as the second win, not the only one. Same gap likely applies
-    to Task notes — worth checking `TaskDetailModal` while in there.
-  Real design question, not just plumbing: detection needs to be
-  conservative. A false-positive Markdown parse on an ordinary plain-text
-  email (a stray `_word_` or `*note*`) would look worse than leaving it
-  unrendered — the sniffer should require several Markdown-syntax hits
-  (headers, fenced code, list markers), not just one asterisk or
-  underscore. *(Suggested model: Sonnet for the parser/sniffer + Email
-  wiring; Drive/Calendar/Task integration is separate, mostly mechanical,
-  surface work once `parse_markdown()` exists.)*
 - [ ] **Multiple accounts** switch (if a second token appears).
 - [ ] **Keyboard-first everywhere** — audit remaining tabs/modals for
   mouse-only actions. Drive folder nav (arrow keys + Enter) and Calendar

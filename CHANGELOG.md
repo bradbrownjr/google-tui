@@ -3,6 +3,71 @@
 Format: keep newest at top. One entry per meaningful change. Reference files
 touched and any breaking notes.
 
+## [2026-07-19] — Markdown detection + rendering (Drive preview, event/task descriptions, email bodies)
+
+`render.py` gained a Markdown parser and a conservative sniffer, closing the
+last open P4 item that needed real design thought:
+
+- **`render._looks_like_markdown(text)`** — scores syntax hits: a heading, a
+  real fenced-code ` ``` ` PAIR, or an inline `[text](url)` link is a STRONG
+  hit (2 points, triggers alone); a blockquote line, 2+ list-item lines, or
+  `**bold**`/`__bold__` is WEAK (1 point, needs a second signal). Threshold
+  is 2. Deliberately does NOT count lone `*italic*`/`_italic_` markers at
+  all, and deliberately keeps blockquote WEAK even though the regex is
+  unambiguous — a plain-text email reply chain (`> ` quoted lines) is one of
+  the most common "not Markdown" shapes this sniffer will actually see, and
+  must not flip a whole email into Markdown rendering on its own.
+- **`render.parse_markdown(content, base_url="", title=None)`** — a
+  CommonMark *subset*, matching `parse_gemtext`'s existing scope rather than
+  a full implementation: ATX headings, fenced code (language tag captured as
+  `Block.caption`, same convention as gemtext's alt-text), blockquotes,
+  ordered/unordered list items, `[text](url)` inline links, `**bold**`
+  stripped to plain text. No tables, task checkboxes, setext headings, or
+  nested list items — none of this module's other parsers attempt their
+  full spec either, and none of the target surfaces need them.
+- **`parse_feed_entry`** now sniffs Markdown as a second branch (after the
+  existing HTML-tag sniff, before the plain-paragraph fallback), so every
+  existing `parse_feed_entry` caller gets Markdown for free: `ThreadModal`
+  (email bodies), `NewsEntryModal` (feed entries).
+
+Two surfaces that never went through the shared Document/`DocumentView`
+pipeline got wired up:
+- **Drive file preview** (`main.py`'s `_drive_preview_fetch`/
+  `_apply_drive_preview`) — a new `DocumentView#drive-preview-doc` sits
+  alongside the existing `RichLog#drive-preview-text`, toggled via a
+  `.hidden` class. `_is_markdown_file(name, mime)` (extension `.md`/
+  `.markdown`, or `mimeType == "text/markdown"`) decides which one shows;
+  `_drive_preview_fetch`'s return type grew a third `is_markdown: bool`
+  element (threaded through the session cache tuple and the worker-thread
+  hop) so the decision is made once, from real file metadata, not
+  re-guessed from the rendered body text. `_drive_preview_reset()` (used by
+  the parent-folder row and the "Loading…" transition) makes sure a
+  previously-rendered Markdown `DocumentView` doesn't linger under the next
+  file's meta text. Alt+Right pane-focus now checks which widget is
+  actually visible before focusing it.
+- **`EventModal`'s description / `TaskModal`'s notes** — both used to
+  interpolate raw text (`e.get('description','')` / `t.get('notes','')`)
+  into an f-string on a plain `Static`, no rendering of any kind, not even
+  HTML. Both now route through `render.parse_feed_entry("", body, ...)` into
+  a `DocumentView` below the fixed-fields `Static`, gaining HTML-sniffing
+  (Google Calendar's rich-text editor often produces HTML descriptions) and
+  Markdown for free. `#ev-desc #doc-title`/`#tk-desc #doc-title` are hidden
+  via CSS — the modal's own Summary/Title line already names the item, so
+  `DocumentView`'s auto-title bar would just repeat it (or show
+  "(untitled)" for the common no-heading case). Confirmed there's no
+  separate `TaskDetailModal` — `TaskModal` is the one class covering both.
+
+Verification: 12 new unit tests in `tests/unit/test_render.py` (parser shape
++ sniffer true/false/combo cases, including an explicit regression test that
+a quoted-reply-chain-alone and a stray-`*emphasis*`-alone plain-text email
+do NOT get Markdown-rendered) plus three new pilot scenarios —
+`drive_markdown_preview.py` (a `.md` Drive file switches panes correctly),
+`event_task_markdown.py` (`EventModal`/`TaskModal` mount and render without
+crashing, `#ev-desc`/`#tk-desc` show the expected blocks) — both wired into
+`tests/test_pilot_scenarios.py`. 77 tests total, all green; real
+`~/.config/google-tui`/`~/.cache/google-tui` confirmed untouched (mtime diff
+across two full runs).
+
 ## [2026-07-19] — Unit tests in-repo (`tests/`, pytest)
 
 Formalized the `run_test` pilot pattern from AGENTS.md §6 (previously only
