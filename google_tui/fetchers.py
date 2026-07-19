@@ -19,8 +19,10 @@ gopher/gemini use only the stdlib (``socket``/``ssl``/``hashlib``).
 from __future__ import annotations
 
 import calendar
+import csv
 import datetime as dt
 import hashlib
+import io
 import re
 import socket
 import ssl
@@ -376,6 +378,169 @@ def fetch_feed(url: str, timeout: int = 15) -> list[dict]:
             "feed_url": url,
         })
     return entries
+
+
+# ---------------------------------------------------------------------------
+# Dashboard external cards (ROADMAP P4, 2026-07-19) — weather, stocks, word
+# of the day, Wikipedia picture of the day. All four use free endpoints that
+# need no API key/account, so there's no credential-storage story here (unlike
+# routes_api_key/google_cse_api_key) — just the two pieces of free-text config
+# (weather location, stock symbols) Settings -> Dashboard collects.
+# ---------------------------------------------------------------------------
+
+# Open-Meteo's WMO weather-code table (https://open-meteo.com/en/docs), the
+# subset it actually returns for `current`/`daily` — codes outside this map
+# (there aren't any as of writing) fall back to "Unknown" rather than KeyError.
+_WMO_WEATHER_CODES = {
+    0: "Clear sky", 1: "Mainly clear", 2: "Partly cloudy", 3: "Overcast",
+    45: "Fog", 48: "Depositing rime fog",
+    51: "Light drizzle", 53: "Moderate drizzle", 55: "Dense drizzle",
+    56: "Light freezing drizzle", 57: "Dense freezing drizzle",
+    61: "Slight rain", 63: "Moderate rain", 65: "Heavy rain",
+    66: "Light freezing rain", 67: "Heavy freezing rain",
+    71: "Slight snow fall", 73: "Moderate snow fall", 75: "Heavy snow fall",
+    77: "Snow grains",
+    80: "Slight rain showers", 81: "Moderate rain showers", 82: "Violent rain showers",
+    85: "Slight snow showers", 86: "Heavy snow showers",
+    95: "Thunderstorm", 96: "Thunderstorm, slight hail", 99: "Thunderstorm, heavy hail",
+}
+
+
+def fetch_weather(location: str, timeout: int = 15) -> dict:
+    """Current conditions for a free-text location (e.g. "Seattle, WA") via
+    Open-Meteo — geocoding + forecast, both free and keyless. Returns
+    ``{"location", "temp_f", "wind_mph", "condition", "high_f", "low_f"}``.
+    Raises ``BrowserFetchError`` if the location can't be resolved or either
+    call fails, same convention as this module's other fetchers.
+    """
+    try:
+        geo_resp = requests.get(
+            "https://geocoding-api.open-meteo.com/v1/search",
+            params={"name": location, "count": 1}, timeout=timeout,
+            headers={"User-Agent": DEFAULT_USER_AGENT})
+    except requests.RequestException as e:
+        raise BrowserFetchError(f"Weather geocoding failed: {e}") from e
+    if geo_resp.status_code >= 400:
+        raise BrowserFetchError(f"HTTP {geo_resp.status_code} geocoding {location!r}")
+    results = geo_resp.json().get("results") or []
+    if not results:
+        raise BrowserFetchError(f"No location found for {location!r}")
+    hit = results[0]
+    resolved = ", ".join(p for p in (hit.get("name"), hit.get("admin1"), hit.get("country")) if p)
+    try:
+        resp = requests.get(
+            "https://api.open-meteo.com/v1/forecast",
+            params={
+                "latitude": hit["latitude"], "longitude": hit["longitude"],
+                "current": "temperature_2m,weather_code,wind_speed_10m",
+                "daily": "temperature_2m_max,temperature_2m_min",
+                "temperature_unit": "fahrenheit", "wind_speed_unit": "mph",
+                "timezone": "auto", "forecast_days": 1,
+            }, timeout=timeout, headers={"User-Agent": DEFAULT_USER_AGENT})
+    except requests.RequestException as e:
+        raise BrowserFetchError(f"Weather forecast failed: {e}") from e
+    if resp.status_code >= 400:
+        raise BrowserFetchError(f"HTTP {resp.status_code} fetching the forecast")
+    data = resp.json()
+    current = data.get("current") or {}
+    daily = data.get("daily") or {}
+    return {
+        "location": resolved or location,
+        "temp_f": current.get("temperature_2m"),
+        "wind_mph": current.get("wind_speed_10m"),
+        "condition": _WMO_WEATHER_CODES.get(current.get("weather_code"), "Unknown"),
+        "high_f": (daily.get("temperature_2m_max") or [None])[0],
+        "low_f": (daily.get("temperature_2m_min") or [None])[0],
+    }
+
+
+def fetch_stocks(symbols: list[str], timeout: int = 15) -> list[dict]:
+    """Latest quotes for a list of ticker symbols via Stooq's free CSV quote
+    endpoint (no API key). A bare symbol (no ``.``) is assumed to be a
+    US-listed ticker — Stooq requires an exchange suffix (``aapl.us``);
+    anything already carrying one (a non-US symbol) passes through as-is.
+    Returns a list of ``{"symbol", "price", "change", "change_pct"}``, in
+    Stooq's response order; a symbol Stooq doesn't recognize is just absent
+    from the result rather than raising, so one bad symbol among several
+    doesn't blank the whole card.
+    """
+    if not symbols:
+        return []
+    qs = ",".join(s.strip().lower() if "." in s.strip() else f"{s.strip().lower()}.us"
+                  for s in symbols if s.strip())
+    try:
+        resp = requests.get(
+            "https://stooq.com/q/l/",
+            params={"s": qs, "f": "sd2t2ohlcv", "e": "csv"},
+            timeout=timeout, headers={"User-Agent": DEFAULT_USER_AGENT})
+    except requests.RequestException as e:
+        raise BrowserFetchError(f"Stock quote fetch failed: {e}") from e
+    if resp.status_code >= 400:
+        raise BrowserFetchError(f"HTTP {resp.status_code} fetching stock quotes")
+    out = []
+    for row in csv.DictReader(io.StringIO(resp.text)):
+        try:
+            close = float(row["Close"])
+            open_ = float(row["Open"])
+        except (KeyError, ValueError, TypeError):
+            continue
+        change = close - open_
+        out.append({
+            "symbol": (row.get("Symbol") or "").upper(),
+            "price": close,
+            "change": change,
+            "change_pct": (change / open_ * 100) if open_ else 0.0,
+        })
+    return out
+
+
+# Merriam-Webster's public word-of-the-day RSS feed — no API key/account
+# needed, unlike Wordnik/MW's own dictionary APIs.
+WORD_OF_DAY_FEED_URL = "https://www.merriam-webster.com/wotd/feed/rss2"
+
+
+def fetch_word_of_day(timeout: int = 15) -> dict:
+    """Today's word via ``WORD_OF_DAY_FEED_URL``, reusing ``fetch_feed``'s
+    HTTP+feedparser plumbing rather than a bespoke request. Returns
+    ``{"word", "definition", "link"}`` — ``definition`` is the feed entry's
+    HTML body reduced to plain text (see ``_strip_tags`` below) for a
+    Dashboard card; the full formatted entry is only a Enter-keypress away
+    via ``link``. Raises ``BrowserFetchError`` if the feed is empty.
+    """
+    entries = fetch_feed(WORD_OF_DAY_FEED_URL, timeout=timeout)
+    if not entries:
+        raise BrowserFetchError("Word of the day feed returned no entries")
+    e = entries[0]
+    return {"word": e["title"], "definition": _strip_tags(e["summary"]), "link": e["link"]}
+
+
+def fetch_wiki_potd(timeout: int = 15) -> dict:
+    """Today's Wikipedia picture of the day via the Wikimedia Feed API (no
+    API key). In-terminal image rendering isn't available yet (ROADMAP:
+    Drive image preview needs the ``textual-image`` package, not a current
+    dependency), so the Dashboard card shows the caption as text with a link
+    to view the actual image in a browser. Returns
+    ``{"title", "description", "link"}``; raises ``BrowserFetchError`` if
+    today has no featured image or the API call fails.
+    """
+    today = dt.date.today()
+    url = f"https://api.wikimedia.org/feed/v1/wikipedia/en/featured/{today:%Y/%m/%d}"
+    try:
+        resp = requests.get(url, timeout=timeout, headers={"User-Agent": DEFAULT_USER_AGENT})
+    except requests.RequestException as e:
+        raise BrowserFetchError(f"Wikipedia picture of the day fetch failed: {e}") from e
+    if resp.status_code >= 400:
+        raise BrowserFetchError(f"HTTP {resp.status_code} for {url}")
+    image = resp.json().get("image")
+    if not image:
+        raise BrowserFetchError("No Wikipedia picture of the day available")
+    title = (image.get("title") or "").removeprefix("File:").replace("_", " ")
+    description = ((image.get("description") or {}).get("text") or "").strip()
+    return {
+        "title": title,
+        "description": _strip_tags(description) if "<" in description else description,
+        "link": image.get("file_page") or "",
+    }
 
 
 # ---------------------------------------------------------------------------

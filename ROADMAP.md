@@ -70,30 +70,9 @@ just checking it off here, so ROADMAP.md only ever shows what's still open.
   already fully keyboard-accessible; confirmed `[2026-07-16]` via a
   keyboard-only pilot, no code change needed. What's left, if anything, is
   unaudited — re-scope once something concrete turns up.
-- [ ] **Dashboard tab: the external cards.** The Google-native half shipped
-  `[2026-07-17]` (see CHANGELOG / the Done list below): a 2×2 card grid —
-  TODAY (today's events), TASKS (grouped overdue/today/upcoming/unscheduled),
-  MAIL (unread count + top unread), NEWS (top rotating headlines from the
-  subscribed feeds) — plus the Hermes Ask card full-width below. Card enable/
-  disable (Settings → Dashboard) shipped `[2026-07-18]`, making `DASH_
-  PANE_IDS` a real "card library" rather than a fixed 5 — see AGENTS.md's
-  `DASH_ADJACENCY` NOTE. Still to build, the remaining half: **weather**,
-  **stocks** (symbols configurable in Settings), **dictionary word of the
-  day**, **Wikipedia picture of the day**. Each needs a new fetcher
-  (Open-Meteo / a stocks API / a dictionary API / Wikipedia REST `featured`
-  endpoint) plus its own Settings rows (weather location, stock symbols) and
-  a new card slot (the layout + enable/disable mechanism — `#dashboard-body`
-  Grid, `DASH_PANE_IDS`, `DASH_ADJACENCY`, `_apply_narrow_layout`,
-  `_apply_dashboard_panes_enabled` — is already in place; adding a card is:
-  a `Container` in `compose()`, an id in `DASH_PANE_IDS` + `PANE_TITLES`
-  [auto-appears in the Settings checklist], an adjacency entry, a `_fetch_*`/
-  `_apply_*` split per AGENTS.md §8, and the fetcher — no separate on/off
-  toggle to wire per-card, the checklist already covers any id in `DASH_
-  PANE_IDS`). The news-headline card currently pulls from ALL subscribed
-  feeds newest-first, not "top-5 by RSS category" — per-category selection
-  is a possible refinement if the flat list proves too noisy. *(Suggested
-  model: Opus for the fetchers + Settings; the grid/enable-disable wiring is
-  now mechanical.)*
+- [ ] **News card per-category selection.** The Dashboard NEWS card pulls
+  from ALL subscribed feeds newest-first, not "top-5 by RSS category" —
+  a possible refinement if the flat list proves too noisy in practice.
 - [ ] **RSS subscription list.** Categorized checklist of popular feeds to
   toggle on/off, plus add-your-own custom feed URL (Settings already has a
   feed list at `#settings-feed-list`, `main.py:569` — extend it rather than
@@ -106,6 +85,35 @@ just checking it off here, so ROADMAP.md only ever shows what's still open.
 
 ## Done
 
+- [x] **Dashboard tab: the external cards** (`[2026-07-19]`) — the four cards
+  left over from the Google-native Dashboard grid (`[2026-07-17]`): WEATHER
+  (Open-Meteo geocoding + forecast), STOCKS (Stooq CSV quotes), WORD OF THE
+  DAY (Merriam-Webster's public RSS feed), PICTURE OF THE DAY (Wikimedia's
+  Feed API — caption/description as text with a link to the image, since
+  in-terminal image rendering isn't built yet; see the still-open Drive image
+  preview item above). All four are free/keyless. Grid grew from 2×2+Hermes
+  to 2×4+Hermes (`DASH_PANE_IDS`/`PANE_TITLES`/`DASH_ADJACENCY`,
+  `#dashboard-body`'s `grid-size`); WEATHER/STOCKS/WORD/POTD all start
+  disabled in `Settings.dashboard_panes_enabled`'s default (opt in via
+  Settings → Dashboard) so existing installs don't suddenly grow four cards
+  they haven't configured. Settings → Dashboard gained a weather-location
+  and stock-symbols row ("Save card settings" triggers an immediate
+  refresh). `_live_refresh_thread` fetches all four independently of Google
+  auth (none of them touch Google) and independently of each other (one
+  failing doesn't blank the others) — a `_DASH_EXTRA_UNCHANGED` sentinel
+  distinguishes "this refresh had nothing new" (leave the card as painted)
+  from an explicit `None` ("nothing cached/configured, show the empty
+  state"), the latter also used when a card is newly enabled from Settings
+  so it repaints immediately instead of staying blank until the next
+  refresh. WORD OF THE DAY/PICTURE OF THE DAY's Enter action opens the
+  source link in the Browser tab (`_open_dashboard_link`, reusing the
+  `_bookmark_open_selected` two-step). Found and fixed a latent bug in
+  passing: the pre-existing dash-mail/dash-news Space-mirrors-Enter path
+  built a `ListView.Selected` missing its required `index` arg, a `TypeError`
+  waiting to happen (Textual 8.2.8 has no default for it). New pilot
+  scenario `tests/pilot/dashboard_external_cards.py` (fetchers mocked via
+  `tests/pilot/fakes.py`, extended); 79 tests total, all green. See
+  CHANGELOG.
 - [x] **Unit tests in-repo** (`[2026-07-19]`) — new `tests/` package,
   `pytest`-discoverable (`pip install -e ".[dev]"`, then `pytest`, 59 tests).
   `tests/unit/` covers pure functions (render's HTML/Gopher/Gemtext parsers,

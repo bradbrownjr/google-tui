@@ -12,7 +12,7 @@ from unittest.mock import patch
 
 from google.oauth2.credentials import Credentials
 
-from google_tui import gauth
+from google_tui import fetchers, gauth
 
 now = datetime.now(timezone.utc)
 
@@ -51,6 +51,19 @@ FAKE_CONTACTS: list[dict] = []
 
 FAKE_CALENDARS = [{"id": "primary", "backgroundColor": "#039BE5", "selected": True}]
 
+# Dashboard external cards (2026-07-19) -- these are only ever fetched when
+# their card is enabled AND (for weather/stocks) configured, which no default
+# Settings() is, so most scenarios never touch these; mocked here anyway on
+# base_patches()' own "zero live API calls, ever" principle, in case a future
+# scenario enables one without remembering to add its own patch.
+FAKE_WEATHER = {"location": "Testville, TS", "temp_f": 72.0, "wind_mph": 5.0,
+                "condition": "Clear sky", "high_f": 78.0, "low_f": 60.0}
+FAKE_STOCKS = [{"symbol": "AAPL", "price": 123.45, "change": 1.23, "change_pct": 1.01}]
+FAKE_WORD_OF_DAY = {"word": "quixotic", "definition": "Exceedingly idealistic; unrealistic.",
+                     "link": "https://www.merriam-webster.com/word-of-the-day"}
+FAKE_WIKI_POTD = {"title": "Example Bridge", "description": "A scenic bridge at sunset.",
+                   "link": "https://commons.wikimedia.org/wiki/File:Example.jpg"}
+
 FAKE_CREDS = Credentials(token="fake-token", refresh_token=None, client_id="fake", client_secret="fake",
                           token_uri="https://example.com/token", scopes=[])
 
@@ -82,6 +95,10 @@ def base_patches() -> list:
         patch.object(gauth, "send_message", return_value=None),
         patch.object(gauth, "mark_read", return_value=None),
         patch.object(gauth, "set_task_status", return_value=None),
+        patch.object(fetchers, "fetch_weather", return_value=FAKE_WEATHER),
+        patch.object(fetchers, "fetch_stocks", return_value=FAKE_STOCKS),
+        patch.object(fetchers, "fetch_word_of_day", return_value=FAKE_WORD_OF_DAY),
+        patch.object(fetchers, "fetch_wiki_potd", return_value=FAKE_WIKI_POTD),
     ]
 
 

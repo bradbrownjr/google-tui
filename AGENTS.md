@@ -18,15 +18,18 @@ bar of the outer `TabbedContent#main-tabs`, not a separate status widget):
 (`Ctrl+9` only — no F-key alias, F9+ isn't reliably delivered by every
 terminal). The Mail tab is Email-only (`2026-07-16` — see CHANGELOG),
 with a toggleable preview pane (`p`, hidden by default). The Dashboard tab
-(`2026-07-17`) is a 2×2 card **grid** — TODAY (today's events), TASKS
-(grouped overdue/today/upcoming/unscheduled/done), MAIL (unread count + top
-unread threads), NEWS (rotating top headlines from the subscribed feeds) —
-plus the HERMES ASK card full-width below. These five are still "panes" for
-key-nav purposes (`DASH_PANE_IDS`, `Alt+#`, Tab/arrows). Only the Google-
-native half is built; the external cards (weather/stocks/dictionary/
-Wikipedia — ROADMAP P4) are still open. Tabs and panes are
-deliberately different concepts with different key prefixes (`Ctrl+#` for
-tabs, `Alt+#` for panes) — see §2.
+(`2026-07-17`, external cards `2026-07-19`) is a card **grid** — TODAY
+(today's events), TASKS (grouped overdue/today/upcoming/unscheduled/done),
+MAIL (unread count + top unread threads), NEWS (rotating top headlines from
+the subscribed feeds), WEATHER (Open-Meteo), STOCKS (Stooq), WORD OF THE DAY
+(Merriam-Webster), PICTURE OF THE DAY (Wikimedia Feed API, caption-as-text
+until in-terminal image rendering exists) — plus the HERMES ASK card
+full-width below. These nine are still "panes" for key-nav purposes
+(`DASH_PANE_IDS`, `Alt+#`, Tab/arrows); WEATHER/STOCKS/WORD/POTD start
+disabled (Settings → Dashboard opts them in — WEATHER/STOCKS also need a
+location/symbols there first). Tabs and panes are deliberately different
+concepts with different key prefixes (`Ctrl+#` for tabs, `Alt+#` for panes)
+— see §2.
 
 ```
 ┌ Dashboard¹ [Mail²]  Calendar³  Drive⁴  Browser⁵  News⁶  Navigation⁷  Contacts⁸ ⋯ Ctrl+9 Settings ┐  ← blue bar,
@@ -736,24 +739,32 @@ double-ESC encoding.
 
 **`DASH_ADJACENCY`** (`main.py`, was `PANE_ADJACENCY` before the
 `2026-07-16` Mail/Dashboard split — see CHANGELOG): with the `2026-07-17`
-card grid it's a real 2-D map again (`{"right": ..., "down": ...}`), matching
-the layout `[events][tasks]` / `[dash-mail][dash-news]` / `[hermes full
+card grid it's a real 2-D map again (`{"right": ..., "down": ...}`), grown
+`2026-07-19` to match the layout `[events][tasks]` / `[dash-mail][dash-news]`
+/ `[dash-weather][dash-stocks]` / `[dash-word][dash-potd]` / `[hermes full
 width]`. Still an explicit `{pane: {direction: pane}}` map, not arithmetic —
 and, since it's fixed grid GEOMETRY, unaffected by which cards are enabled/
 disabled (see below); `_adjacent()` walks it in the given direction, skipping
 any disabled card it lands on, until it finds an enabled one or runs out.
 `PANE_IDS` is now just `["email"]` (Mail tab has nothing to switch to);
-`DASH_PANE_IDS = ["events", "tasks", "dash-mail", "dash-news", "hermes"]` is
-the Dashboard's own **library** — every card that CAN appear, in `Tab`/
-`Shift+Tab` cycle order — `Alt+2/3/4` map to events/tasks/hermes (unchanged
-meaning), Mail/News are `Tab`/arrows-only. If you add another card, update
-`DASH_PANE_IDS` + `DASH_ADJACENCY` + `_focus_dash_pane`'s targets map + the
-`Container` in `compose()` — that's the whole surface area now.
+`DASH_PANE_IDS` is the Dashboard's own **library** — every card that CAN
+appear, in `Tab`/`Shift+Tab` cycle order — `Alt+2/3/4` map to events/tasks/
+hermes (unchanged meaning), every other card is `Tab`/arrows-only. If you add
+another card, update `DASH_PANE_IDS` + `DASH_ADJACENCY` + `_focus_dash_pane`'s
+targets map + the `Container` in `compose()` — that's the whole surface area
+now (the external cards, `2026-07-19`, also needed a `_fetch_*` in
+`fetchers.py`, a `_live_refresh_thread` try/except block, and — since two of
+the four need free-text config — a Settings → Dashboard `Input` row, but the
+grid/enable-disable machinery itself needed zero changes).
 
 **Dashboard card enable/disable** (`2026-07-18`, Settings → Dashboard,
-`Settings.dashboard_panes_enabled: list[str]`, default all five): the first
-step toward the "library of dashboard panes" the ROADMAP's external-cards
-item (weather/stocks/dictionary/Wikipedia) will grow into. `GoogleTUI.
+`Settings.dashboard_panes_enabled: list[str]`): the "library of dashboard
+panes" mechanism the `2026-07-19` external cards (weather/stocks/dictionary/
+Wikipedia) grew into — WEATHER/STOCKS/WORD/POTD are deliberately left out of
+the default's five original ids, so existing installs don't suddenly grow
+four cards they never asked for; a user opts each in from the checklist
+(WEATHER/STOCKS also need a location/symbol list set first, or the card just
+shows "Set a location…"/"Add symbols…"). `GoogleTUI.
 _dash_active` changed from a positional INDEX into `DASH_PANE_IDS` to the
 active card's **id string directly** — this was a deliberate rework (not
 just plumbing for the toggle), since indexing into a library that can now be

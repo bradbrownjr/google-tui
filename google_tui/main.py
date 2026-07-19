@@ -70,31 +70,43 @@ from .settings import Settings, load_settings, save_settings
 # below it. PANE_IDS now covers ONLY Email's own tab, which has nothing to
 # switch to; DASH_PANE_IDS/DASH_ADJACENCY (below) is the Dashboard's own group.
 PANE_IDS = ["email"]
-# Container ids of the Dashboard's five cards, in Tab/Shift+Tab cycle order.
+# Container ids of the Dashboard's nine cards, in Tab/Shift+Tab cycle order.
 # "events"/"tasks"/"hermes" keep their pre-2026-07-17 ids (so Alt+2/3/4 and the
-# #event-list/#task-list populate paths are unchanged); dash-mail/dash-news are
-# the two net-new cards, reachable via Tab/Shift+Tab and Alt+arrows only.
-DASH_PANE_IDS = ["events", "tasks", "dash-mail", "dash-news", "hermes"]
+# #event-list/#task-list populate paths are unchanged); dash-mail/dash-news/
+# dash-weather/dash-stocks/dash-word/dash-potd are all net-new (2026-07-17 and
+# 2026-07-19), reachable via Tab/Shift+Tab and Alt+arrows only.
+DASH_PANE_IDS = ["events", "tasks", "dash-mail", "dash-news",
+                  "dash-weather", "dash-stocks", "dash-word", "dash-potd", "hermes"]
 PANE_TITLES = {
     "email": "EMAIL",
     "events": "TODAY",
     "tasks": "TASKS",
     "dash-mail": "MAIL",
     "dash-news": "NEWS",
+    "dash-weather": "WEATHER",
+    "dash-stocks": "STOCKS",
+    "dash-word": "WORD OF THE DAY",
+    "dash-potd": "PICTURE OF THE DAY",
     "hermes": "HERMES ASK",
 }
-# The 2x2 card grid + full-width Hermes below drives Alt+arrow adjacency as a
-# real 2-D map now (it was a plain up/down chain while the Dashboard held only
-# 3 stacked panes -- see CHANGELOG 2026-07-16/2026-07-17). Layout:
-#   [ events   ][ tasks    ]
-#   [ dash-mail][ dash-news ]
-#   [    hermes (full width) ]
+# The card grid + full-width Hermes below drives Alt+arrow adjacency as a
+# real 2-D map (see CHANGELOG 2026-07-16/2026-07-17/2026-07-19). Layout (2
+# columns x 4 card rows + Hermes spanning a 5th row):
+#   [ events     ][ tasks      ]
+#   [ dash-mail  ][ dash-news  ]
+#   [ dash-weather][ dash-stocks]
+#   [ dash-word  ][ dash-potd  ]
+#   [    hermes (full width)   ]
 DASH_ADJACENCY = {
-    "events":    {"right": "tasks", "down": "dash-mail"},
-    "tasks":     {"left": "events", "down": "dash-news"},
-    "dash-mail": {"up": "events", "right": "dash-news", "down": "hermes"},
-    "dash-news": {"up": "tasks", "left": "dash-mail", "down": "hermes"},
-    "hermes":    {"up": "dash-mail"},
+    "events":       {"right": "tasks", "down": "dash-mail"},
+    "tasks":        {"left": "events", "down": "dash-news"},
+    "dash-mail":    {"up": "events", "right": "dash-news", "down": "dash-weather"},
+    "dash-news":    {"up": "tasks", "left": "dash-mail", "down": "dash-stocks"},
+    "dash-weather": {"up": "dash-mail", "right": "dash-stocks", "down": "dash-word"},
+    "dash-stocks":  {"up": "dash-news", "left": "dash-weather", "down": "dash-potd"},
+    "dash-word":    {"up": "dash-weather", "right": "dash-potd", "down": "hermes"},
+    "dash-potd":    {"up": "dash-stocks", "left": "dash-word", "down": "hermes"},
+    "hermes":       {"up": "dash-word"},
 }
 
 # Ctrl+R debounce (see action_refresh): a repeated manual refresh inside this
@@ -172,6 +184,17 @@ _EVENTS_WINDOW_STEP_DAYS = 21
 _DRIVE_SEARCH_DEBOUNCE = 0.15
 _NEWS_SEARCH_DEBOUNCE = 0.15
 
+# _apply_dashboard_extras' default for weather/stocks/word_of_day/wiki_potd:
+# "this refresh has nothing new for this card, leave whatever's currently
+# painted alone" -- distinct from an explicit None ("this card has no data,
+# paint the friendly empty state"), which only _load_from_cache and
+# _apply_dashboard_panes_enabled pass (both doing a full repaint from
+# whatever's cached, where "nothing cached" really does mean empty). Without
+# this distinction, a single transient fetch failure on live refresh would
+# blank an already-populated card back to its empty state -- see
+# _live_refresh_thread's own comment for how this plays out per-card.
+_DASH_EXTRA_UNCHANGED = object()
+
 _PREVIEWABLE_PREFIXES = (
     "text/",
     "application/vnd.google-apps.document",
@@ -221,6 +244,10 @@ _CACHE_CATEGORY_LABELS = {
     "tasklist": "Task lists",
     "label": "Mail folders",
     "gemini_cert": "Gemini certificates",
+    "weather": "Weather",
+    "stocks": "Stock quotes",
+    "word_of_day": "Word of the day",
+    "wiki_potd": "Wikipedia picture of the day",
 }
 
 
@@ -318,6 +345,12 @@ def _fmt_email_date(s: str) -> str:
         return d.strftime("%m/%d %I:%M%p")
     except Exception:
         return ""
+
+
+def _fmt_deg(v) -> str:
+    """WEATHER card helper: a Fahrenheit reading, or an em dash if the API
+    left the field null (Open-Meteo does this for a station gap)."""
+    return f"{v:.0f}°F" if isinstance(v, (int, float)) else "—"
 
 
 def _mk_id(prefix: str, raw: str) -> str:
@@ -1239,13 +1272,14 @@ class GoogleTUI(App):
     #body { height: 1fr; }
     #left { width: 65%; }
     #right { width: 1fr; border: round $panel-darken-1; padding: 0 1; }
-    /* Dashboard 2x2 card grid + full-width Hermes row (2026-07-17). The grid
-       is 2 columns x 3 rows; #hermes spans both columns on the bottom row.
-       grid-rows give the two card rows equal weight and Hermes a slightly
-       shorter band. Narrow-mode collapses this to a single column (below). */
-    #dashboard-body { height: 1fr; grid-size: 2 3; grid-rows: 1fr 1fr 1fr; grid-gutter: 0; }
+    /* Dashboard card grid + full-width Hermes row (2026-07-17, grown
+       2026-07-19 with the weather/stocks/word-of-day/picture-of-day cards).
+       The grid is 2 columns x 5 rows; #hermes spans both columns on the
+       bottom row. Narrow-mode collapses this to a single column (below). */
+    #dashboard-body { height: 1fr; grid-size: 2 5; grid-rows: 1fr 1fr 1fr 1fr 1fr; grid-gutter: 0; }
     #hermes { column-span: 2; }
-    #dash-mail-list, #dash-news-list { height: 1fr; }
+    #dash-mail-list, #dash-news-list, #dash-weather-list, #dash-stocks-list,
+    #dash-word-list, #dash-potd-list { height: 1fr; }
     /* Group/section header rows inside the TASKS and MAIL cards (OVERDUE, DUE
        TODAY, unread count, ...): accent + bold, and no cursor highlight since
        they're not selectable targets (they carry no widget id). */
@@ -1539,6 +1573,14 @@ class GoogleTUI(App):
         # headlines over time. See _populate_dash_news / _rotate_dash_news.
         self._dash_news_by_cid: dict[str, dict] = {}
         self._dash_news_offset: int = 0
+        # Dashboard WORD OF THE DAY / PICTURE OF THE DAY cards (2026-07-19):
+        # each card shows one item with an outbound link, so unlike dn-/dm-
+        # there's no per-row id->entry map to build -- just the one fetched
+        # dict, read back by on_list_view_selected's dw-open/dp-open branches
+        # to open the link. See _apply_dashboard_extras_async / fetchers.
+        # fetch_word_of_day / fetchers.fetch_wiki_potd.
+        self._word_of_day: dict | None = None
+        self._wiki_potd: dict | None = None
         self._browser_history: list[BrowserHistoryEntry] = []
         self._browser_hist_pos: int = -1
         self._browser_tofu: fetchers.GeminiTofuStore | None = None
@@ -1708,9 +1750,9 @@ class GoogleTUI(App):
         self._update_help_bar()
 
     def _focus_dash_pane(self, pane_id: str) -> None:
-        """Dashboard-tab counterpart to _focus_pane, for its five cards
-        (Today/Tasks/Mail/News/Hermes -- see DASH_PANE_IDS and the compose()
-        comment on tab-dashboard). Takes the pane's id directly (not an index
+        """Dashboard-tab counterpart to _focus_pane, for its cards (see
+        DASH_PANE_IDS and the compose() comment on tab-dashboard). Takes the
+        pane's id directly (not an index
         into DASH_PANE_IDS) so callers never need to reason about position
         within the ENABLED subset -- falls back to the first enabled card
         (or "hermes" if literally none are, which _apply_dashboard_panes_
@@ -1729,6 +1771,8 @@ class GoogleTUI(App):
             pass
         targets = {"events": "#event-list", "tasks": "#task-list",
                    "dash-mail": "#dash-mail-list", "dash-news": "#dash-news-list",
+                   "dash-weather": "#dash-weather-list", "dash-stocks": "#dash-stocks-list",
+                   "dash-word": "#dash-word-list", "dash-potd": "#dash-potd-list",
                    "hermes": "#hermes-input"}
         try:
             self.query_one(targets[pane_id]).focus()
@@ -1779,6 +1823,15 @@ class GoogleTUI(App):
         arrows with nowhere to land -- falling back to ["hermes"] alone,
         the single broadest-purpose card. Called at startup (on_mount) and
         every time the checklist changes (on_selection_list_selected_changed).
+
+        Also repaints the four external cards from whatever Cache has right
+        now: newly enabling e.g. WEATHER had otherwise never been painted at
+        all (compose() leaves it an empty ListView, no explanatory text) --
+        _live_refresh_thread's own updates only ever touch a card that was
+        ALREADY enabled when that refresh ran (see its _DASH_EXTRA_UNCHANGED
+        gating). self._cache can be None here (called from on_mount before
+        the encryption key -- and so Cache -- exists yet); the repaint is
+        just skipped that once, same as _load_from_cache would be.
         """
         enabled = set(self.settings.dashboard_panes_enabled)
         self._dash_enabled_ids = [pid for pid in DASH_PANE_IDS if pid in enabled] or ["hermes"]
@@ -1791,6 +1844,10 @@ class GoogleTUI(App):
             self._focus_dash_pane(self._dash_enabled_ids[0])
         else:
             self._apply_narrow_layout()
+        if self._cache:
+            self._apply_dashboard_extras(
+                self._cache.get("weather", "current"), self._cache.get("stocks", "current"),
+                self._cache.get("word_of_day", "today"), self._cache.get("wiki_potd", "today"))
 
     def _narrow_wrap(self, text: str) -> str:
         """Word-wrap help-bar text to the current terminal width when
@@ -1927,17 +1984,19 @@ class GoogleTUI(App):
         yield GtHeader()
         with TabbedContent(id="main-tabs", initial="tab-mail"):
             # The real Google-native Dashboard (`2026-07-17`, ROADMAP P4): a
-            # 2x2 card grid of TODAY (today's events) / TASKS (grouped) / MAIL
-            # (unread count + top unread) / NEWS (top headlines), with HERMES
-            # ASK full-width below. Reuses #event-list/#task-list in place (so
-            # their Space-toggle / Enter-detail handlers are unchanged); the
+            # card grid of TODAY (today's events) / TASKS (grouped) / MAIL
+            # (unread count + top unread) / NEWS (top headlines) / WEATHER /
+            # STOCKS / WORD OF THE DAY / PICTURE OF THE DAY (the four
+            # external cards, `2026-07-19`), with HERMES ASK full-width
+            # below. Reuses #event-list/#task-list in place (so their
+            # Space-toggle / Enter-detail handlers are unchanged); the
             # #events-search/#tasks-search bars stay in-DOM (hidden) so the "/"
             # filter path (action_focus_search -> _show_pane_search) still
-            # works. External cards (weather/stocks/dictionary/Wikipedia) are
-            # the remaining open half of the ROADMAP item -- not yet built.
+            # works.
             # Title-row badge numbers: 2/3 = Alt+2/3 (events/tasks), 4 = Alt+4
-            # (hermes); MAIL/NEWS have no Alt digit (Tab/arrows only), so they
-            # pass 0 -- _pane_title_row omits the number label for a falsy num.
+            # (hermes); every other card has no Alt digit (Tab/arrows only),
+            # so they pass 0 -- _pane_title_row omits the number label for a
+            # falsy num.
             with TabPane(_tab_label("Dashboard", 1, self.settings.ascii_mode), id="tab-dashboard"):
                 with Grid(id="dashboard-body"):
                     with Container(id="events", classes="pane"):
@@ -1957,6 +2016,18 @@ class GoogleTUI(App):
                     with Container(id="dash-news", classes="pane"):
                         yield self._pane_title_row("NEWS  (top headlines)", 0)
                         yield ListView(id="dash-news-list")
+                    with Container(id="dash-weather", classes="pane"):
+                        yield self._pane_title_row("WEATHER", 0)
+                        yield ListView(id="dash-weather-list")
+                    with Container(id="dash-stocks", classes="pane"):
+                        yield self._pane_title_row("STOCKS", 0)
+                        yield ListView(id="dash-stocks-list")
+                    with Container(id="dash-word", classes="pane"):
+                        yield self._pane_title_row("WORD OF THE DAY  (enter=open)", 0)
+                        yield ListView(id="dash-word-list")
+                    with Container(id="dash-potd", classes="pane"):
+                        yield self._pane_title_row("PICTURE OF THE DAY  (enter=open)", 0)
+                        yield ListView(id="dash-potd-list")
                     with Container(id="hermes", classes="pane"):
                         yield self._pane_title_row(self._hermes_ask_title(), 4, text_id="hermes-pane-title")
                         yield RichLog(id="hermes-log", markup=False, wrap=True)
@@ -2248,13 +2319,32 @@ class GoogleTUI(App):
                                               id="settings-routes-note", classes="muted")
                         with TabPane("Dashboard", id="settings-tab-dashboard"):
                             with VerticalScroll(id="settings-dashboard-scroll"):
+                                yield Label("Card configuration", classes="pane-title-text")
+                                with Horizontal(classes="settings-row"):
+                                    yield Label("Weather location")
+                                    yield Input(
+                                        value=self.settings.weather_location or "",
+                                        placeholder="e.g. Seattle, WA",
+                                        id="settings-weather-location",
+                                    )
+                                with Horizontal(classes="settings-row"):
+                                    yield Label("Stock symbols")
+                                    yield Input(
+                                        value=", ".join(self.settings.stock_symbols),
+                                        placeholder="e.g. AAPL, MSFT, GOOG",
+                                        id="settings-stock-symbols",
+                                    )
+                                yield Button("Save card settings", id="settings-save-dashboard-cards")
+                                yield Static(
+                                    "Weather (Open-Meteo) and stock quotes (Stooq) need no API key "
+                                    "or account -- just a location/symbol list. Word of the day and "
+                                    "Wikipedia's picture of the day need no configuration at all; "
+                                    "enable them below like any other card.",
+                                    id="settings-dashboard-config-note", classes="muted")
                                 yield Label("Dashboard cards", classes="pane-title-text")
                                 yield Static(
-                                    "Choose which cards appear on the Dashboard tab's 2x2 grid + "
-                                    "Hermes row. This is the start of a growing library -- more "
-                                    "cards (weather, stocks, word of the day, Wikipedia picture "
-                                    "of the day) will show up here as they ship. At least one "
-                                    "card must stay enabled.",
+                                    "Choose which cards appear on the Dashboard tab's card grid + "
+                                    "Hermes row. At least one card must stay enabled.",
                                     id="settings-dashboard-note", classes="muted")
                                 yield SelectionList(
                                     *[(PANE_TITLES[pid], pid, pid in self.settings.dashboard_panes_enabled)
@@ -2430,6 +2520,14 @@ class GoogleTUI(App):
         if contacts:
             self._apply_contacts_data(contacts)
 
+        # WEATHER/STOCKS/WORD OF THE DAY/PICTURE OF THE DAY: single-row
+        # categories (Cache.get, not get_all -- same "current"/"today" key
+        # convention as cal_month/cal_week above), so a None here just means
+        # "never successfully fetched", same as the initial in-session state.
+        self._apply_dashboard_extras(
+            self._cache.get("weather", "current"), self._cache.get("stocks", "current"),
+            self._cache.get("word_of_day", "today"), self._cache.get("wiki_potd", "today"))
+
         return had_mail or bool(drive_files)
 
     def _cached_thread_summaries(self, label_id) -> dict[str, dict]:
@@ -2454,6 +2552,41 @@ class GoogleTUI(App):
         self._cache.put_many("tasklist", {tl["id"]: tl for tl in tasklists})
 
     def _live_refresh_thread(self) -> None:
+        # WEATHER/STOCKS/WORD OF THE DAY/PICTURE OF THE DAY: none of these
+        # touch Google at all, so they run before (and regardless of) the
+        # auth_broken check below -- no reason a broken Google token should
+        # blank cards that have nothing to do with it. Each is separately
+        # gated on _dash_enabled_ids so a disabled card doesn't cost a
+        # network round trip every refresh; weather/stocks are additionally
+        # gated on having something to fetch (an unset location/no symbols
+        # would just 400).
+        weather = stocks = word_of_day = wiki_potd = _DASH_EXTRA_UNCHANGED
+        try:
+            if "dash-weather" in self._dash_enabled_ids and self.settings.weather_location:
+                weather = fetchers.fetch_weather(self.settings.weather_location)
+                self._cache.put("weather", "current", weather)
+        except Exception as e:
+            self.call_from_thread(self.notify, f"Weather error: {e}", severity="error")
+        try:
+            if "dash-stocks" in self._dash_enabled_ids and self.settings.stock_symbols:
+                stocks = fetchers.fetch_stocks(self.settings.stock_symbols)
+                self._cache.put("stocks", "current", stocks)
+        except Exception as e:
+            self.call_from_thread(self.notify, f"Stock quotes error: {e}", severity="error")
+        try:
+            if "dash-word" in self._dash_enabled_ids:
+                word_of_day = fetchers.fetch_word_of_day()
+                self._cache.put("word_of_day", "today", word_of_day)
+        except Exception as e:
+            self.call_from_thread(self.notify, f"Word of the day error: {e}", severity="error")
+        try:
+            if "dash-potd" in self._dash_enabled_ids:
+                wiki_potd = fetchers.fetch_wiki_potd()
+                self._cache.put("wiki_potd", "today", wiki_potd)
+        except Exception as e:
+            self.call_from_thread(self.notify, f"Picture of the day error: {e}", severity="error")
+        self.call_from_thread(self._apply_dashboard_extras, weather, stocks, word_of_day, wiki_potd)
+
         auth_broken = self._google_auth_broken_detail()
         if auth_broken:
             self.call_from_thread(self._notify_reauth_needed, auth_broken)
@@ -3918,6 +4051,94 @@ class GoogleTUI(App):
                                   id=_mk_id("dm", t["threadId"])))
         lst.extend(items)
 
+    def _apply_dashboard_extras(self, weather=_DASH_EXTRA_UNCHANGED, stocks=_DASH_EXTRA_UNCHANGED,
+                                 word_of_day=_DASH_EXTRA_UNCHANGED, wiki_potd=_DASH_EXTRA_UNCHANGED) -> None:
+        """Populates the four external Dashboard cards (WEATHER/STOCKS/WORD OF
+        THE DAY/PICTURE OF THE DAY, ROADMAP P4, 2026-07-19). Each arg is
+        either real data, explicit None (paint the card's empty state — what
+        _load_from_cache and _apply_dashboard_panes_enabled pass, both doing
+        a full repaint from whatever Cache currently has), or the
+        _DASH_EXTRA_UNCHANGED default (leave this card exactly as painted —
+        what _live_refresh_thread passes for a card whose fetch this round
+        was skipped or failed, so a transient error doesn't blank an
+        already-populated card). Dispatched through a properly-awaited
+        worker, not inlined, for the same reason _apply_mail_data is
+        (AGENTS.md's ListView.clear() NOTE): each card's rows reuse the same
+        fixed ids every refresh, so a fire-and-forget clear+repopulate risks
+        DuplicateIds if a later refresh's insert races the prior one's
+        removal."""
+        self.run_worker(
+            self._apply_dashboard_extras_async(weather, stocks, word_of_day, wiki_potd),
+            exclusive=True, group="dashboard-extras-apply")
+
+    async def _apply_dashboard_extras_async(self, weather, stocks, word_of_day, wiki_potd) -> None:
+        if weather is not _DASH_EXTRA_UNCHANGED:
+            await self.query_one("#dash-weather-list").clear()
+            self._fill_dash_weather(weather)
+        if stocks is not _DASH_EXTRA_UNCHANGED:
+            await self.query_one("#dash-stocks-list").clear()
+            self._fill_dash_stocks(stocks)
+        if word_of_day is not _DASH_EXTRA_UNCHANGED:
+            self._word_of_day = word_of_day
+            await self.query_one("#dash-word-list").clear()
+            self._fill_dash_word(word_of_day)
+        if wiki_potd is not _DASH_EXTRA_UNCHANGED:
+            self._wiki_potd = wiki_potd
+            await self.query_one("#dash-potd-list").clear()
+            self._fill_dash_potd(wiki_potd)
+
+    def _fill_dash_weather(self, weather: dict | None) -> None:
+        lst = self.query_one("#dash-weather-list")
+        if not weather:
+            msg = ("Set a location in Settings → Dashboard to enable"
+                   if not self.settings.weather_location else "Not available yet")
+            lst.append(ListItem(Label(msg), id="dash-weather-empty"))
+            return
+        wind = weather.get("wind_mph")
+        wind_str = f"{wind:.0f} mph" if isinstance(wind, (int, float)) else "—"
+        lines = [
+            f"📍 {weather.get('location', '')}",
+            f"🌡  {_fmt_deg(weather.get('temp_f'))}  {weather.get('condition', '')}",
+            f"↕  H {_fmt_deg(weather.get('high_f'))} / L {_fmt_deg(weather.get('low_f'))}",
+            f"💨 Wind {wind_str}",
+        ]
+        lst.append(ListItem(Label("\n".join(lines), markup=False), id="dash-weather-info"))
+
+    def _fill_dash_stocks(self, stocks: list[dict] | None) -> None:
+        lst = self.query_one("#dash-stocks-list")
+        if not stocks:
+            msg = ("Add symbols in Settings → Dashboard to enable"
+                   if not self.settings.stock_symbols else "No quotes available")
+            lst.append(ListItem(Label(msg), id="dash-stocks-empty"))
+            return
+        for q in stocks:
+            change, pct = q.get("change", 0.0), q.get("change_pct", 0.0)
+            arrow = "▲" if change > 0 else "▼" if change < 0 else "•"
+            lst.append(ListItem(
+                Label(f"{q.get('symbol', ''):<6} ${q.get('price', 0.0):.2f}  "
+                      f"{arrow} {change:+.2f} ({pct:+.2f}%)", markup=False),
+                id=_mk_id("ds", q.get("symbol", ""))))
+
+    def _fill_dash_word(self, word_of_day: dict | None) -> None:
+        lst = self.query_one("#dash-word-list")
+        if not word_of_day:
+            lst.append(ListItem(Label("Not available yet — check back after the next refresh"),
+                                 id="dash-word-empty"))
+            return
+        definition = (word_of_day.get("definition") or "")[:200]
+        lst.append(ListItem(
+            Label(f"{word_of_day.get('word', '')}\n{definition}", markup=False), id="dw-open"))
+
+    def _fill_dash_potd(self, wiki_potd: dict | None) -> None:
+        lst = self.query_one("#dash-potd-list")
+        if not wiki_potd:
+            lst.append(ListItem(Label("Not available yet — check back after the next refresh"),
+                                 id="dash-potd-empty"))
+            return
+        description = (wiki_potd.get("description") or "")[:200]
+        lst.append(ListItem(
+            Label(f"{wiki_potd.get('title', '')}\n{description}", markup=False), id="dp-open"))
+
     def _highlighted_event_id(self) -> str | None:
         el = self.query_one("#event-list")
         if el.highlighted_child is None:
@@ -3967,9 +4188,14 @@ class GoogleTUI(App):
             # neither has a toggle/expand action of its own, so reuse the
             # on_list_view_selected dispatch for whatever row is highlighted.
             lst_id = "#dash-mail-list" if pane == "dash-mail" else "#dash-news-list"
-            item = self.query_one(lst_id).highlighted_child
+            lst = self.query_one(lst_id)
+            item = lst.highlighted_child
             if item is not None:
-                self.on_list_view_selected(ListView.Selected(self.query_one(lst_id), item))
+                # ListView.Selected's 3rd positional arg (index) is required,
+                # not optional -- omitting it (as this call used to) raises
+                # TypeError the moment Space is pressed here, a latent crash
+                # this dashboard-cards session found and fixed in passing.
+                self.on_list_view_selected(ListView.Selected(lst, item, lst.index))
 
     # ---- list selections (Enter) ----
     def on_list_view_selected(self, event: ListView.Selected) -> None:
@@ -4025,6 +4251,17 @@ class GoogleTUI(App):
                 self.push_screen(NewsEntryModal(entry))
         elif cid.startswith("ct-"):
             self._open_contact_detail(cid)
+        elif cid == "dw-open":
+            # Dashboard WORD OF THE DAY card — no in-terminal detail view
+            # (it's a single short definition already), so Enter opens the
+            # full Merriam-Webster entry in the Browser tab instead.
+            self._open_dashboard_link(self._word_of_day)
+        elif cid == "dp-open":
+            # Dashboard PICTURE OF THE DAY card — same reasoning as dw-open;
+            # this app can't render the image itself yet (ROADMAP: Drive
+            # image preview needs the textual-image package), so Enter opens
+            # the Wikipedia file page.
+            self._open_dashboard_link(self._wiki_potd)
 
     def on_list_view_highlighted(self, event: ListView.Highlighted) -> None:
         if event.list_view.id == "drive-list":
@@ -4278,6 +4515,22 @@ class GoogleTUI(App):
         except Exception:
             pass
         self._browser_navigate(url, push_history=True)
+
+    def _open_dashboard_link(self, item: dict | None) -> None:
+        """Dashboard WORD OF THE DAY / PICTURE OF THE DAY cards' Enter
+        action: switch to the Browser tab and navigate to item["link"], same
+        two-step _goto_tab + _browser_navigate _bookmark_open_selected uses.
+        A no-op if the card has nothing cached yet (item is None) or the
+        fetch never got a link (unexpected but not fatal, so don't crash)."""
+        link = (item or {}).get("link") if item else None
+        if not link:
+            return
+        self._goto_tab("tab-browser")
+        try:
+            self.query_one("#browser-url", Input).value = link
+        except Exception:
+            pass
+        self._browser_navigate(link, push_history=True)
 
     def _browser_submit(self, event: Input.Submitted) -> None:
         raw = event.value.strip()
@@ -6139,6 +6392,18 @@ class GoogleTUI(App):
             self.settings.routes_api_key = key or None
             save_settings(self.settings)
             self.notify("Routes API key saved.")
+        elif event.button.id == "settings-save-dashboard-cards":
+            loc = self.query_one("#settings-weather-location", Input).value.strip()
+            syms_raw = self.query_one("#settings-stock-symbols", Input).value.strip()
+            self.settings.weather_location = loc or None
+            self.settings.stock_symbols = [s.strip().upper() for s in syms_raw.split(",") if s.strip()]
+            save_settings(self.settings)
+            self.notify("Dashboard card settings saved.")
+            # Re-fetch now rather than waiting for the next periodic refresh
+            # -- a location/symbol list you just typed in should show real
+            # data immediately, not "not available yet" for up to a refresh
+            # cycle. Same worker _live_refresh_thread is always run through.
+            self.run_worker(self._live_refresh_thread, thread=True, exclusive=True)
         elif event.button.id == "contacts-refresh":
             if self._google_creds_ok():
                 self._contacts_fetch_started = True

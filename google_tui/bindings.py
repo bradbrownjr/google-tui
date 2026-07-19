@@ -172,18 +172,24 @@ HELP_GLOBAL_TEXT = (
     "Ctrl+P Commands   F12 Mouse   Ctrl+H Help   Ctrl+Q Quit"
 )
 
-# Keyed "pane:<id>" for the Dashboard tab's five cards, "tab:<id>" for every
+# Keyed "pane:<id>" for the Dashboard tab's cards, "tab:<id>" for every
 # other tab (including tab-mail, which is Email-only -- see
 # GoogleTUI._context_help_scope). The Dashboard became the real Google-native
 # dashboard 2026-07-17 (a TODAY/TASKS/MAIL/NEWS card grid + Hermes) --
 # pane:events (now "TODAY") and pane:tasks keep their prior text since those
-# cards' interactions didn't change; pane:dash-mail/dash-news are new.
+# cards' interactions didn't change; pane:dash-mail/dash-news are from
+# 2026-07-17, pane:dash-weather/dash-stocks/dash-word/dash-potd from
+# 2026-07-19 (ROADMAP P4's external cards).
 CONTEXT_HELP: dict[str, str] = {
     "tab:tab-mail": "Enter Open   c Compose   r Reply   a Reply All   f Forward   u Unread   Space Expand   l Labels   / Search   p Toggle Preview",
     "pane:events": "Enter/Space Detail   n New Event   / Search",
     "pane:tasks": "Space Toggle Complete   Enter Detail   / Search",
     "pane:dash-mail": "Enter/Space Open Thread (header: open Mail tab)",
     "pane:dash-news": "Enter/Space Open Headline",
+    "pane:dash-weather": "Configure in Settings -> Dashboard",
+    "pane:dash-stocks": "Configure in Settings -> Dashboard",
+    "pane:dash-word": "Enter Open Full Entry",
+    "pane:dash-potd": "Enter Open Image Page",
     "pane:hermes": "Enter Ask",
     "tab:tab-calendar": "[ / ] Prev/Next Month or Week   Enter Day Detail   n New Event",
     "tab:tab-drive": "Enter Open Folder / Reload Preview   / Search (this folder)   p Toggle Preview   d Download",
@@ -344,10 +350,10 @@ MAIL TAB
   Thread view (opened via Enter): R/A/F Reply / Reply All / Forward — same
   keys as the Email pane, now with visible button hints — Esc/Close closes.
 
-DASHBOARD TAB (2x2 card grid + Hermes; Google-native cards, 2026-07-17.
-Weather / stocks / dictionary / Wikipedia cards are the remaining half of
-this feature, not yet built. Settings → Dashboard lets you enable/disable
-any card — that checklist is the "library" this will grow into.)
+DASHBOARD TAB (card grid + Hermes; Google-native cards 2026-07-17, external
+cards 2026-07-19. Settings → Dashboard lets you enable/disable any card and
+configure Weather/Stocks — that checklist is a "library" future cards can
+still grow into.)
   Today card:   today's events (all-day + timed); Enter/Space open detail,
                 n new event, / search (live filter over summary/description)
   Tasks card:   tasks grouped Overdue / Due today / Upcoming / No due date /
@@ -356,6 +362,17 @@ any card — that checklist is the "library" this will grow into.)
                 the thread (or, on the count header, jumps to the Mail tab)
   News card:    top headlines from your subscribed feeds, rotating; Enter/
                 Space opens the entry
+  Weather card: current conditions (Open-Meteo, no API key) for the location
+                set in Settings → Dashboard; disabled until one is set
+  Stocks card:  latest quotes (Stooq, no API key) for the symbols set in
+                Settings → Dashboard; disabled until at least one is set
+  Word of the day card:
+                today's word + definition (Merriam-Webster); Enter opens the
+                full dictionary entry in the Browser tab
+  Picture of the day card:
+                today's featured Wikipedia image's caption (no in-terminal
+                image rendering yet); Enter opens the image page in the
+                Browser tab
   Hermes card:  type a question, Enter to ask. Its title always shows the
                 currently configured AI provider (Settings → AI Provider),
                 e.g. "CLAUDE CODE ASK". Also reachable as a Ctrl+K popup

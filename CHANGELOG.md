@@ -3,6 +3,78 @@
 Format: keep newest at top. One entry per meaningful change. Reference files
 touched and any breaking notes.
 
+## [2026-07-19] — Dashboard tab: the four external cards (weather/stocks/word of the day/picture of the day)
+
+Closes out ROADMAP P4's "Dashboard tab: the external cards" — the half of
+the card-grid item left over after the Google-native cards (TODAY/TASKS/
+MAIL/NEWS) shipped `[2026-07-17]`. Four new cards, all free/keyless:
+
+- **WEATHER** — Open-Meteo geocoding (free-text location -> lat/lon) +
+  forecast (current temp/condition/wind, today's high/low), `fetchers.
+  fetch_weather`.
+- **STOCKS** — latest quotes for a configurable symbol list via Stooq's free
+  CSV endpoint, `fetchers.fetch_stocks`.
+- **WORD OF THE DAY** — Merriam-Webster's public word-of-the-day RSS feed,
+  reusing `fetch_feed`'s HTTP+feedparser plumbing, `fetchers.
+  fetch_word_of_day`.
+- **PICTURE OF THE DAY** — Wikimedia's Feed API `featured` endpoint.
+  In-terminal image rendering isn't built yet (still-open ROADMAP item, needs
+  the `textual-image` package), so the card shows the caption/description as
+  text with an outbound link to the actual image, `fetchers.fetch_wiki_potd`.
+
+`main.py`: the card grid grew from 2×2+Hermes to 2×4+Hermes (`DASH_
+PANE_IDS`/`PANE_TITLES`/`DASH_ADJACENCY`, `#dashboard-body`'s `grid-size`) —
+the enable/disable/narrow-layout machinery itself (`_apply_dashboard_panes_
+enabled`, `_apply_narrow_layout`) needed zero changes, confirming the
+"library" design from `[2026-07-18]` did its job. All four new cards start
+**disabled** in `Settings.dashboard_panes_enabled`'s default (existing
+installs don't suddenly grow four unconfigured cards); WEATHER/STOCKS also
+need a location/symbol list, new Settings → Dashboard `Input` rows
+(`weather_location: str | None`, `stock_symbols: list[str]`) — "Save card
+settings" triggers an immediate `_live_refresh_thread` re-run so newly
+entered config shows real data right away instead of waiting for the next
+periodic refresh.
+
+`_live_refresh_thread` fetches all four independently of Google auth (none
+of them touch Google — they run before, and regardless of, the auth-broken
+early-return) and independently of each other (each in its own try/except,
+same as the existing News/Calendar/Drive blocks) — gated on both the card
+being enabled and, for WEATHER/STOCKS, actually being configured, so a
+disabled or unconfigured card costs no network round trip. A new
+`_DASH_EXTRA_UNCHANGED` sentinel distinguishes "this refresh had nothing new
+for this card" (leave it painted as-is — what a transient fetch failure or a
+disabled card passes) from an explicit `None` ("no data at all, paint the
+friendly empty state" — what `_load_from_cache`'s startup paint and a
+newly-*enabled*-from-Settings card both pass, the latter so toggling a card
+on repaints it immediately instead of leaving it blank until the next
+refresh). Without this distinction a single flaky request would have blanked
+an already-populated card back to "not available yet".
+
+WORD OF THE DAY / PICTURE OF THE DAY have no in-terminal detail view (a
+short definition/caption doesn't need one); Enter opens the source link in
+the Browser tab instead (`_open_dashboard_link`, reusing the two-step
+`_bookmark_open_selected` already does: `_goto_tab` + `_browser_navigate`).
+
+Found and fixed a latent bug in passing: the pre-existing dash-mail/dash-news
+"Space mirrors Enter" path built a `ListView.Selected(list_view, item)` —
+Textual 8.2.8's `ListView.Selected.__init__` requires a third `index` arg
+with no default, so this raised `TypeError` the instant Space was pressed on
+either card. Never caught before because no pilot scenario exercised it;
+this session's new one does exercise the equivalent path (via a real
+focus+keypress, not a hand-built event) for the two new cards, which is what
+surfaced the pattern was broken elsewhere too.
+
+New pilot scenario `tests/pilot/dashboard_external_cards.py`: enables all
+four cards + configures weather/stocks (they're off by default, unlike every
+other pilot scenario which never touches them), with `tests/pilot/fakes.py`
+extended to mock all four fetchers (`FAKE_WEATHER`/`FAKE_STOCKS`/
+`FAKE_WORD_OF_DAY`/`FAKE_WIKI_POTD`) on the module's existing "zero live API
+calls" principle. Asserts each card's rendered content after a startup live
+refresh, then drives real focus+"down"+"enter" keypresses to confirm WORD OF
+THE DAY/PICTURE OF THE DAY correctly switch to the Browser tab and load the
+right URL. 79 tests total, all green; real `~/.config`/`~/.cache/google-tui`
+confirmed untouched via mtime diff.
+
 ## [2026-07-19] — Offline email body cache also covers the inline preview pane
 
 ROADMAP's "Cache email bodies for offline reading" item turned out to be

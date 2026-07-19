@@ -65,6 +65,13 @@ class Settings:
     # doesn't know about main.py's card registry.
     dashboard_panes_enabled: list[str] = field(
         default_factory=lambda: ["events", "tasks", "dash-mail", "dash-news", "hermes"])
+    # Dashboard "external cards" config (ROADMAP P4, 2026-07-19). Both start
+    # unset/empty on purpose: dash-weather/dash-stocks are excluded from
+    # dashboard_panes_enabled's default above too, so a fresh install shows
+    # neither card until the user opts in from Settings -> Dashboard (an
+    # unconfigured weather/stocks card would just be an empty-state row).
+    weather_location: str | None = None  # free-text, e.g. "Seattle, WA" (Open-Meteo geocodes it)
+    stock_symbols: list[str] = field(default_factory=list)  # e.g. ["AAPL", "MSFT"]
 
 
 def load_settings() -> Settings:
