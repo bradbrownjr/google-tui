@@ -97,8 +97,6 @@ just checking it off here, so ROADMAP.md only ever shows what's still open.
   wiring; Drive/Calendar/Task integration is separate, mostly mechanical,
   surface work once `parse_markdown()` exists.)*
 - [ ] **Multiple accounts** switch (if a second token appears).
-- [ ] **Unit tests in-repo** (`tests/`) using the `run_test` pilot pattern from
-  AGENTS.md §6, runnable via `pytest`.
 - [ ] **Keyboard-first everywhere** — audit remaining tabs/modals for
   mouse-only actions. Drive folder nav (arrow keys + Enter) and Calendar
   month/week nav (`[`/`]`) — the two examples this item used to name — are
@@ -145,6 +143,19 @@ just checking it off here, so ROADMAP.md only ever shows what's still open.
 
 ## Done
 
+- [x] **Unit tests in-repo** (`[2026-07-19]`) — new `tests/` package,
+  `pytest`-discoverable (`pip install -e ".[dev]"`, then `pytest`, 59 tests).
+  `tests/unit/` covers pure functions (render's HTML/Gopher/Gemtext parsers,
+  drive_sources' URL/listing parsing, gauth's Gmail MIME-payload extraction,
+  remote_creds/cache round trips) with plain in-process tests. `tests/pilot/`
+  formalizes the `run_test` pilot pattern from AGENTS.md §6 into five
+  standalone scenario scripts (startup smoke test, email reply-modal flow,
+  Google Drive regression, FTP source-switch + cache namespacing, Browser
+  sftp:// redirect) — each still runs in its own subprocess (a real
+  DuplicateIds crash previously came from chaining multiple `GoogleTUI()`
+  instances in one process), with a thin `tests/test_pilot_scenarios.py`
+  subprocess-wrapper making them all reachable from one `pytest` invocation.
+  See CHANGELOG.
 - [x] **Unified Drive-tab sources: Google Drive + FTP + SSH (SFTP/SCP)**
   (`[2026-07-18]`) — the Drive tab is source-agnostic now, via a new
   `Select#drive-source-select` picker ("Google Drive" + any saved FTP/SSH

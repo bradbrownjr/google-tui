@@ -3,6 +3,80 @@
 Format: keep newest at top. One entry per meaningful change. Reference files
 touched and any breaking notes.
 
+## [2026-07-19] — Unit tests in-repo (`tests/`, pytest)
+
+Formalized the `run_test` pilot pattern from AGENTS.md §6 (previously only
+used ad hoc, in scratchpad verification scripts, for each feature's manual
+sign-off) into a real `tests/` package, `pytest`-discoverable via
+`[project.optional-dependencies].dev` in `pyproject.toml` (`pip install -e
+".[dev]"`, then `pytest`). 59 tests, all green.
+
+**`tests/unit/`** — plain in-process `pytest` tests over pure functions, no
+`GoogleTUI()` instance, no I/O beyond a couple of intentionally-isolated
+on-disk round trips:
+- `test_render.py` — `parse_html`/`parse_gopher_menu`/`parse_gemtext`/
+  `decode_html_entities`.
+- `test_drive_sources.py` — `_parse_unix_ls_lines`, `_guess_mime`,
+  `_mlsd_modify_to_iso`, `parse_ftp_url`/`parse_sftp_url`, `source_key_for`,
+  `build_source`'s protocol dispatch.
+- `test_gauth_mime.py` — `_extract_body`/`_extract_html_body` against
+  hand-built Gmail API `payload` dicts (simple, nested-multipart, and
+  no-matching-part cases).
+- `test_remote_creds.py` — `set_credentials`/`get`/`remove`/`list_hosts`/
+  encrypted-vs-plaintext round trips, plus a direct regression test for the
+  `set()`/builtin-shadowing bug fixed `[2026-07-18]` (`list_hosts`' internal
+  `sorted(set(out))` resolving to the wrong `set`).
+- `test_cache.py` — `Cache` put/get/get_all/put_many/delete/clear_all,
+  per-row Fernet encryption (including the "wrong key degrades to `None`,
+  never raises" contract), category namespacing (the same precedent the
+  Drive-sources preview-cache fix relied on), canary + key-derivation.
+
+`tests/conftest.py` redirects `platformdirs.user_config_dir`/
+`user_cache_dir`/`user_documents_dir` to a fresh `tempfile.mkdtemp()`
+**before** any test module in the tree can import `google_tui` — required
+because `cache.py`/`remote_creds.py` compute their on-disk paths as
+module-level constants at import time using the app's real `"google-tui"`
+name. `tests/isolate.py` holds the actual patching logic (shared with
+`tests/pilot/`), factored out of the copy-pasted version that lived in
+`scripts/generate_screenshot.py` and every scratchpad verification script
+this session and prior ones wrote by hand.
+
+**`tests/pilot/`** — five standalone scenario scripts, each driving a real
+`GoogleTUI()` through Textual's `run_test` pilot against a fabricated,
+zero-PII dataset (`tests/pilot/fakes.py`, factored out of
+`scripts/generate_screenshot.py`'s dataset + patch-list pattern):
+`startup_smoke` (every tab reachable, no crash), `email_reply_modal`
+(highlight a thread → open → reply → ComposeModal, the exact flow AGENTS.md
+§6 documents as the canonical pilot example), `drive_google_regression` and
+`drive_remote_source_switch` (adapted from this session's own P3
+verification scripts — Google-only Drive behavior, then FTP source-picker
+switch + preview + download + cache-key namespacing), and
+`browser_sftp_redirect` (typing `sftp://` in the Browser tab lands on
+`RemoteHostModal` pre-filled from the URL, not a literal web search).
+
+Each scenario **must** run in its own OS process — AGENTS.md §6 already
+documented why (a leftover background `thread=True` worker from a prior
+`GoogleTUI()` instance caused a real, reproducible `DuplicateIds` crash when
+multiple pilots shared one process) — which is incompatible with `pytest`'s
+default of importing and running every test in one process. Reconciled with
+a thin wrapper, `tests/test_pilot_scenarios.py`: a parametrized test per
+scenario that shells out via `subprocess.run([sys.executable, "-m",
+module], timeout=60)` and asserts a clean exit, surfacing stdout/stderr on
+failure. This keeps the "one process per `GoogleTUI()`" safety property
+intact while still letting a single `pytest` invocation at the repo root
+cover everything, pilots included. New scenarios need adding to that file's
+`SCENARIOS` list explicitly — nothing auto-discovers `tests/pilot/*.py`.
+
+Verified the isolation itself holds: diffed `~/.config/google-tui/` and
+`~/.cache/google-tui/` file mtimes before/after two full `pytest` runs —
+unchanged, confirming the suite never touches real user data (the exact
+failure mode AGENTS.md §6 warns about, having happened twice before this
+convention became mandatory).
+
+Docs: AGENTS.md §6 gained a "Running the test suite" paragraph and the file
+map now lists `tests/`; ROADMAP.md's "Unit tests in-repo" P4 item moved to
+Done.
+
 ## [2026-07-18] — Unified Drive-tab sources: Google Drive + FTP + SSH (SFTP/SCP)
 
 The Drive tab is source-agnostic now. A new `Select#drive-source-select`

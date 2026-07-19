@@ -951,6 +951,12 @@ almost certainly why — the fix would be routing that result through
 │   └── screenshot.png         # README hero image (P1 M7) — regenerate via scripts/generate_screenshot.py
 ├── scripts/
 │   └── generate_screenshot.py # regenerates assets/screenshot.png — see §6
+├── tests/                     # pytest suite (`pip install -e ".[dev]"`, then `pytest`) — see §6
+│   ├── isolate.py             #   shared platformdirs-redirect helper
+│   ├── conftest.py            #   isolates tests/unit/ before any google_tui import
+│   ├── unit/                  #   pure-function tests, no GoogleTUI() instance, in-process
+│   ├── pilot/                 #   full run_test() scenarios, each its own subprocess
+│   └── test_pilot_scenarios.py #  subprocess-invokes every tests/pilot/*.py, asserts exit 0
 ├── google_tui/
 │   ├── __init__.py            # exports main, gauth, ask
 │   ├── __main__.py            # `python -m google_tui` → GoogleTUI().run()
@@ -1310,6 +1316,23 @@ wrong). The dataset lives in the script itself (module-level `FAKE_*`
 constants) — edit those directly if you want different sample content;
 don't reach for real account data, the whole point is that this asset is
 safe to regenerate and share without ever touching a live token.
+
+**Running the test suite** (`tests/`, formalized this pattern into
+`pytest`-discoverable form, P4): `.venv/bin/pip install -e ".[dev]"` once
+(installs `pytest`), then `.venv/bin/pytest` from the repo root runs
+everything — `tests/unit/` (pure functions: `render` parsers,
+`drive_sources` URL/listing parsing, `gauth`'s MIME-payload extraction,
+`remote_creds`/`cache` round trips — no `GoogleTUI()` instance, plain
+in-process pytest) and `tests/test_pilot_scenarios.py` (subprocess-invokes
+every script under `tests/pilot/`, asserting a clean exit). The pilot
+scenarios are full `run_test()` pilots and MUST stay one-per-subprocess —
+`tests/isolate.py`'s docstring explains why (the DuplicateIds crash this
+whole convention traces back to) and every scenario calls `isolate()` as
+its first action, same rule as this section's manual-pilot guidance above.
+`tests/conftest.py` covers the in-process `tests/unit/` suite the same way,
+since `cache.py`/`remote_creds.py` compute their on-disk paths at import
+time too. Add new scenarios to `SCENARIOS` in `tests/test_pilot_scenarios.py`
+when adding a `tests/pilot/*.py` file — nothing auto-discovers them.
 
 Gotchas that cost time before:
 - Mock `ask.ask_llm`, `ask.ask_hermes_agent`,
