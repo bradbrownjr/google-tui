@@ -23,6 +23,7 @@ SCENARIOS = [
     "tests.pilot.drive_markdown_preview",
     "tests.pilot.drive_remote_source_switch",
     "tests.pilot.browser_sftp_redirect",
+    "tests.pilot.responsive_rows",
 ]
 
 

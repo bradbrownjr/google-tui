@@ -862,7 +862,98 @@ def _child_tasks(task: dict, all_tasks: list[dict]) -> list[dict]:
 _PENDING_MARK = "⏳ "
 
 
-def _append_task_items(task_list, tasks) -> None:
+# --- Responsive row builders for the non-Email list views ----------------
+# Same idea as _email_collapsed_line above: a fixed-width prefix (date / when /
+# checkbox / icon) plus one flexible field that grows to fill the pane, so wide
+# terminals stop wasting horizontal space and narrow ones still truncate
+# cleanly with an ellipsis. Each takes the domain dict + the list's live
+# content width (0 before first layout -> fall back to the field's default);
+# the app's _reflow_*_rows re-run them on resize so the rows track the terminal.
+
+def _truncate(text: str, width: int) -> str:
+    """Trim `text` to at most `width` columns, marking a cut with a trailing
+    '…'. A width <= 0 (list not laid out yet) leaves the text unchanged."""
+    if width > 0 and len(text) > width:
+        return text[:width - 1] + "…"
+    return text
+
+
+_NEWS_DATE_W = 5    # _fmt_date's date half is "MM/DD"; clamp the rare
+                    #   parse-failure fallback (a raw ISO string) to this too
+_NEWS_FEED_W = 16   # feed_title column, padded inside its [...] brackets so
+                    #   every title starts at the same column (the old row left
+                    #   the feed name unpadded, so titles never lined up)
+_NEWS_TITLE_MIN_W = 20
+_NEWS_ROW_FIXED_W = _NEWS_DATE_W + 2 + (_NEWS_FEED_W + 2) + 1
+_NEWS_ROW_DEFAULT_W = _NEWS_ROW_FIXED_W + 40
+
+
+def _news_line(entry: dict, width: int = _NEWS_ROW_DEFAULT_W) -> str:
+    date = _fmt_date(entry.get("published", "")).split(" ")[0][:_NEWS_DATE_W]
+    feed = (entry.get("feed_title") or "")[:_NEWS_FEED_W]
+    title = entry.get("title") or "(untitled)"
+    title_w = max(width - _NEWS_ROW_FIXED_W, _NEWS_TITLE_MIN_W)
+    return f"{date:<{_NEWS_DATE_W}}  [{feed:<{_NEWS_FEED_W}}] {_truncate(title, title_w)}"
+
+
+_CONTACT_NAME_W = 30
+_CONTACT_ADDR_MIN_W = 20
+_CONTACT_ROW_FIXED_W = _CONTACT_NAME_W + 1
+_CONTACT_ROW_DEFAULT_W = _CONTACT_ROW_FIXED_W + 40
+
+
+def _contact_line(contact: dict, width: int = _CONTACT_ROW_DEFAULT_W) -> str:
+    name = (contact.get("name") or "").strip()
+    addr = (contact.get("email") or "").strip()
+    if not name:  # address-only contact: let the address use the whole row
+        return _truncate(addr, width if width > 0 else _CONTACT_ROW_DEFAULT_W)
+    addr_w = max(width - _CONTACT_ROW_FIXED_W, _CONTACT_ADDR_MIN_W)
+    return f"{name[:_CONTACT_NAME_W]:<{_CONTACT_NAME_W}} {_truncate(addr, addr_w)}"
+
+
+_DRIVE_ROW_DEFAULT_W = 40  # #drive-list-col is only 40% wide -> stays modest
+
+
+def _drive_line(f: dict, width: int = _DRIVE_ROW_DEFAULT_W) -> str:
+    icon = "📁" if f["is_folder"] else "📄"
+    name_w = (width - 2) if width > 0 else _DRIVE_ROW_DEFAULT_W  # 2 cols: icon + gap
+    return f"{icon} {_truncate(f.get('name', ''), name_w)}"
+
+
+_TASK_ROW_DEFAULT_W = 50
+
+
+def _task_line(t: dict, width: int = _TASK_ROW_DEFAULT_W) -> str:
+    pend = _PENDING_MARK if t.get("_pending") else ""
+    box = "[x]" if t.get("status") == "completed" else "[ ]"
+    prefix = f"{pend}{box} "
+    title_w = (width - len(prefix)) if width > 0 else _TASK_ROW_DEFAULT_W
+    return f"{prefix}{_truncate(t.get('title', ''), title_w)}"
+
+
+_EVENT_WHEN_W = 8
+_EVENT_ROW_FIXED_W = _EVENT_WHEN_W + 2  # right-justified "when" + 2-space gap
+_EVENT_ROW_DEFAULT_W = _EVENT_ROW_FIXED_W + 34
+
+
+def _event_when(e: dict) -> str:
+    """An all-day event shows "all day"; a timed one shows just its local start
+    time (the date is redundant on the today-scoped card)."""
+    start = e.get("start", {})
+    if start.get("date"):
+        return "all day"
+    return _fmt_date(start.get("dateTime", "")).split(" ")[-1].lower()
+
+
+def _event_line(e: dict, width: int = _EVENT_ROW_DEFAULT_W) -> str:
+    pend = _PENDING_MARK if e.get("_pending") else ""
+    when = _event_when(e)
+    summary_w = max(width - _EVENT_ROW_FIXED_W - len(pend), 10)
+    return f"{pend}{when:>{_EVENT_WHEN_W}}  {_truncate(e.get('summary', ''), summary_w)}"
+
+
+def _append_task_items(task_list, tasks, width: int = _TASK_ROW_DEFAULT_W,
+                       by_cid: dict | None = None) -> None:
     """Populate the Dashboard's TASKS card, grouped by due status (Overdue /
     Due today / Upcoming / No due date / Done) with a dim header row before
     each non-empty group. Task rows keep their `k-<list>-<id>` widget id so the
@@ -898,10 +989,10 @@ def _append_task_items(task_list, tasks) -> None:
             continue
         items.append(ListItem(Label(header), classes="dash-group-header-item"))
         for t in rows:
-            items.append(ListItem(
-                Label(f"{_PENDING_MARK if t.get('_pending') else ''}"
-                      f"{'[x]' if t.get('status') == 'completed' else '[ ]'} {t.get('title','')[:50]}"),
-                id=_mk_id("k", f"{t['_list']}-{t['id']}")))
+            cid = _mk_id("k", f"{t['_list']}-{t['id']}")
+            items.append(ListItem(Label(_task_line(t, width)), id=cid))
+            if by_cid is not None:
+                by_cid[cid] = t
     task_list.extend(items)
 
 
@@ -941,26 +1032,23 @@ def _todays_events(events: list[dict], tz: dt.tzinfo | None = None) -> list[dict
     return sorted(out, key=_key)
 
 
-def _append_today_event_items(event_list, events) -> None:
+def _append_today_event_items(event_list, events, width: int = _EVENT_ROW_DEFAULT_W,
+                              by_cid: dict | None = None) -> None:
     """TODAY-card row formatter: an all-day event shows "all day", a timed one
     shows just its local start time (the date is redundant — every row is
     today). Keeps the `e-<id>` widget id so Enter still opens EventModal via
     _open_event_by_id. Same extend()-once rationale as the other lists."""
     items = []
     for e in events:
-        start = e.get("start", {})
-        if start.get("date"):
-            when = "all day"
-        else:
-            when = _fmt_date(start.get("dateTime", "")).split(" ")[-1].lower()
-        pend = _PENDING_MARK if e.get("_pending") else ""
-        items.append(ListItem(
-            Label(f"{pend}{when:>8}  {e.get('summary', '')[:34]}"),
-            id=_mk_id("e", e["id"])))
+        cid = _mk_id("e", e["id"])
+        items.append(ListItem(Label(_event_line(e, width)), id=cid))
+        if by_cid is not None:
+            by_cid[cid] = e
     event_list.extend(items)
 
 
-def _append_drive_items(drive_list, files, path: str, items_by_cid: dict) -> None:
+def _append_drive_items(drive_list, files, path: str, items_by_cid: dict,
+                        width: int = _DRIVE_ROW_DEFAULT_W) -> None:
     # Same extend()-once rationale as _append_email_items/_append_task_items/
     # _append_today_event_items above. The "up" row is NOT part of the filterable
     # file list — it's chrome, always present (except at "/") regardless of
@@ -977,9 +1065,8 @@ def _append_drive_items(drive_list, files, path: str, items_by_cid: dict) -> Non
     if path != "/":
         items.append(ListItem(Label("📂 .. (up)"), id="d-up"))
     for f in files:
-        icon = "📁" if f["is_folder"] else "📄"
         cid = _mk_id("d", f["id"])
-        items.append(ListItem(Label(f"{icon} {f['name'][:50]}"), id=cid))
+        items.append(ListItem(Label(_drive_line(f, width)), id=cid))
         items_by_cid[cid] = f
     drive_list.extend(items)
 
@@ -1595,6 +1682,12 @@ class GoogleTUI(App):
         # ids, is NOT safe in general. Look files up by cid via this dict
         # instead everywhere a row's real item is needed.
         self._drive_items_by_cid: dict[str, dict] = {}
+        # cid -> domain dict for the currently-rendered Tasks / Calendar-events
+        # rows, so _reflow_task_rows / _reflow_event_rows can re-render each row
+        # in place at the new width on resize (same role _news_by_cid /
+        # _contacts_by_cid / _drive_items_by_cid play for their lists).
+        self._tasks_by_cid: dict[str, dict] = {}
+        self._events_by_cid: dict[str, dict] = {}
         self.settings: Settings = load_settings()
         self._current_label_id = self.settings.default_label_id
         # Full Gmail label list from the last _apply_labels call — backs both
@@ -1955,10 +2048,63 @@ class GoogleTUI(App):
         self._apply_narrow_layout()
         self._update_help_bar()
         self._update_help_global()
-        # Re-flow the Email list so the subject column fills the new width and
-        # the date stays pinned to the right edge -- the rows are plain padded
-        # strings, so they don't otherwise re-wrap on resize.
+        # Re-flow the width-aware lists so their flexible column fills the new
+        # width (and right-pinned fields stay pinned) -- the rows are plain
+        # padded/truncated strings, so they don't otherwise re-wrap on resize.
         self._reflow_email_rows()
+        self._reflow_news_rows()
+        self._reflow_contact_rows()
+        self._reflow_drive_rows()
+        self._reflow_task_rows()
+        self._reflow_event_rows()
+
+    def _content_width(self, list_id: str, fallback: int) -> int:
+        """Live content-region width for a list widget (already excludes its
+        border/padding and the 2-col vertical scrollbar), or `fallback` before
+        the list has been laid out (content_size is 0 until the first layout
+        pass, e.g. when rows are built during startup)."""
+        try:
+            w = self.query_one(f"#{list_id}").content_size.width
+        except Exception:
+            w = 0
+        return w if w > 0 else fallback
+
+    def _reflow_list_rows(self, list_id: str, by_cid: dict, line_fn) -> None:
+        """Re-render each row of #list_id in place at the current content width.
+        line_fn(data, width) -> str builds the row text; rows whose id isn't in
+        by_cid (group headers, the drive '.. (up)' row, load-more chrome) are
+        left untouched. Updates labels in place, so selection and scroll
+        position survive the resize -- unlike a clear()+repopulate."""
+        try:
+            lst = self.query_one(f"#{list_id}")
+        except Exception:
+            return
+        width = lst.content_size.width
+        if width <= 0 or not by_cid:
+            return
+        for item in lst.children:
+            data = by_cid.get(getattr(item, "id", None))
+            if data is None:
+                continue
+            try:
+                item.query_one(Label).update(line_fn(data, width))
+            except Exception:
+                pass
+
+    def _reflow_news_rows(self) -> None:
+        self._reflow_list_rows("news-list", getattr(self, "_news_by_cid", {}), _news_line)
+
+    def _reflow_contact_rows(self) -> None:
+        self._reflow_list_rows("contacts-list", getattr(self, "_contacts_by_cid", {}), _contact_line)
+
+    def _reflow_drive_rows(self) -> None:
+        self._reflow_list_rows("drive-list", getattr(self, "_drive_items_by_cid", {}), _drive_line)
+
+    def _reflow_task_rows(self) -> None:
+        self._reflow_list_rows("task-list", getattr(self, "_tasks_by_cid", {}), _task_line)
+
+    def _reflow_event_rows(self) -> None:
+        self._reflow_list_rows("event-list", getattr(self, "_events_by_cid", {}), _event_line)
 
     def _email_list_width(self) -> int:
         """Usable character width for one Email-list row: the #email-list
@@ -3270,7 +3416,10 @@ class GoogleTUI(App):
         except Exception:
             tasks_query = ""
         visible_tasks = _fuzzy_filter_tasks(disp_tasks, tasks_query) if tasks_query.strip() else disp_tasks
-        _append_task_items(self.query_one("#task-list"), visible_tasks)
+        self._tasks_by_cid.clear()
+        _append_task_items(self.query_one("#task-list"), visible_tasks,
+                           self._content_width("task-list", _TASK_ROW_DEFAULT_W),
+                           self._tasks_by_cid)
 
         self._populate_dash_mail(inbox_threads if inbox_threads is not None else threads)
 
@@ -4091,7 +4240,10 @@ class GoogleTUI(App):
         except Exception:
             query = ""
         visible = _fuzzy_filter_tasks(tasks, query) if query.strip() else tasks
-        _append_task_items(self.query_one("#task-list"), visible)
+        self._tasks_by_cid.clear()
+        _append_task_items(self.query_one("#task-list"), visible,
+                           self._content_width("task-list", _TASK_ROW_DEFAULT_W),
+                           self._tasks_by_cid)
 
     def action_toggle_task(self):
         t = self._selected_task()
@@ -4160,8 +4312,11 @@ class GoogleTUI(App):
         except Exception:
             query = ""
         visible = _fuzzy_filter_events(disp, query) if query.strip() else disp
+        self._events_by_cid.clear()
         if visible:
-            _append_today_event_items(event_list, visible)
+            _append_today_event_items(event_list, visible,
+                                      self._content_width("event-list", _EVENT_ROW_DEFAULT_W),
+                                      self._events_by_cid)
         elif not query.strip():
             event_list.append(ListItem(Label("No events today 🎉"), id="dash-empty-events"))
 
@@ -5504,7 +5659,8 @@ class GoogleTUI(App):
         visible = _fuzzy_filter_drive_files(files, query) if query.strip() else files
         drive_list = self.query_one("#drive-list")
         self._drive_items_by_cid.clear()
-        _append_drive_items(drive_list, visible, path, self._drive_items_by_cid)
+        _append_drive_items(drive_list, visible, path, self._drive_items_by_cid,
+                            self._content_width("drive-list", _DRIVE_ROW_DEFAULT_W))
         _append_load_more_row(drive_list, bool(self._drive_next_page_token) and not query.strip(),
                               LOAD_MORE_DRIVE_ID, "↓ Load more files…")
 
@@ -5576,7 +5732,8 @@ class GoogleTUI(App):
         visible = _fuzzy_filter_drive_files(files, query) if query.strip() else files
         drive_list = self.query_one("#drive-list")
         self._drive_items_by_cid.clear()
-        _append_drive_items(drive_list, visible, path, self._drive_items_by_cid)
+        _append_drive_items(drive_list, visible, path, self._drive_items_by_cid,
+                            self._content_width("drive-list", _DRIVE_ROW_DEFAULT_W))
         _append_load_more_row(drive_list, bool(self._drive_next_page_token) and not query.strip(),
                               LOAD_MORE_DRIVE_ID, "↓ Load more files…")
 
@@ -5908,21 +6065,18 @@ class GoogleTUI(App):
     def _populate_news_list(self, entries: list[dict]) -> None:
         lst = self.query_one("#news-list")
         self._news_by_cid = {}
+        width = self._content_width("news-list", _NEWS_ROW_DEFAULT_W)
         items = []
         for e in sorted(entries, key=lambda e: e.get("published") or "", reverse=True):
             cid = _mk_id("n", e["id"])
             self._news_by_cid[cid] = e
-            date = _fmt_date(e.get("published", "")).split(" ")[0]
-            feed_title = (e.get("feed_title") or "")[:20]
-            title = (e.get("title") or "(untitled)")[:40]
-            # feed_title/title come straight from someone else's RSS/Atom
-            # feed, and the row literally wraps feed_title in "[...]" — see
-            # the markup=False NOTE in _feed_list_item above for why this
-            # needs markup disabled rather than escaped: Textual's
-            # Content.from_markup() (what Label routes through) would
-            # otherwise silently swallow "[Feed Title]" as a bogus style tag.
-            line = f"{date}  [{feed_title}] {title}"
-            items.append(ListItem(Label(line, markup=False), id=cid))
+            # feed_title/title come straight from someone else's RSS/Atom feed,
+            # and _news_line literally wraps feed_title in "[...]" — see the
+            # markup=False NOTE in _feed_list_item above for why this needs
+            # markup disabled rather than escaped: Textual's
+            # Content.from_markup() (what Label routes through) would otherwise
+            # silently swallow "[Feed Title]" as a bogus style tag.
+            items.append(ListItem(Label(_news_line(e, width), markup=False), id=cid))
         lst.extend(items)
 
     def _refresh_news_list(self) -> None:
@@ -6133,6 +6287,7 @@ class GoogleTUI(App):
                 markup=False)))
             return
         items = []
+        width = self._content_width("contacts-list", _CONTACT_ROW_DEFAULT_W)
         for c in _fuzzy_filter_contacts(self._contacts_cache, query):
             name = (c.get("name") or "").strip()
             addr = (c.get("email") or "").strip()
@@ -6140,8 +6295,7 @@ class GoogleTUI(App):
                 continue  # no usable info at all — not worth a row
             cid = _mk_id("ct", c.get("resource_name", ""))
             self._contacts_by_cid[cid] = c
-            label = f"{name[:30]:<30} {addr[:40]}" if name else addr[:40]
-            items.append(ListItem(Label(label, markup=False), id=cid))
+            items.append(ListItem(Label(_contact_line(c, width), markup=False), id=cid))
         lst.extend(items)
 
     def _open_contact_detail(self, cid: str) -> None:
