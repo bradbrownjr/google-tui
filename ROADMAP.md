@@ -51,6 +51,72 @@ just checking it off here, so ROADMAP.md only ever shows what's still open.
   `messages().get(format="raw")` to see its actual MIME tree, then come
   back with that before writing a fix.
 
+## P2 — Email client completeness
+
+These are table-stakes mail features the client is currently missing; several
+build directly on infrastructure that already exists.
+
+- [ ] **Attachments — view/download received + attach on compose.** No
+  attachment support exists anywhere (`grep attachment` → 0 hits). Received
+  messages don't surface their attachment parts, and `ComposeModal` can't add
+  a file. Needs `gauth.py` to walk MIME parts for `filename`/`attachmentId`
+  and fetch bodies via `messages().attachments().get`, a way to list/open them
+  from `ThreadModal` (download reusing the Drive tab's local-save path —
+  `EXPORT_DIR`), and a file-picker + multipart-build path on send. Biggest
+  value of this batch. *(Suggested model: Opus — MIME assembly on both the
+  read and send sides, plus new UI.)*
+- [ ] **Undo for destructive mail actions.** `action_trash`/`action_archive`
+  (`main.py:7500-7508`) fire immediately with no undo window. The optimistic
+  `_run_mutation` machinery already tracks/reverts queued mutations, so a
+  Gmail-style "Undo" toast (revert within ~5s before the API call commits, or
+  issue the inverse `modify_labels` after) is a high-value safety net on top of
+  existing infra. Small.
+- [ ] **Star / mark-unread / snooze from the list.** Backend already exists —
+  `gauth.mark_unread` and `gauth.modify_labels` are implemented and `STARRED`
+  is already in `_SYSTEM_LABEL_ORDER` — but there are no key bindings to star a
+  thread or re-mark it unread from the Email list. Wire up bindings + optimistic
+  updates (same pattern as trash/archive). Snooze needs a small "remind at"
+  modal and a `SNOOZED`-style label or a scheduled re-surface. Mostly wiring for
+  star/unread; snooze is the larger piece.
+- [ ] **Multi-select bulk actions.** No way to select N threads and
+  archive/label/trash them at once — every action is single-thread. Needs a
+  selection model on the Email `ListView` (Space-to-check, visual marker) and
+  bulk variants of the mutation actions.
+- [ ] **Drafts + CC/BCC in compose.** `DRAFT` is only a browsable folder today;
+  there's no "save draft" (`drafts().create`) and `ComposeModal`'s new-message
+  path has no explicit CC/BCC fields (only reply-all inherits Cc from headers).
+  Add CC/BCC inputs and a save-draft action/exit path.
+
+## P3 — Calendar, Contacts, and cross-cutting UX
+
+- [ ] **RSVP to received invitations** (accept / decline / tentative).
+  Distinct from *sending* invites (explicitly out of scope per the `gauth.py`
+  note). No `responseStatus` handling exists — reading the self-attendee's
+  status and PATCHing it via `events().patch` would let you respond to invites
+  from `EventModal`. Mid effort.
+- [ ] **Contacts create / edit / delete.** `ContactModal` (`main.py:8325`) is
+  read-only (Name/Email/Phone + "Compose Email"). Add People API
+  create/update/delete (`people().createContact`/`updateContact`/
+  `deleteContact`) behind an editable modal + list actions so the tab can
+  actually maintain the address book. *(Suggested model: Opus — People API
+  write paths + edit UI + offline-queue parity with the mail/task mutations.)*
+- [ ] **Desktop notifications** for new mail and upcoming events. Nothing
+  emits OS notifications today (`grep notify-send/plyer` → 0). Hook the
+  existing `_periodic_refresh` loop to fire `notify-send` (Linux) /
+  `terminal-notifier` (macOS) on newly-arrived unread threads and imminent
+  events, so the app is useful left running in the background. Gate behind a
+  Settings toggle; degrade silently where no notifier binary exists.
+- [ ] **Offline full-text mail search.** Thread bodies are already cached
+  (`cache.py`, `thread_body` category), but search only filters the
+  already-loaded list. A SQLite FTS5 index over the cached corpus would give
+  real offline search across everything ever opened, not just the current
+  page. Touches `cache.py` (FTS table + populate on cache write) and the Email
+  search path.
+- [ ] **Themes** (dark / light / custom palettes). Only `ascii_mode` exists —
+  no color theming. Textual 8.x has native theme support
+  (`App.register_theme`, command-palette theme picker); wire a curated set +
+  a Settings → General selector persisted to `Settings`. Mostly wiring.
+
 ## P4 — Nice-to-have
 
 - [ ] **Week view sub-hour granularity** (30/15-minute rows) — the current
