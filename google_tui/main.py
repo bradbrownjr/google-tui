@@ -1445,6 +1445,10 @@ class GoogleTUI(App):
     #snooze-box Vertical { height: auto; }
     #snooze-box Vertical Button { width: 1fr; margin-top: 1; }
     #snooze-box #sn-custom { margin-top: 1; }
+    #att-box { height: auto; max-height: 90%; }
+    #att-list { height: auto; max-height: 20; border: round $panel-darken-1; margin: 1 0; }
+    #c-attach { width: 1fr; margin-right: 1; }
+    #c-attach-list { height: auto; color: $text-muted; }
     #event-list, #task-list { height: 1fr; }
     #hermes-log { height: 1fr; border: round $panel-darken-1; }
     #hermes-input { dock: bottom; }
@@ -3101,21 +3105,25 @@ class GoogleTUI(App):
                            to=mutation.get("to"),
                            cc=(mutation["cc"] if "cc" in mutation else None),
                            bcc=(mutation["bcc"] if "bcc" in mutation else None),
-                           subject=(mutation["subject"] if "subject" in mutation else None))
+                           subject=(mutation["subject"] if "subject" in mutation else None),
+                           attachments=mutation.get("attachments") or None)
         elif t == "forward":
             gauth.forward(self.svc, mutation["thread_id"], mutation["to"],
                           body_prefix=mutation["body"] + "\n",
                           cc=mutation.get("cc") or None, bcc=mutation.get("bcc") or None,
-                          subject=mutation.get("subject") or None)
+                          subject=mutation.get("subject") or None,
+                          attachments=mutation.get("attachments") or None)
         elif t == "new":
             gauth.send_message(self.svc, to=mutation["to"], subject=mutation["subject"],
                                body=mutation["body"], cc=mutation.get("cc") or None,
-                               bcc=mutation.get("bcc") or None)
+                               bcc=mutation.get("bcc") or None,
+                               attachments=mutation.get("attachments") or None)
         elif t == "draft":
             gauth.create_draft(self.svc, to=mutation.get("to", ""),
                                subject=mutation.get("subject", ""), body=mutation.get("body", ""),
                                cc=mutation.get("cc") or None, bcc=mutation.get("bcc") or None,
-                               thread_id=mutation.get("thread_id"))
+                               thread_id=mutation.get("thread_id"),
+                               attachments=mutation.get("attachments") or None)
         elif t == "toggle_task":
             gauth.set_task_status(self.svc, mutation["list_id"], mutation["task_id"], mutation["done"])
         elif t == "mark_unread":
@@ -7454,6 +7462,91 @@ class UnlockModal(ModalScreen):
             self.dismiss(None)
 
 
+def _human_size(n) -> str:
+    """Compact human-readable byte size for the attachments list."""
+    try:
+        n = float(n)
+    except (TypeError, ValueError):
+        return "?"
+    for unit in ("B", "KB", "MB", "GB"):
+        if n < 1024 or unit == "GB":
+            return f"{n:.0f} {unit}" if unit == "B" else f"{n:.1f} {unit}"
+        n /= 1024
+    return f"{n:.1f} GB"
+
+
+class AttachmentsModal(ModalScreen):
+    """View + download a thread's attachments (ROADMAP P2). Enter or 'd'
+    downloads the highlighted attachment to EXPORT_DIR (Documents/google-tui/),
+    the same no-picker destination the Drive tab's 'd' download uses. An
+    attachment Gmail inlined (small; `inline_data` present) is decoded
+    directly; a larger one is fetched via gauth.download_attachment."""
+
+    def __init__(self, svc, attachments: list[dict]):
+        super().__init__()
+        self.svc = svc
+        self.attachments = attachments
+
+    def compose(self) -> ComposeResult:
+        with Container(id="att-box", classes="pane"):
+            yield Label(f"ATTACHMENTS ({len(self.attachments)})", classes="pane-title-text")
+            yield ListView(id="att-list")
+            yield Static("Enter / d  download to Documents/google-tui     Esc  close",
+                         classes="muted")
+
+    def on_mount(self) -> None:
+        lst = self.query_one("#att-list", ListView)
+        lst.extend(
+            ListItem(Label(f"{a['filename']}  ({_human_size(a.get('size'))}, {a.get('mime_type','')})",
+                           markup=False), id=f"att-{i}")
+            for i, a in enumerate(self.attachments))
+        if self.attachments:
+            lst.index = 0
+        lst.focus()
+
+    def on_list_view_selected(self, e: ListView.Selected) -> None:
+        self._download(e.item)
+
+    def on_key(self, e) -> None:
+        if e.key == "escape":
+            self.dismiss(None)
+        elif e.key == "d":
+            item = self.query_one("#att-list", ListView).highlighted_child
+            if item is not None:
+                self._download(item)
+
+    def _download(self, item) -> None:
+        try:
+            idx = int((item.id or "att--1").split("-")[1])
+        except (ValueError, IndexError):
+            return
+        if not (0 <= idx < len(self.attachments)):
+            return
+        a = self.attachments[idx]
+        if not a.get("inline_data") and not self.app._online:
+            self.notify("Downloading needs a network connection.", severity="warning")
+            return
+        self.notify(f"Downloading {a['filename']}…")
+        self.run_worker(lambda: self._download_thread(a), thread=True, exclusive=True,
+                         group="attachment-download")
+
+    def _download_thread(self, a: dict) -> None:
+        try:
+            if a.get("inline_data"):
+                data = base64.urlsafe_b64decode(a["inline_data"])
+            else:
+                data = gauth.download_attachment(self.svc, a["message_id"], a["attachment_id"])
+            EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+            # basename: an attachment filename is attacker-influenced — never
+            # let it escape EXPORT_DIR via "../" or an absolute path.
+            path = EXPORT_DIR / Path(a["filename"]).name
+            path.write_bytes(data)
+        except Exception as e:
+            self.app.call_from_thread(self.notify, f"Download failed: {e}", severity="error")
+            return
+        self.app.call_from_thread(self.notify, f"Downloaded to {path}")
+
+
 class SnoozeModal(ModalScreen):
     """Pick a remind-at time for snoozing a thread (ROADMAP P2). Dismisses
     with a tz-aware ``datetime`` (a preset or a parsed custom value) or None.
@@ -7735,6 +7828,9 @@ class ThreadModal(ModalScreen):
         self._search_targets: list[tuple[DocumentView, str]] = []
         self._search_matches: list[DocumentView] = []
         self._search_pos: int = -1
+        # Flattened attachments across the thread's messages ('g' viewer),
+        # (re)built in _apply_thread; empty until the thread loads.
+        self._attachments: list[dict] = []
         # Union of every message's label_ids (gauth.get_thread) — lets
         # LabelPickerModal pre-check already-applied labels, and the
         # "Labels: …" line below make an apply visibly confirmed instead of
@@ -7826,6 +7922,9 @@ class ThreadModal(ModalScreen):
         self._label_ids = set()
         for m in msgs:
             self._label_ids.update(m.get("label_ids") or [])
+        # Every attachment across the thread's messages, flattened, for the
+        # 'g' attachments viewer/download (ROADMAP P2).
+        self._attachments = [a for m in msgs for a in (m.get("attachments") or [])]
         self._update_labels_line()
         # A fresh thread body invalidates the previous message's search hits.
         self._search_targets = []
@@ -7841,6 +7940,10 @@ class ThreadModal(ModalScreen):
         new_widgets = []
         for m in msgs:
             header = f"From: {m.get('from', '')}    Date: {m.get('date', '')}"
+            atts = m.get("attachments") or []
+            if atts:
+                clip = "Attachments: " if ascii_mode else "📎 "
+                header += "\n" + clip + ", ".join(a["filename"] for a in atts)
             header_widget = Static(header, classes="thread-msg-header", markup=False)
             if ascii_mode:
                 header_widget.add_class("ascii-border")  # see on_mount / _apply_ascii_mode
@@ -8015,6 +8118,15 @@ class ThreadModal(ModalScreen):
     def action_email_to_event(self) -> None:
         self.app._open_email_to_event(self.thread_id)
 
+    def action_attachments(self) -> None:
+        """'g' — open the attachments viewer for this thread (download any of
+        them to Documents/google-tui/). No-op with a toast when the thread
+        has none."""
+        if not self._attachments:
+            self.app.notify("No attachments in this thread")
+            return
+        self.app.push_screen(AttachmentsModal(self.svc, self._attachments))
+
     def _on_labels_result(self, add_ids) -> None:
         if not add_ids:
             return
@@ -8108,6 +8220,7 @@ class ComposeModal(ModalScreen):
         self._prefill_to = to
         self._countdown_remaining = 0
         self._countdown_timer = None  # Textual Timer handle while a send is pending
+        self._attachments: list[str] = []  # local file paths to attach on send
 
     def compose(self) -> ComposeResult:
         with Container(id="compose-box", classes="pane"):
@@ -8118,6 +8231,10 @@ class ComposeModal(ModalScreen):
             yield Input(placeholder="Bcc", id="c-bcc")
             yield Input(placeholder="Subject", id="c-subject")
             yield TextArea(id="c-body", language="markdown")
+            with Horizontal(classes="btnrow"):
+                yield Input(placeholder="Attach a file (path), then Enter", id="c-attach")
+                yield Button("Attach", id="c-attach-btn")
+            yield Static("", id="c-attach-list")
         with Horizontal(classes="btnrow"):
             yield Button("Send", id="send")
             yield Button("Save Draft", id="save-draft")
@@ -8247,6 +8364,35 @@ class ComposeModal(ModalScreen):
             return
         if e.button.id == "save-draft":
             self._save_draft()
+            return
+        if e.button.id == "c-attach-btn":
+            self._add_attachment()
+
+    def on_input_submitted(self, e: Input.Submitted) -> None:
+        if e.input.id == "c-attach":
+            self._add_attachment()
+
+    def _add_attachment(self) -> None:
+        inp = self.query_one("#c-attach", Input)
+        raw = inp.value.strip()
+        if not raw:
+            return
+        p = Path(raw).expanduser()
+        if not p.is_file():
+            self.notify(f"No such file: {raw}", severity="warning")
+            return
+        self._attachments.append(str(p))
+        inp.value = ""
+        self._update_attach_list()
+
+    def _update_attach_list(self) -> None:
+        widget = self.query_one("#c-attach-list", Static)
+        if not self._attachments:
+            widget.update("")
+            return
+        names = ", ".join(Path(a).name for a in self._attachments)
+        prefix = "Attachments: " if self.app.settings.ascii_mode else "📎 "
+        widget.update(f"{prefix}{len(self._attachments)}: {names}")
 
     def _try_send(self) -> None:
         if self._countdown_timer is not None:
@@ -8262,6 +8408,8 @@ class ComposeModal(ModalScreen):
         self.query_one("#c-bcc").disabled = True
         self.query_one("#c-subject").disabled = True
         self.query_one("#c-body").disabled = True
+        self.query_one("#c-attach").disabled = True
+        self.query_one("#c-attach-btn", Button).disabled = True
         self.query_one("#send", Button).disabled = True
         self.query_one("#save-draft", Button).disabled = True
         self._update_countdown_label()
@@ -8287,6 +8435,8 @@ class ComposeModal(ModalScreen):
         self.query_one("#c-bcc").disabled = False
         self.query_one("#c-subject").disabled = False
         self.query_one("#c-body").disabled = False
+        self.query_one("#c-attach").disabled = False
+        self.query_one("#c-attach-btn", Button).disabled = False
         self.query_one("#send", Button).disabled = False
         self.query_one("#save-draft", Button).disabled = False
         self.query_one("#send-countdown", Static).update("")
@@ -8309,20 +8459,24 @@ class ComposeModal(ModalScreen):
 
     def _send_now(self) -> None:
         to, cc, bcc, subject, body = self._fields()
+        atts = list(self._attachments)
         if not self.app._online:
             # Queue instead of attempting a call with no network to make it
             # over — see GoogleTUI._enqueue_mutation /
             # _replay_pending_mutations_thread for the replay-on-reconnect
-            # side of this.
+            # side of this. Attachments are stored as file paths (re-read at
+            # replay time — a since-moved file just fails that one send then).
             if self.mode == "forward":
                 mutation = {"type": "forward", "thread_id": self.thread_id, "to": to,
-                            "cc": cc, "bcc": bcc, "subject": subject, "body": body}
+                            "cc": cc, "bcc": bcc, "subject": subject, "body": body,
+                            "attachments": atts}
             elif self.mode == "new":
                 mutation = {"type": "new", "to": to, "cc": cc, "bcc": bcc,
-                            "subject": subject, "body": body}
+                            "subject": subject, "body": body, "attachments": atts}
             else:  # reply / reply_all
                 mutation = {"type": self.mode, "thread_id": self.thread_id, "to": to,
-                            "cc": cc, "bcc": bcc, "subject": subject, "body": body}
+                            "cc": cc, "bcc": bcc, "subject": subject, "body": body,
+                            "attachments": atts}
             self.app._enqueue_mutation(mutation)
             self.app.notify("Offline — queued, will send once reconnected.")
             self.dismiss("queued")
@@ -8330,10 +8484,11 @@ class ComposeModal(ModalScreen):
         try:
             if self.mode == "forward":
                 gauth.forward(self.svc, self.thread_id, to, body_prefix=body + "\n",
-                              cc=cc or None, bcc=bcc or None, subject=subject or None)
+                              cc=cc or None, bcc=bcc or None, subject=subject or None,
+                              attachments=atts or None)
             elif self.mode == "new":
                 gauth.send_message(self.svc, to=to, subject=subject, body=body,
-                                   cc=cc or None, bcc=bcc or None)
+                                   cc=cc or None, bcc=bcc or None, attachments=atts or None)
             else:
                 # Pass the raw field values (not `or None`): the compose form
                 # is authoritative for a reply, so an explicitly-cleared Cc
@@ -8342,7 +8497,8 @@ class ComposeModal(ModalScreen):
                 # fallback — only the offline-replay path relies on it).
                 gauth.reply_to(self.svc, self.thread_id, body,
                                reply_all=(self.mode == "reply_all"),
-                               to=to, cc=cc, bcc=bcc, subject=subject)
+                               to=to, cc=cc, bcc=bcc, subject=subject,
+                               attachments=atts or None)
         except Exception as e:
             # Previously uncaught here — an exception from a set_interval
             # timer callback (this runs via _countdown_tick) would otherwise
@@ -8361,17 +8517,20 @@ class ComposeModal(ModalScreen):
         if self._countdown_timer is not None:
             return  # a send is already counting down; don't also draft it
         to, cc, bcc, subject, body = self._fields()
+        atts = list(self._attachments)
         thread_id = self.thread_id if self.mode in ("reply", "reply_all") else None
         if not self.app._online:
             self.app._enqueue_mutation({
                 "type": "draft", "to": to, "cc": cc, "bcc": bcc,
-                "subject": subject, "body": body, "thread_id": thread_id})
+                "subject": subject, "body": body, "thread_id": thread_id,
+                "attachments": atts})
             self.app.notify("Offline — queued, will save the draft once reconnected.")
             self.dismiss("queued")
             return
         try:
             gauth.create_draft(self.svc, to=to, subject=subject, body=body,
-                               cc=cc or None, bcc=bcc or None, thread_id=thread_id)
+                               cc=cc or None, bcc=bcc or None, thread_id=thread_id,
+                               attachments=atts or None)
         except Exception as e:
             self.app.notify(f"Save draft failed: {e}", severity="error")
             return

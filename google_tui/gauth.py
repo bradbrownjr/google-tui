@@ -8,9 +8,13 @@ native Gmail threads, Calendar, Tasks, and Drive listing.
 from __future__ import annotations
 import base64
 import json
+import mimetypes
 import os
 import email as email_lib
 from datetime import datetime, timedelta, timezone
+from email import encoders
+from email.mime.base import MIMEBase
+from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
 from google.oauth2.credentials import Credentials
@@ -338,8 +342,47 @@ def get_thread(svc, thread_id: str) -> list[dict]:
             # extra API call needed. Thread-level "current labels" is the
             # union of these across every message (LabelPickerModal).
             "label_ids": m.get("labelIds", []),
+            # Attachment parts on this message (filename + attachmentId, for
+            # download via download_attachment). Empty list for a message with
+            # no attachments. Carries the message id per attachment so a single
+            # thread-wide list (ThreadModal) can fetch each one.
+            "attachments": _walk_attachments(m.get("payload", {}), m["id"]),
         })
     return msgs
+
+
+def _walk_attachments(payload: dict, message_id: str, out: list | None = None) -> list[dict]:
+    """Flatten every attachment part in a message payload — any part with a
+    non-empty `filename` — recursing through nested multiparts. Each entry has
+    what download_attachment needs plus display info (name/type/size). A tiny
+    attachment Gmail inlines (`body.data` present, no `attachmentId`) carries
+    that data directly so it needs no second round trip."""
+    if out is None:
+        out = []
+    for p in payload.get("parts", []) or []:
+        filename = p.get("filename") or ""
+        body = p.get("body", {})
+        if filename:
+            out.append({
+                "message_id": message_id,
+                "filename": filename,
+                "mime_type": p.get("mimeType", "application/octet-stream"),
+                "size": body.get("size", 0),
+                "attachment_id": body.get("attachmentId"),
+                "inline_data": body.get("data"),  # set only for inlined small parts
+            })
+        if p.get("parts"):
+            _walk_attachments(p, message_id, out)
+    return out
+
+
+def download_attachment(svc, message_id: str, attachment_id: str) -> bytes:
+    """Fetch one attachment's raw bytes via ``messages().attachments().get``.
+    (An inlined attachment — see `_walk_attachments`' `inline_data` — needs no
+    call: the caller base64url-decodes that directly.)"""
+    att = svc["gmail"].users().messages().attachments().get(
+        userId="me", messageId=message_id, id=attachment_id).execute()
+    return base64.urlsafe_b64decode(att["data"])
 
 
 def _extract_body(payload: dict) -> str:
@@ -395,14 +438,39 @@ def quote_for_reply(payload: dict, sender: str, date: str) -> str:
     return f"{header}\n{quoted_lines}" if quoted_lines else header
 
 
+def _attach_file(msg: MIMEMultipart, path: str) -> None:
+    """Read a local file and add it as a base64-encoded attachment part."""
+    ctype, encoding = mimetypes.guess_type(path)
+    if ctype is None or encoding is not None:
+        ctype = "application/octet-stream"
+    maintype, subtype = ctype.split("/", 1)
+    with open(path, "rb") as f:
+        data = f.read()
+    part = MIMEBase(maintype, subtype)
+    part.set_payload(data)
+    encoders.encode_base64(part)
+    part.add_header("Content-Disposition", "attachment",
+                    filename=os.path.basename(path))
+    msg.attach(part)
+
+
 def _build_raw(to: str, subject: str, body: str, cc: str | None = None,
                bcc: str | None = None, in_reply_to: str | None = None,
-               references: str | None = None) -> str:
+               references: str | None = None,
+               attachments: list[str] | None = None) -> str:
     """Assemble a base64url-encoded RFC 822 message shared by send + draft.
     A Bcc header on the raw message is honored by the Gmail send/draft API:
     the recipients get it, but Gmail strips the header from what's delivered
-    (standard blind-carbon behavior)."""
-    msg = MIMEText(body)
+    (standard blind-carbon behavior). `attachments` is a list of local file
+    paths — when non-empty the message becomes a multipart/mixed with the
+    body as the first part; when empty it stays a plain MIMEText, unchanged
+    from before."""
+    attachments = attachments or []
+    if attachments:
+        msg: object = MIMEMultipart()
+        msg.attach(MIMEText(body))
+    else:
+        msg = MIMEText(body)
     msg["to"] = to
     if cc:
         msg["cc"] = cc
@@ -413,15 +481,19 @@ def _build_raw(to: str, subject: str, body: str, cc: str | None = None,
         msg["In-Reply-To"] = in_reply_to
     if references:
         msg["References"] = references
+    for path in attachments:
+        _attach_file(msg, path)
     return base64.urlsafe_b64encode(msg.as_bytes()).decode()
 
 
 def send_message(svc, to: str, subject: str, body: str,
                  cc: str | None = None, bcc: str | None = None,
                  in_reply_to: str | None = None, references: str | None = None,
-                 thread_id: str | None = None) -> dict:
+                 thread_id: str | None = None,
+                 attachments: list[str] | None = None) -> dict:
     raw = _build_raw(to, subject, body, cc=cc, bcc=bcc,
-                     in_reply_to=in_reply_to, references=references)
+                     in_reply_to=in_reply_to, references=references,
+                     attachments=attachments)
     obj = {"raw": raw}
     if thread_id:
         obj["threadId"] = thread_id
@@ -431,13 +503,15 @@ def send_message(svc, to: str, subject: str, body: str,
 def create_draft(svc, to: str, subject: str, body: str,
                  cc: str | None = None, bcc: str | None = None,
                  in_reply_to: str | None = None, references: str | None = None,
-                 thread_id: str | None = None) -> dict:
+                 thread_id: str | None = None,
+                 attachments: list[str] | None = None) -> dict:
     """Save a message as a Gmail draft (``drafts().create``) instead of
     sending it. Same MIME assembly as ``send_message`` — a draft on a reply
     keeps its ``threadId``/In-Reply-To so Gmail files it against the right
     conversation."""
     msg: dict = {"raw": _build_raw(to, subject, body, cc=cc, bcc=bcc,
-                                   in_reply_to=in_reply_to, references=references)}
+                                   in_reply_to=in_reply_to, references=references,
+                                   attachments=attachments)}
     if thread_id:
         msg["threadId"] = thread_id
     return svc["gmail"].users().drafts().create(userId="me", body={"message": msg}).execute()
@@ -471,7 +545,8 @@ def _reply_headers(svc, thread_id: str, reply_all: bool) -> dict:
 
 def reply_to(svc, thread_id: str, body: str, reply_all: bool = False,
              to: str | None = None, cc: str | None = None,
-             bcc: str | None = None, subject: str | None = None) -> dict:
+             bcc: str | None = None, subject: str | None = None,
+             attachments: list[str] | None = None) -> dict:
     """Reply to a thread. With no ``to``/``cc``/``subject`` overrides this
     derives them from the last message (the historical behavior); the compose
     UI passes the user-edited field values instead so what's shown is what's
@@ -487,12 +562,14 @@ def reply_to(svc, thread_id: str, body: str, reply_all: bool = False,
         in_reply_to=d["in_reply_to"],
         references=d["references"],
         thread_id=thread_id,
+        attachments=attachments,
     )
 
 
 def forward(svc, thread_id: str, to: str, body_prefix: str = "",
             cc: str | None = None, bcc: str | None = None,
-            subject: str | None = None) -> dict:
+            subject: str | None = None,
+            attachments: list[str] | None = None) -> dict:
     g = svc["gmail"]
     th = g.users().threads().get(userId="me", id=thread_id, format="full").execute()
     last = th["messages"][-1]
@@ -504,7 +581,7 @@ def forward(svc, thread_id: str, to: str, body_prefix: str = "",
     original = _extract_body(last.get("payload", {}))
     forwarded = f"\n\n---------- Forwarded message ----------\nFrom: {hdrs.get('from','')}\nDate: {hdrs.get('date','')}\nSubject: {hdrs.get('subject','')}\nTo: {hdrs.get('to','')}\n\n{original}"
     return send_message(svc, to=to, subject=subject, body=body_prefix + forwarded,
-                        cc=cc, bcc=bcc)
+                        cc=cc, bcc=bcc, attachments=attachments)
 
 
 def mark_read(svc, thread_id: str) -> None:

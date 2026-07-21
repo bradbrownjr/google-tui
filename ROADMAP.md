@@ -51,23 +51,12 @@ just checking it off here, so ROADMAP.md only ever shows what's still open.
   `messages().get(format="raw")` to see its actual MIME tree, then come
   back with that before writing a fix.
 
-## P2 — Email client completeness
+## P2 — Email client completeness — DONE
 
-These are table-stakes mail features the client is currently missing; several
-build directly on infrastructure that already exists.
-
-- [ ] **Attachments — view/download received + attach on compose.** No
-  attachment support exists anywhere (`grep attachment` → 0 hits). Received
-  messages don't surface their attachment parts, and `ComposeModal` can't add
-  a file. Needs `gauth.py` to walk MIME parts for `filename`/`attachmentId`
-  and fetch bodies via `messages().attachments().get`, a way to list/open them
-  from `ThreadModal` (download reusing the Drive tab's local-save path —
-  `EXPORT_DIR`), and a file-picker + multipart-build path on send. Biggest
-  value of this batch. *(Suggested model: Opus — MIME assembly on both the
-  read and send sides, plus new UI.)*
-
-  This is the last open P2 item — star/unread/snooze, multi-select bulk
-  actions, Undo, and Drafts + CC/BCC all shipped `[2026-07-21]`.
+All P2 items shipped `[2026-07-21]` (see CHANGELOG): Attachments (view/
+download received + attach on compose), Undo for trash/archive, star/
+mark-unread/snooze from the list, multi-select bulk actions, and Drafts +
+CC/BCC in compose.
 
 ## P3 — Calendar, Contacts, and cross-cutting UX
 

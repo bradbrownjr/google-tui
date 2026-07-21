@@ -3,6 +3,40 @@
 Format: keep newest at top. One entry per meaningful change. Reference files
 touched and any breaking notes.
 
+## [2026-07-21] — Attachments: view/download received + attach on compose
+
+The last open P2 item — closes out "Email client completeness".
+
+**Receive side** (`gauth.py`, `main.py`) — `gauth.get_thread` now carries an
+`attachments` list per message (new `_walk_attachments` recurses the payload
+for any part with a `filename`, capturing `attachmentId`/size/type and the
+message id, and inlining the bytes for the small parts Gmail returns inline).
+`ThreadModal` lists each message's attachment filenames under its From/Date
+header, and `g` opens a new `AttachmentsModal` — a list of every attachment
+in the thread; Enter or `d` downloads the highlighted one to `EXPORT_DIR`
+(Documents/google-tui/, the same no-picker destination the Drive tab's `d`
+uses) via `gauth.download_attachment` (or the inlined bytes, no round trip).
+Download filenames are `basename`-sanitised so a crafted attachment name
+can't escape `EXPORT_DIR`.
+
+**Send side** (`ComposeModal` in `main.py`, `gauth.py`) — `ComposeModal`
+gained an "Attach a file (path)" row (Enter or the Attach button adds a
+local file; add several) with a `📎`-prefixed list of what's attached.
+`gauth._build_raw` grew an `attachments` param: with files it builds a
+`multipart/mixed` (body as the first part, each file base64-encoded via a new
+`_attach_file`); with none it stays a plain `MIMEText`, byte-for-byte as
+before. `send_message`/`reply_to`/`forward`/`create_draft` all thread
+`attachments` through, so attachments ride along on Send *and* Save Draft.
+Offline the file paths are queued in the mutation and re-read at replay time
+(`reply`/`reply_all`/`forward`/`new`/`draft` replay branches updated); a
+since-moved file just fails that one send.
+
+Bindings/help: `G` in `ThreadModal`'s scope (viewer), context-help rows +
+HELP_TEXT updated. New `tests/unit/test_gauth_attachments.py` (payload walk,
+multipart build, download decode) and pilot
+`tests/pilot/mail_attachments.py` (download a received attachment — inline
+and fetched — plus attach-on-reply). 111 tests, all green.
+
 ## [2026-07-21] — P2 mail: multi-select bulk actions + snooze
 
 Two more ROADMAP P2 items; only Attachments now stays open in P2.

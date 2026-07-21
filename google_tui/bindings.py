@@ -143,6 +143,7 @@ THREAD_MODAL_ACTIONS: list[ActionSpec] = [
     ActionSpec("labels", "l", "Labels", scope="modal:ThreadModal"),
     ActionSpec("email_to_task", "t", "To Task", scope="modal:ThreadModal"),
     ActionSpec("email_to_event", "e", "To Event", scope="modal:ThreadModal"),
+    ActionSpec("attachments", "g", "Attachments", scope="modal:ThreadModal"),
     ActionSpec("prev_message", "left", "Prev", scope="modal:ThreadModal"),
     ActionSpec("next_message", "right", "Next", scope="modal:ThreadModal"),
     ActionSpec("focus_search", "slash", "Search", scope="modal:ThreadModal"),
@@ -234,7 +235,7 @@ CONTEXT_HELP: dict[str, str] = {
     # non-clickable renders / HelpModal would show).
     "modal:ThreadModal": ("←/→ Prev/Next   R Reply   A Reply All   F Forward   "
                           "D Trash   S Archive   L Labels   T Task   E Event   "
-                          "/ Search   Esc Close"),
+                          "G Attachments   / Search   Esc Close"),
 }
 
 # Maps each CONTEXT_HELP scope's "Key Label" spans to the action they should
@@ -298,6 +299,7 @@ _CLICK_ACTIONS: dict[str, dict[str, str]] = {
         "L Labels": "labels",
         "T Task": "email_to_task",
         "E Event": "email_to_event",
+        "G Attachments": "attachments",
         "Esc Close": "close",
     },
 }
@@ -391,12 +393,17 @@ MAIL TAB
 
   Thread view (opened via Enter): R/A/F Reply / Reply All / Forward — same
   keys as the Email pane, now with visible button hints — D Trash, S Archive,
-  L Labels, Esc/Close closes. After a Trash or Archive, Ctrl+Z (back in the
-  list) undoes it within a minute — restores from Trash / moves back to Inbox.
+  L Labels, G attachments (view/download the thread's attachments to
+  Documents/google-tui/), Esc/Close closes. Any attachments are also listed
+  under each message's From/Date header. After a Trash or Archive, Ctrl+Z
+  (back in the list) undoes it within a minute — restores from Trash / moves
+  back to Inbox.
 
   Compose (r/a/f/c): To / Cc / Bcc / Subject fields — reply-all pre-fills Cc
-  from the thread. "Send" (5s undo countdown) or "Save Draft" to file it in
-  Gmail Drafts instead. Both queue offline and replay on reconnect.
+  from the thread. The "Attach a file" row adds a local file by path (Enter
+  or the Attach button; add several); attachments ride along on Send and
+  Save Draft. "Send" (5s undo countdown) or "Save Draft" to file it in Gmail
+  Drafts instead. Both queue offline and replay on reconnect.
 
 DASHBOARD TAB (card grid + Hermes; Google-native cards 2026-07-17, external
 cards 2026-07-19. Settings → Dashboard lets you enable/disable any card and
