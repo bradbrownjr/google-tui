@@ -105,6 +105,20 @@ CC/BCC in compose.
   download lands, replacing the no-prompt `EXPORT_DIR` default). *(Suggested
   model: Opus — new modal + local backend + temp-file bridge, though most of
   the remote plumbing already exists in `drive_sources.py`.)*
+- [ ] **Upload local → cloud/remote in the Drive tab.** The Drive tab is
+  read-only today — browse/preview/download only (`d`), no way to put a local
+  file *into* Google Drive / an FTP or SSH host. Add an upload action (e.g.
+  `u`) that picks a local file (the file picker above, or a path Input as the
+  fast path) and uploads it into the current folder of the active source. Each
+  `drive_sources.py` `DriveBackend` gains an `upload(local_path, dest_folder)`:
+  `GoogleDriveSource` via `files().create` with a `MediaFileUpload`,
+  `FtpSource` via `STOR`, `SshSource` via the SFTP subsystem's `put` (falling
+  back to `SCPClient.put` on the exec-channel path, mirroring how `download()`
+  already degrades). Refresh the listing on success so the new file shows up.
+  Gate the Google source on `_online`; FTP/SSH connect live regardless, same
+  as download. Pairs naturally with the file-picker item — build them together.
+  *(Suggested model: Opus — write paths across three backends + progress/error
+  handling.)*
 
 ## P4 — Nice-to-have
 
