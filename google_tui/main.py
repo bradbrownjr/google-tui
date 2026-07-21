@@ -896,10 +896,12 @@ _PENDING_MARK = "⏳ "
 # the app's _reflow_*_rows re-run them on resize so the rows track the terminal.
 
 def _truncate(text: str, width: int) -> str:
-    """Trim `text` to at most `width` columns, marking a cut with a trailing
-    '…'. A width <= 0 (list not laid out yet) leaves the text unchanged."""
-    if width > 0 and len(text) > width:
-        return text[:width - 1] + "…"
+    """Trim `text` to at most `width` terminal cells, marking a cut with a
+    trailing '…'. Cell-width-aware (see _cell_col): emoji/CJK count as the 2
+    cells they render, so a wide glyph can't overrun the column. A width <= 0
+    (list not laid out yet) leaves the text unchanged."""
+    if width > 0 and cell_len(text) > width:
+        return set_cell_size(text, width - 1) + "…"
     return text
 
 
@@ -915,10 +917,10 @@ _NEWS_ROW_DEFAULT_W = _NEWS_ROW_FIXED_W + 40
 
 def _news_line(entry: dict, width: int = _NEWS_ROW_DEFAULT_W) -> str:
     date = _fmt_date(entry.get("published", "")).split(" ")[0][:_NEWS_DATE_W]
-    feed = (entry.get("feed_title") or "")[:_NEWS_FEED_W]
+    feed = _cell_col(entry.get("feed_title") or "", _NEWS_FEED_W)
     title = entry.get("title") or "(untitled)"
     title_w = max(width - _NEWS_ROW_FIXED_W, _NEWS_TITLE_MIN_W)
-    return f"{date:<{_NEWS_DATE_W}}  [{feed:<{_NEWS_FEED_W}}] {_truncate(title, title_w)}"
+    return f"{date:<{_NEWS_DATE_W}}  [{feed}] {_truncate(title, title_w)}"
 
 
 _CONTACT_NAME_W = 30
@@ -933,7 +935,7 @@ def _contact_line(contact: dict, width: int = _CONTACT_ROW_DEFAULT_W) -> str:
     if not name:  # address-only contact: let the address use the whole row
         return _truncate(addr, width if width > 0 else _CONTACT_ROW_DEFAULT_W)
     addr_w = max(width - _CONTACT_ROW_FIXED_W, _CONTACT_ADDR_MIN_W)
-    return f"{name[:_CONTACT_NAME_W]:<{_CONTACT_NAME_W}} {_truncate(addr, addr_w)}"
+    return f"{_cell_col(name, _CONTACT_NAME_W)} {_truncate(addr, addr_w)}"
 
 
 _DRIVE_ROW_DEFAULT_W = 40  # #drive-list-col is only 40% wide -> stays modest
@@ -941,7 +943,8 @@ _DRIVE_ROW_DEFAULT_W = 40  # #drive-list-col is only 40% wide -> stays modest
 
 def _drive_line(f: dict, width: int = _DRIVE_ROW_DEFAULT_W) -> str:
     icon = "📁" if f["is_folder"] else "📄"
-    name_w = (width - 2) if width > 0 else _DRIVE_ROW_DEFAULT_W  # 2 cols: icon + gap
+    # 3 cells of prefix: the folder/file emoji renders 2 cells wide + 1 gap.
+    name_w = (width - 3) if width > 0 else _DRIVE_ROW_DEFAULT_W
     return f"{icon} {_truncate(f.get('name', ''), name_w)}"
 
 
@@ -952,7 +955,7 @@ def _task_line(t: dict, width: int = _TASK_ROW_DEFAULT_W) -> str:
     pend = _PENDING_MARK if t.get("_pending") else ""
     box = "[x]" if t.get("status") == "completed" else "[ ]"
     prefix = f"{pend}{box} "
-    title_w = (width - len(prefix)) if width > 0 else _TASK_ROW_DEFAULT_W
+    title_w = (width - cell_len(prefix)) if width > 0 else _TASK_ROW_DEFAULT_W
     return f"{prefix}{_truncate(t.get('title', ''), title_w)}"
 
 
@@ -973,7 +976,7 @@ def _event_when(e: dict) -> str:
 def _event_line(e: dict, width: int = _EVENT_ROW_DEFAULT_W) -> str:
     pend = _PENDING_MARK if e.get("_pending") else ""
     when = _event_when(e)
-    summary_w = max(width - _EVENT_ROW_FIXED_W - len(pend), 10)
+    summary_w = max(width - _EVENT_ROW_FIXED_W - cell_len(pend), 10)
     return f"{pend}{when:>{_EVENT_WHEN_W}}  {_truncate(e.get('summary', ''), summary_w)}"
 
 
@@ -4746,7 +4749,7 @@ class GoogleTUI(App):
             frm = _format_sender(t.get("from", ""), False)
             subj = t.get("subject") or "(no subject)"
             date_str = _fmt_email_date(t.get("date", ""))
-            items.append(ListItem(Label(f"{frm[:18]:<18} {subj[:30]:<30} {date_str}", markup=False),
+            items.append(ListItem(Label(f"{_cell_col(frm, 18)} {_cell_col(subj, 30)} {date_str}", markup=False),
                                   id=_mk_id("dm", t["threadId"])))
         lst.extend(items)
 
@@ -6448,8 +6451,8 @@ class GoogleTUI(App):
         for e in window:
             cid = _mk_id("dn", e["id"])
             self._dash_news_by_cid[cid] = e
-            feed_title = (e.get("feed_title") or "")[:16]
-            title = (e.get("title") or "(untitled)")[:40]
+            feed_title = _cell_col(e.get("feed_title") or "", 16)
+            title = _truncate(e.get("title") or "(untitled)", 40)
             items.append(ListItem(Label(f"[{feed_title}] {title}", markup=False), id=cid))
         lst.extend(items)
 
