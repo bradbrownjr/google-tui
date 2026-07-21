@@ -361,6 +361,42 @@ def _mk_id(prefix: str, raw: str) -> str:
     return f"{prefix}-{safe}"
 
 
+def _unique_id(cid: str, seen: set) -> str:
+    """Return `cid`, or `cid-2`/`cid-3`/… if it's already in `seen`, recording
+    the result. Textual raises DuplicateIds/MountError if two mounted widgets
+    share an id, and _mk_id slugifies away punctuation, so two distinct feed
+    entries whose ids differ only in stripped characters (e.g. `a/b` vs `a-b`)
+    would otherwise collide and crash the whole list on mount. A per-batch
+    `seen` set makes every row's widget id unique regardless of input."""
+    if cid not in seen:
+        seen.add(cid)
+        return cid
+    n = 2
+    while f"{cid}-{n}" in seen:
+        n += 1
+    uid = f"{cid}-{n}"
+    seen.add(uid)
+    return uid
+
+
+def _dedup_by_key(entries: list[dict], key: str = "id") -> list[dict]:
+    """Drop entries repeating an earlier one's `key` value, keeping the first.
+    News feeds routinely surface the same article twice — the same feed URL
+    configured twice, or one story syndicated across feeds sharing a guid/link
+    — which showed a doubled headline AND (because each row's widget id is
+    derived from the entry id) used to crash the News tab and Dashboard card
+    with a duplicate-widget-id mount error."""
+    seen: set = set()
+    out: list[dict] = []
+    for e in entries:
+        k = e.get(key)
+        if k in seen:
+            continue
+        seen.add(k)
+        out.append(e)
+    return out
+
+
 # ---- offline CREATE temp ids -----------------------------------------------
 # An event/task created while offline has no server id yet, but still needs to
 # show up in its list immediately. We give it a client-side placeholder id
@@ -6408,8 +6444,10 @@ class GoogleTUI(App):
             return  # superseded by a newer _apply_news_data call
         # Backs the News tab's search filter (Input#news-search) — same role
         # as self._threads_cache/self._tasks_cache for Email/Tasks search,
-        # see the module-level NOTE by its declaration in __init__.
-        self._news_entries_cache = entries
+        # see the module-level NOTE by its declaration in __init__. Deduped by
+        # entry id so a story syndicated across feeds (or a feed listed twice)
+        # neither doubles a headline nor collides two rows' widget ids.
+        self._news_entries_cache = _dedup_by_key(entries)
         try:
             query = self.query_one("#news-search", Input).value
         except Exception:
@@ -6448,8 +6486,9 @@ class GoogleTUI(App):
             return
         window = entries[self._dash_news_offset:self._dash_news_offset + self._DASH_NEWS_WINDOW]
         items = []
+        seen: set = set()
         for e in window:
-            cid = _mk_id("dn", e["id"])
+            cid = _unique_id(_mk_id("dn", e["id"]), seen)
             self._dash_news_by_cid[cid] = e
             feed_title = _cell_col(e.get("feed_title") or "", 16)
             title = _truncate(e.get("title") or "(untitled)", 40)
@@ -6483,8 +6522,9 @@ class GoogleTUI(App):
         self._news_by_cid = {}
         width = self._content_width("news-list", _NEWS_ROW_DEFAULT_W)
         items = []
+        seen: set = set()
         for e in sorted(entries, key=lambda e: e.get("published") or "", reverse=True):
-            cid = _mk_id("n", e["id"])
+            cid = _unique_id(_mk_id("n", e["id"]), seen)
             self._news_by_cid[cid] = e
             # feed_title/title come straight from someone else's RSS/Atom feed,
             # and _news_line literally wraps feed_title in "[...]" — see the
