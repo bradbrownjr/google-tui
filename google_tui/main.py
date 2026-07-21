@@ -33,6 +33,7 @@ import platformdirs
 from google.auth.exceptions import RefreshError
 from googleapiclient.errors import HttpError
 from rapidfuzz import fuzz
+from rich.cells import cell_len, set_cell_size
 from rich.text import Text
 from textual import events
 from textual.actions import SkipAction
@@ -774,6 +775,26 @@ _EMAIL_ROW_FIXED_W = 3 + _EMAIL_SENDER_W + 1 + 1 + _EMAIL_CHIPS_W + 1 + _EMAIL_D
 _EMAIL_ROW_DEFAULT_W = _EMAIL_ROW_FIXED_W + 50  # == 125; pre-responsive width
 
 
+def _cell_col(text: str, width: int) -> str:
+    """Fit `text` into EXACTLY `width` terminal cells: left-pad-truncate that
+    is display-width-aware. Subjects/senders routinely contain emoji (🚀, 📫)
+    and CJK glyphs that render 2 cells wide but count as 1 code point, so the
+    old `f"{text:<{w}}"` / `text[:w]` (which measure code points) let every row
+    with a wide glyph shift its later columns and unpin the date. rich.cells
+    measures the real rendered width, keeping the sender/subject/chips/date
+    columns aligned regardless of content. A cut is marked with a trailing '…'.
+    """
+    if width <= 0:
+        return ""
+    if cell_len(text) <= width:
+        return set_cell_size(text, width)   # pads with spaces to exactly width
+    if width == 1:
+        return "…"
+    # Truncate to width-1 cells (set_cell_size may pad a split wide glyph with a
+    # space so the result is exactly width-1), then the ellipsis fills the last.
+    return set_cell_size(text, width - 1) + "…"
+
+
 def _email_collapsed_line(th: dict, show_sender_address: bool = False,
                           labels_by_id: dict | None = None,
                           width: int = _EMAIL_ROW_DEFAULT_W) -> str:
@@ -783,15 +804,12 @@ def _email_collapsed_line(th: dict, show_sender_address: bool = False,
     frm = _format_sender(th["from"], show_sender_address)
     count_note = f"  ({th['count']})" if th["count"] > 1 else ""
     chips = _thread_label_chips(th, labels_by_id)
-    if len(chips) > _EMAIL_CHIPS_W:
-        chips = chips[:_EMAIL_CHIPS_W - 1] + "…"
     date_str = _fmt_email_date(th.get("date", ""))
     subj_w = max(width - _EMAIL_ROW_FIXED_W, _EMAIL_SUBJ_MIN_W)
-    subj_field = f"{subj}{count_note}"
-    if len(subj_field) > subj_w:
-        subj_field = subj_field[:subj_w - 1] + "…"
-    line = (f"{mark}{star} {frm[:_EMAIL_SENDER_W]:<{_EMAIL_SENDER_W}} "
-            f"{subj_field:<{subj_w}} {chips:<{_EMAIL_CHIPS_W}}")
+    sender_field = _cell_col(frm, _EMAIL_SENDER_W)
+    subj_field = _cell_col(f"{subj}{count_note}", subj_w)
+    chips_field = _cell_col(chips, _EMAIL_CHIPS_W)
+    line = f"{mark}{star} {sender_field} {subj_field} {chips_field}"
     return f"{line} {date_str:>{_EMAIL_DATE_W}}" if date_str else line
 
 
@@ -805,9 +823,9 @@ def _thread_expanded_text(th: dict, msgs: list[dict], show_sender_address: bool 
     for m in msgs:
         frm = _format_sender((m.get("from") or "").strip(), show_sender_address)
         snippet = (m.get("body") or "").strip().replace("\n", " ")
-        if len(snippet) > 80:
-            snippet = snippet[:80].rstrip() + "…"
-        lines.append(f"    {frm[:36]:<36} {snippet}")
+        if cell_len(snippet) > 80:
+            snippet = set_cell_size(snippet, 80).rstrip() + "…"
+        lines.append(f"    {_cell_col(frm, 36)} {snippet}")
     return "\n".join(lines)
 
 
