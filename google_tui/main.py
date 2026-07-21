@@ -2937,18 +2937,25 @@ class GoogleTUI(App):
                 self._cache.put("stocks", "current", stocks)
         except Exception as e:
             self.call_from_thread(self.notify, f"Stock quotes error: {e}", severity="error")
+        # Word/Picture of the day are decorative, unconfigured extras that a
+        # failed fetch leaves showing their cached content (word_of_day stays
+        # _DASH_EXTRA_UNCHANGED, so _apply_dashboard_extras keeps the card).
+        # Their upstreams (Merriam-Webster, Wikimedia) intermittently 403/429
+        # on rate-limiting/bot-detection — not an app fault and not actionable
+        # by the user — so a quiet warning log, NOT a red error toast logged at
+        # ERROR every refresh (which was the dominant noise in the app log).
         try:
             if "dash-word" in self._dash_enabled_ids:
                 word_of_day = fetchers.fetch_word_of_day()
                 self._cache.put("word_of_day", "today", word_of_day)
         except Exception as e:
-            self.call_from_thread(self.notify, f"Word of the day error: {e}", severity="error")
+            _logger.warning("Word of the day fetch failed (keeping cached): %s", e)
         try:
             if "dash-potd" in self._dash_enabled_ids:
                 wiki_potd = fetchers.fetch_wiki_potd()
                 self._cache.put("wiki_potd", "today", wiki_potd)
         except Exception as e:
-            self.call_from_thread(self.notify, f"Picture of the day error: {e}", severity="error")
+            _logger.warning("Picture of the day fetch failed (keeping cached): %s", e)
         self.call_from_thread(self._apply_dashboard_extras, weather, stocks, word_of_day, wiki_potd)
 
         auth_broken = self._google_auth_broken_detail()
