@@ -813,15 +813,18 @@ def _thread_expanded_text(th: dict, msgs: list[dict], show_sender_address: bool 
 
 def _append_email_items(email_list, threads, show_sender_address: bool = False,
                         labels_by_id: dict | None = None,
-                        width: int = _EMAIL_ROW_DEFAULT_W) -> None:
+                        width: int = _EMAIL_ROW_DEFAULT_W,
+                        selected_ids: set | None = None) -> None:
     # extend(), not append()-in-a-loop: ListView.append mounts ONE widget per
     # call (a mount + layout + repaint each), so an 80-thread inbox paid for 80
     # separate mount cycles. extend() batches the whole list into a single one.
     # Same reason every other list in this file builds its items first and
     # extends once.
+    sel = selected_ids or set()
     email_list.extend(
         ListItem(Label(_email_collapsed_line(th, show_sender_address, labels_by_id, width)),
-                 id=_mk_id("t", th["threadId"]))
+                 id=_mk_id("t", th["threadId"]),
+                 classes="email-selected" if th["threadId"] in sel else "")
         for th in threads
     )
 
@@ -1432,6 +1435,16 @@ class GoogleTUI(App):
     #email-label-select { height: 3; }
     #email-search, #tasks-search, #events-search { width: 1fr; }
     #email-list { height: 1fr; }
+    /* Multi-select (ROADMAP P2): a checked-for-bulk-action row. The accent
+       left-bar + tint reads as "checked" without needing a glyph column that
+       would disturb the responsive row arithmetic. */
+    #email-list > ListItem.email-selected { background: $accent 25%; border-left: thick $accent; }
+    #bulk-box { height: auto; }
+    #bulk-box Button { width: 1fr; margin-top: 1; }
+    #snooze-box { height: auto; }
+    #snooze-box Vertical { height: auto; }
+    #snooze-box Vertical Button { width: 1fr; margin-top: 1; }
+    #snooze-box #sn-custom { margin-top: 1; }
     #event-list, #task-list { height: 1fr; }
     #hermes-log { height: 1fr; border: round $panel-darken-1; }
     #hermes-input { dock: bottom; }
@@ -1631,6 +1644,11 @@ class GoogleTUI(App):
         # (called from on_mount, and again whenever the Settings -> Dashboard
         # checklist changes) -- empty here only until that first runs.
         self._dash_enabled_ids: list[str] = []
+        # Thread ids checked for a multi-select bulk action (ROADMAP P2). A
+        # CSS class on the ListItem shows the check; the set is the source of
+        # truth, pruned to what's loaded on every re-render (see
+        # _apply_email_list_async) so a stale id can't linger in it.
+        self._email_selected: set[str] = set()
         self._tasklists = []
         now = dt.datetime.now()
         self._cal_year, self._cal_month = now.year, now.month
@@ -2860,6 +2878,9 @@ class GoogleTUI(App):
             self.call_from_thread(
                 self._apply_live_refresh, False, None, None, None, None, None, None)
             return
+        # Resurface due snoozes BEFORE the mail fetch below, so the fetched
+        # inbox already includes any thread whose remind-at just passed.
+        self._resurface_due_snoozes()
         mail = cal_month = cal_week = drive_files = labels = news_entries = None
         ok = True
         try:
@@ -3381,6 +3402,9 @@ class GoogleTUI(App):
         if gen != self._mail_apply_gen:
             return  # superseded by a newer apply call
         self._threads_cache = {t["threadId"]: t for t in threads}
+        # Drop any selection ids no longer among the loaded threads so a bulk
+        # action can't target a thread that's since left the list.
+        self._email_selected &= set(self._threads_cache)
         try:
             query = self.query_one("#email-search", Input).value
         except Exception:
@@ -3388,7 +3412,8 @@ class GoogleTUI(App):
         visible = _fuzzy_filter_threads(threads, query) if query.strip() else threads
         email_list = self.query_one("#email-list")
         _append_email_items(email_list, visible, self.settings.show_sender_address,
-                            self._labels_by_id(), self._email_list_width())
+                            self._labels_by_id(), self._email_list_width(),
+                            self._email_selected)
         _append_load_more_row(email_list, bool(self._email_next_page_token) and not query.strip(),
                               LOAD_MORE_EMAIL_ID, "↓ Load more messages…")
 
@@ -3418,6 +3443,7 @@ class GoogleTUI(App):
             return  # superseded by a newer _apply_mail_data call
 
         self._threads_cache = {t["threadId"]: t for t in threads}
+        self._email_selected &= set(self._threads_cache)
         try:
             email_query = self.query_one("#email-search", Input).value
         except Exception:
@@ -3425,7 +3451,8 @@ class GoogleTUI(App):
         visible_threads = _fuzzy_filter_threads(threads, email_query) if email_query.strip() else threads
         email_list = self.query_one("#email-list")
         _append_email_items(email_list, visible_threads, self.settings.show_sender_address,
-                            self._labels_by_id(), self._email_list_width())
+                            self._labels_by_id(), self._email_list_width(),
+                            self._email_selected)
         _append_load_more_row(email_list, bool(self._email_next_page_token) and not email_query.strip(),
                               LOAD_MORE_EMAIL_ID, "↓ Load more messages…")
 
@@ -3994,6 +4021,186 @@ class GoogleTUI(App):
             self.call_from_thread(self.notify,
                                   "Restored from Trash" if action == "trash"
                                   else "Moved back to Inbox")
+            self._refresh_all_thread()
+
+        self.run_worker(_work, thread=True, exclusive=True)
+
+    # ---- Snooze (ROADMAP P2) ----
+    def _snooze_tz(self):
+        return self.app_config.tzinfo or dt.datetime.now().astimezone().tzinfo
+
+    def action_snooze(self) -> None:
+        """Snooze the highlighted thread until a chosen time ('z'): remove it
+        from the Inbox now, resurface it later (see _resurface_due_snoozes).
+        Online only — snooze both writes a label and persists a reminder, and
+        an offline half of that would be confusing. Mail tab only."""
+        if self._main_tabs().active != "tab-mail":
+            return
+        tid = self._selected_thread()
+        if not tid:
+            return
+        if not self._online:
+            self.notify("Snooze needs a connection", severity="warning")
+            return
+        self._snooze_target = tid
+        self.push_screen(SnoozeModal(self._snooze_tz()), self._on_snooze_result)
+
+    def _on_snooze_result(self, when) -> None:
+        if when is None:
+            return
+        tid = getattr(self, "_snooze_target", None)
+        if not tid:
+            return
+
+        def _work() -> None:
+            try:
+                gauth.modify_labels(self.svc, tid, remove=["INBOX"])
+            except Exception as e:
+                self.call_from_thread(self.notify, f"Snooze error: {e}", severity="error")
+                return
+            self.settings.snoozed[tid] = when.isoformat()
+            save_settings(self.settings)
+            self.call_from_thread(
+                self.notify, f"Snoozed until {when.strftime('%a %m/%d %H:%M')}")
+            self._refresh_all_thread()
+
+        self.run_worker(_work, thread=True, exclusive=True)
+
+    def _resurface_due_snoozes(self) -> None:
+        """Re-add INBOX to any snoozed thread whose remind-at has passed, then
+        drop it from the store. Runs on the refresh worker thread (called from
+        _live_refresh_thread) just before the mail fetch. A thread that errors
+        (e.g. deleted server-side) is dropped from the store anyway so it can't
+        wedge the check every refresh."""
+        snoozed = getattr(self.settings, "snoozed", None)
+        if not snoozed:
+            return
+        now = dt.datetime.now(self._snooze_tz())
+        due: list[str] = []
+        for tid, when in list(snoozed.items()):
+            try:
+                resurface = dt.datetime.fromisoformat(when)
+            except (ValueError, TypeError):
+                due.append(tid)  # malformed value -> drop it
+                continue
+            if resurface.tzinfo is None:
+                resurface = resurface.replace(tzinfo=now.tzinfo)
+            if resurface <= now:
+                due.append(tid)
+        if not due:
+            return
+        for tid in due:
+            try:
+                gauth.modify_labels(self.svc, tid, add=["INBOX"])
+            except Exception:
+                pass  # drop from the store regardless — a 404 means it's gone
+            snoozed.pop(tid, None)
+        save_settings(self.settings)
+        self.call_from_thread(self.notify, f"{len(due)} snoozed thread(s) back in Inbox")
+
+    # ---- Multi-select bulk actions (ROADMAP P2) ----
+    def action_select_thread(self) -> None:
+        """Toggle the highlighted thread's membership in the bulk-action
+        selection ('x', Gmail-style), tint its row, and advance the cursor so
+        checking a run of threads is just repeated 'x'. Mail tab only."""
+        if self._main_tabs().active != "tab-mail":
+            return
+        lst = self.query_one("#email-list", ListView)
+        item = lst.highlighted_child
+        tid = self._selected_thread()
+        if not item or not tid:
+            return
+        if tid in self._email_selected:
+            self._email_selected.discard(tid)
+            item.remove_class("email-selected")
+        else:
+            self._email_selected.add(tid)
+            item.add_class("email-selected")
+        n = len(self._email_selected)
+        self.notify(f"{n} selected" if n else "Selection cleared")
+        lst.action_cursor_down()
+
+    def action_bulk_actions(self) -> None:
+        """Open the bulk-action chooser ('X') for the current selection."""
+        if self._main_tabs().active != "tab-mail":
+            return
+        if not self._email_selected:
+            self.notify("Nothing selected — press x to check threads", severity="warning")
+            return
+        self.push_screen(BulkActionModal(len(self._email_selected)),
+                         self._on_bulk_action_result)
+
+    def _on_bulk_action_result(self, choice) -> None:
+        if choice in ("archive", "trash"):
+            self._bulk_archive_or_trash(choice)
+        elif choice == "label":
+            self._bulk_open_label_picker()
+
+    def _bulk_archive_or_trash(self, kind: str) -> None:
+        ids = list(self._email_selected)
+        fn = gauth.archive_thread if kind == "archive" else gauth.trash_thread
+        past = "Archived" if kind == "archive" else "Trashed"
+        if not self._online:
+            for tid in ids:
+                self._enqueue_mutation({"type": kind, "thread_id": tid})
+                self._threads_cache.pop(tid, None)
+            self._email_selected.clear()
+            self._apply_email_list(list(self._threads_cache.values()))
+            self.notify(f"Offline — queued {len(ids)} {kind}(s), will apply once reconnected.")
+            return
+
+        def _work() -> None:
+            errs = 0
+            for tid in ids:
+                try:
+                    fn(self.svc, tid)
+                except Exception:
+                    errs += 1
+            self._email_selected.clear()
+            msg = f"{past} {len(ids) - errs} thread(s)"
+            if errs:
+                msg += f" ({errs} failed)"
+            self.call_from_thread(self.notify, msg,
+                                  severity="error" if errs else "information")
+            self._refresh_all_thread()
+
+        self.run_worker(_work, thread=True, exclusive=True)
+
+    def _bulk_open_label_picker(self) -> None:
+        labels = getattr(self, "_labels_cache", [])
+        pickable = [l for l in labels
+                    if l.get("type") != "system" and l.get("id") and l.get("name")]
+        if not pickable:
+            self.notify("No labels available to assign", severity="warning")
+            return
+        self.push_screen(LabelPickerModal(pickable, applied_ids=frozenset()),
+                         self._on_bulk_label_result)
+
+    def _on_bulk_label_result(self, add_ids) -> None:
+        if not add_ids:
+            return
+        ids = list(self._email_selected)
+        add = list(add_ids)
+        if not self._online:
+            for tid in ids:
+                self._enqueue_mutation({"type": "modify_labels", "thread_id": tid, "add": add})
+            self._email_selected.clear()
+            self.notify(f"Offline — queued {len(add)} label(s) on {len(ids)} thread(s).")
+            return
+
+        def _work() -> None:
+            errs = 0
+            for tid in ids:
+                try:
+                    gauth.modify_labels(self.svc, tid, add=add)
+                except Exception:
+                    errs += 1
+            self._email_selected.clear()
+            msg = f"Applied {len(add)} label(s) to {len(ids) - errs} thread(s)"
+            if errs:
+                msg += f" ({errs} failed)"
+            self.call_from_thread(self.notify, msg,
+                                  severity="error" if errs else "information")
             self._refresh_all_thread()
 
         self.run_worker(_work, thread=True, exclusive=True)
@@ -7244,6 +7451,96 @@ class UnlockModal(ModalScreen):
 
     def on_key(self, e) -> None:
         if e.key == "escape" and self.mode == "create":
+            self.dismiss(None)
+
+
+class SnoozeModal(ModalScreen):
+    """Pick a remind-at time for snoozing a thread (ROADMAP P2). Dismisses
+    with a tz-aware ``datetime`` (a preset or a parsed custom value) or None.
+    The preset times are computed in the app's timezone so "Tomorrow 9:00"
+    means 9am where the user is, not UTC."""
+
+    def __init__(self, tzinfo):
+        super().__init__()
+        self.tzinfo = tzinfo
+
+    def compose(self) -> ComposeResult:
+        with Container(id="snooze-box", classes="pane"):
+            yield Label("SNOOZE UNTIL", classes="pane-title-text")
+            with Vertical():
+                yield Button("Later today (+3h)", id="sn-3h")
+                yield Button("Tomorrow 09:00", id="sn-tom")
+                yield Button("This weekend (Sat 09:00)", id="sn-weekend")
+                yield Button("Next week (Mon 09:00)", id="sn-week")
+            yield Input(placeholder="Custom: YYYY-MM-DD HH:MM", id="sn-custom")
+            with Horizontal(classes="btnrow"):
+                yield Button("Snooze custom", id="sn-custom-go")
+                yield Button("Cancel", id="cancel")
+
+    def _at(self, day: dt.date, hour: int = 9, minute: int = 0) -> dt.datetime:
+        return dt.datetime(day.year, day.month, day.day, hour, minute, tzinfo=self.tzinfo)
+
+    def on_button_pressed(self, e: Button.Pressed) -> None:
+        now = dt.datetime.now(self.tzinfo)
+        if e.button.id == "cancel":
+            self.dismiss(None)
+        elif e.button.id == "sn-3h":
+            self.dismiss(now + dt.timedelta(hours=3))
+        elif e.button.id == "sn-tom":
+            self.dismiss(self._at(now.date() + dt.timedelta(days=1)))
+        elif e.button.id == "sn-weekend":
+            # Days until the coming Saturday (weekday 5); if today is already
+            # Sat/Sun, jump to next Saturday rather than "today".
+            ahead = (5 - now.weekday()) % 7 or 7
+            self.dismiss(self._at(now.date() + dt.timedelta(days=ahead)))
+        elif e.button.id == "sn-week":
+            ahead = (7 - now.weekday()) % 7 or 7  # next Monday
+            self.dismiss(self._at(now.date() + dt.timedelta(days=ahead)))
+        elif e.button.id == "sn-custom-go":
+            self._submit_custom()
+
+    def _submit_custom(self) -> None:
+        raw = self.query_one("#sn-custom", Input).value.strip()
+        try:
+            when = dt.datetime.strptime(raw, "%Y-%m-%d %H:%M").replace(tzinfo=self.tzinfo)
+        except ValueError:
+            self.notify("Use YYYY-MM-DD HH:MM (24h)", severity="warning")
+            return
+        if when <= dt.datetime.now(self.tzinfo):
+            self.notify("Pick a time in the future", severity="warning")
+            return
+        self.dismiss(when)
+
+    def on_key(self, e) -> None:
+        if e.key == "escape":
+            self.dismiss(None)
+
+
+class BulkActionModal(ModalScreen):
+    """Chooser for a multi-select bulk action (ROADMAP P2). Opened with 'X'
+    when ≥1 thread is checked; dismisses with the chosen action id
+    ("archive"/"trash"/"label") or None. The App runs the action over every
+    selected thread — see _on_bulk_action_result."""
+
+    def __init__(self, count: int):
+        super().__init__()
+        self.count = count
+
+    def compose(self) -> ComposeResult:
+        with Container(id="bulk-box", classes="pane"):
+            yield Label(f"BULK ACTIONS — {self.count} selected", classes="pane-title-text")
+            with Vertical():
+                yield Button("Archive", id="bulk-archive")
+                yield Button("Trash", id="bulk-trash")
+                yield Button("Apply Label…", id="bulk-label")
+                yield Button("Cancel", id="cancel")
+
+    def on_button_pressed(self, e: Button.Pressed) -> None:
+        self.dismiss({"bulk-archive": "archive", "bulk-trash": "trash",
+                      "bulk-label": "label"}.get(e.button.id))
+
+    def on_key(self, e) -> None:
+        if e.key == "escape":
             self.dismiss(None)
 
 

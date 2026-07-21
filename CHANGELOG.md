@@ -3,6 +3,38 @@
 Format: keep newest at top. One entry per meaningful change. Reference files
 touched and any breaking notes.
 
+## [2026-07-21] — P2 mail: multi-select bulk actions + snooze
+
+Two more ROADMAP P2 items; only Attachments now stays open in P2.
+
+**Multi-select bulk actions** (`main.py`, `bindings.py`) — `x` checks/
+unchecks the highlighted thread (Gmail-style, then advances the cursor so a
+run of threads is just repeated `x`); `X` opens a `BulkActionModal` to
+Archive / Trash / Apply-Label every checked thread at once. Selection is a
+`self._email_selected` set of thread ids; checked rows get an accent
+left-bar + tint via a `.email-selected` CSS class on the `ListItem` (chosen
+over a glyph column so the responsive row arithmetic is untouched). The set
+is pruned to the loaded threads on every re-render and passed through
+`_append_email_items`, so the checks survive a search-filter, resize, or
+refresh. Bulk ops loop the existing per-thread `gauth` calls on a worker
+(reporting any failures) and queue offline like their single-thread
+counterparts.
+
+**Snooze a thread from the list** (`main.py`, `settings.py`, `bindings.py`)
+— `z` opens a `SnoozeModal` (presets: +3h / tomorrow 9 / this weekend / next
+week, computed in the app timezone, plus a custom `YYYY-MM-DD HH:MM`).
+Gmail has no native snooze, so snoozing removes `INBOX` now and records the
+remind-at in a new `Settings.snoozed` (`{thread_id: ISO datetime}`,
+persisted). `_resurface_due_snoozes` runs on the refresh worker just before
+each mail fetch (so the fetched inbox already reflects it) and re-adds
+`INBOX` to anything past due — which also means a snooze that came due while
+the app was closed resurfaces on the next launch. Online-only (it both
+writes a label and persists a reminder). A malformed/deleted entry is
+dropped from the store rather than wedging the check.
+
+New pilots: `tests/pilot/mail_multiselect.py`, `tests/pilot/mail_snooze.py`
+(snooze covers both the action and the resurface path). 103 tests, all green.
+
 ## [2026-07-21] — Create a task or event from an email
 
 New: turn the highlighted Email thread into a Google Task (`t`) or a Calendar

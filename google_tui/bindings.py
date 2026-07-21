@@ -96,6 +96,14 @@ GLOBAL_ACTIONS: list[ActionSpec] = [
     # single-letter mail actions), so a bare 't'/'e' elsewhere is harmless.
     ActionSpec("email_to_task", "t", "To Task"),
     ActionSpec("email_to_event", "e", "To Event"),
+    # Multi-select: `x` checks/unchecks the highlighted thread (Gmail-style),
+    # `X` (shift+x) opens the bulk-action chooser for the checked set. Both
+    # Mail-tab-gated. Distinct Textual keys ("x" vs "X").
+    ActionSpec("select_thread", "x", "Select"),
+    ActionSpec("bulk_actions", "X", "Bulk"),
+    # Snooze the highlighted thread ('z'): out of the Inbox now, back later.
+    # Mail-tab-gated like the others.
+    ActionSpec("snooze", "z", "Snooze"),
     ActionSpec("focus_label_select", "l", "Labels"),
     ActionSpec("focus_search", "/", "Search"),
     ActionSpec("context_space", "space", "Context"),
@@ -200,7 +208,7 @@ HELP_GLOBAL_TEXT = (
 # 2026-07-17, pane:dash-weather/dash-stocks/dash-word/dash-potd from
 # 2026-07-19 (ROADMAP P4's external cards).
 CONTEXT_HELP: dict[str, str] = {
-    "tab:tab-mail": "Enter Open   c Compose   r Reply   a Reply All   f Forward   u Unread   * Star   t Task   e Event   Space Expand   l Labels   / Search   p Toggle Preview   Ctrl+Z Undo",
+    "tab:tab-mail": "Enter Open   c Compose   r Reply   a Reply All   f Forward   u Unread   * Star   z Snooze   t Task   e Event   x Select   X Bulk   Space Expand   l Labels   / Search   p Toggle Preview   Ctrl+Z Undo",
     "pane:events": "Enter/Space Detail   n New Event   / Search",
     "pane:tasks": "Space Toggle Complete   Enter Detail   / Search",
     "pane:dash-mail": "Enter/Space Open Thread (header: open Mail tab)",
@@ -253,8 +261,11 @@ _CLICK_ACTIONS: dict[str, dict[str, str]] = {
         "f Forward": "forward",
         "u Unread": "mark_unread",
         "* Star": "star",
+        "z Snooze": "snooze",
         "t Task": "email_to_task",
         "e Event": "email_to_event",
+        "x Select": "select_thread",
+        "X Bulk": "bulk_actions",
         "Space Expand": "context_space",
         "l Labels": "focus_label_select",
         "/ Search": "focus_search",
@@ -364,10 +375,13 @@ GLOBAL
 MAIL TAB
   Email-only: Enter open thread, Space expand/collapse (shows snippet),
   l show labels filter (Esc hides), c Compose new, r Reply, a Reply All,
-  f Forward, u mark unread, * star/unstar (★ column), t turn the thread into
-  a Google Task, e turn it into a Calendar event (both prefill from the
-  subject + a link back to the thread), / search (live filter over
-  subject/from/snippet).
+  f Forward, u mark unread, * star/unstar (★ column), z snooze (out of the
+  Inbox now, back at a chosen time — checked each refresh, resurfaces on the
+  next launch if it came due while closed), t turn the thread into a Google
+  Task, e turn it into a Calendar event (both prefill from the subject + a
+  link back to the thread), x check/uncheck for a bulk action, X open the
+  bulk-action chooser (Archive / Trash / Apply Label over every checked
+  thread), / search (live filter over subject/from/snippet).
   p toggles a preview pane on the right showing the highlighted thread's
   latest message (hidden by default — Settings → General to change the
   default) — while visible, it live-updates as you move the highlight,

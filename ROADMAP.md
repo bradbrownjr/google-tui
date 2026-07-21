@@ -65,17 +65,10 @@ build directly on infrastructure that already exists.
   `EXPORT_DIR`), and a file-picker + multipart-build path on send. Biggest
   value of this batch. *(Suggested model: Opus — MIME assembly on both the
   read and send sides, plus new UI.)*
-- [ ] **Snooze a thread from the list.** The star + mark-unread pieces of the
-  former "Star / mark-unread / snooze" bullet shipped (`[2026-07-21]` and
-  earlier); snooze is what's left. It's the larger piece: Gmail's API has no
-  native snooze, so it needs a small "remind at" modal plus either a
-  `SNOOZED`-style user label the app hides-until-due or a scheduled re-surface
-  hooked into `_periodic_refresh`. No new backend for the label-move part
-  (`modify_labels`), but the "resurface at time T" scheduling is genuinely new.
-- [ ] **Multi-select bulk actions.** No way to select N threads and
-  archive/label/trash them at once — every action is single-thread. Needs a
-  selection model on the Email `ListView` (Space-to-check, visual marker) and
-  bulk variants of the mutation actions.
+
+  This is the last open P2 item — star/unread/snooze, multi-select bulk
+  actions, Undo, and Drafts + CC/BCC all shipped `[2026-07-21]`.
+
 ## P3 — Calendar, Contacts, and cross-cutting UX
 
 - [ ] **RSVP to received invitations** (accept / decline / tentative).

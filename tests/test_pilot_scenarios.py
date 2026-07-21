@@ -18,6 +18,8 @@ SCENARIOS = [
     "tests.pilot.email_offline_preview",
     "tests.pilot.mail_star_undo_compose",
     "tests.pilot.email_to_task_event",
+    "tests.pilot.mail_multiselect",
+    "tests.pilot.mail_snooze",
     "tests.pilot.dashboard_external_cards",
     "tests.pilot.popular_feeds_picker",
     "tests.pilot.config_toml_overrides",

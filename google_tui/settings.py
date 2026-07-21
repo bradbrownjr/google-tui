@@ -72,6 +72,12 @@ class Settings:
     # unconfigured weather/stocks card would just be an empty-state row).
     weather_location: str | None = None  # free-text, e.g. "Seattle, WA" (Open-Meteo geocodes it)
     stock_symbols: list[str] = field(default_factory=list)  # e.g. ["AAPL", "MSFT"]
+    # Snoozed threads (ROADMAP P2): {thread_id: remind-at ISO datetime}. Gmail
+    # has no native snooze, so the app removes INBOX now and re-adds it when
+    # the time passes (checked each online refresh — see
+    # GoogleTUI._resurface_due_snoozes). Persisted here so a snooze survives
+    # a restart and resurfaces on the next launch if it came due while closed.
+    snoozed: dict = field(default_factory=dict)
 
 
 def load_settings() -> Settings:
