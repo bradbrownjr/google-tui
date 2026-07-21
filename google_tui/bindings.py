@@ -91,6 +91,11 @@ GLOBAL_ACTIONS: list[ActionSpec] = [
     # avoids a "same key, different action depending on whether a thread is
     # open" trap; `*` is unclaimed and reads as the star glyph.
     ActionSpec("star", "asterisk", "Star"),
+    # Turn the highlighted Email-list thread into a Google Task ('t') or a
+    # Calendar event ('e'). Both no-op off the Mail tab (like the other
+    # single-letter mail actions), so a bare 't'/'e' elsewhere is harmless.
+    ActionSpec("email_to_task", "t", "To Task"),
+    ActionSpec("email_to_event", "e", "To Event"),
     ActionSpec("focus_label_select", "l", "Labels"),
     ActionSpec("focus_search", "/", "Search"),
     ActionSpec("context_space", "space", "Context"),
@@ -128,6 +133,8 @@ THREAD_MODAL_ACTIONS: list[ActionSpec] = [
     ActionSpec("trash", "d", "Trash", scope="modal:ThreadModal"),
     ActionSpec("archive", "s", "Archive", scope="modal:ThreadModal"),
     ActionSpec("labels", "l", "Labels", scope="modal:ThreadModal"),
+    ActionSpec("email_to_task", "t", "To Task", scope="modal:ThreadModal"),
+    ActionSpec("email_to_event", "e", "To Event", scope="modal:ThreadModal"),
     ActionSpec("prev_message", "left", "Prev", scope="modal:ThreadModal"),
     ActionSpec("next_message", "right", "Next", scope="modal:ThreadModal"),
     ActionSpec("focus_search", "slash", "Search", scope="modal:ThreadModal"),
@@ -193,7 +200,7 @@ HELP_GLOBAL_TEXT = (
 # 2026-07-17, pane:dash-weather/dash-stocks/dash-word/dash-potd from
 # 2026-07-19 (ROADMAP P4's external cards).
 CONTEXT_HELP: dict[str, str] = {
-    "tab:tab-mail": "Enter Open   c Compose   r Reply   a Reply All   f Forward   u Unread   * Star   Space Expand   l Labels   / Search   p Toggle Preview   Ctrl+Z Undo",
+    "tab:tab-mail": "Enter Open   c Compose   r Reply   a Reply All   f Forward   u Unread   * Star   t Task   e Event   Space Expand   l Labels   / Search   p Toggle Preview   Ctrl+Z Undo",
     "pane:events": "Enter/Space Detail   n New Event   / Search",
     "pane:tasks": "Space Toggle Complete   Enter Detail   / Search",
     "pane:dash-mail": "Enter/Space Open Thread (header: open Mail tab)",
@@ -218,7 +225,8 @@ CONTEXT_HELP: dict[str, str] = {
     # _CLICK_ACTIONS). The plain-text form here is the fallback (and what
     # non-clickable renders / HelpModal would show).
     "modal:ThreadModal": ("←/→ Prev/Next   R Reply   A Reply All   F Forward   "
-                          "D Trash   S Archive   L Labels   / Search   Esc Close"),
+                          "D Trash   S Archive   L Labels   T Task   E Event   "
+                          "/ Search   Esc Close"),
 }
 
 # Maps each CONTEXT_HELP scope's "Key Label" spans to the action they should
@@ -245,6 +253,8 @@ _CLICK_ACTIONS: dict[str, dict[str, str]] = {
         "f Forward": "forward",
         "u Unread": "mark_unread",
         "* Star": "star",
+        "t Task": "email_to_task",
+        "e Event": "email_to_event",
         "Space Expand": "context_space",
         "l Labels": "focus_label_select",
         "/ Search": "focus_search",
@@ -275,6 +285,8 @@ _CLICK_ACTIONS: dict[str, dict[str, str]] = {
         "D Trash": "trash",
         "S Archive": "archive",
         "L Labels": "labels",
+        "T Task": "email_to_task",
+        "E Event": "email_to_event",
         "Esc Close": "close",
     },
 }
@@ -352,8 +364,10 @@ GLOBAL
 MAIL TAB
   Email-only: Enter open thread, Space expand/collapse (shows snippet),
   l show labels filter (Esc hides), c Compose new, r Reply, a Reply All,
-  f Forward, u mark unread, * star/unstar (★ column), / search (live filter
-  over subject/from/snippet).
+  f Forward, u mark unread, * star/unstar (★ column), t turn the thread into
+  a Google Task, e turn it into a Calendar event (both prefill from the
+  subject + a link back to the thread), / search (live filter over
+  subject/from/snippet).
   p toggles a preview pane on the right showing the highlighted thread's
   latest message (hidden by default — Settings → General to change the
   default) — while visible, it live-updates as you move the highlight,

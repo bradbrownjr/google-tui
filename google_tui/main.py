@@ -1494,6 +1494,8 @@ class GoogleTUI(App):
     #contacts-search { width: 1fr; margin-right: 1; }
     #contacts-list { height: 1fr; }
     #c-to-suggestions { height: auto; max-height: 6; border: round $panel-darken-1; }
+    #ett-notes { height: 8; border: round $panel-darken-1; margin-top: 1; }
+    #ett-list { width: 1fr; margin-bottom: 1; }
     #unlock-box { height: auto; }
     #onboarding-box { width: 90%; height: 80%; }
     /* Ctrl+K quick-ask popup (HermesAskModal) -- deliberately NO explicit
@@ -2978,22 +2980,25 @@ class GoogleTUI(App):
     def _reconcile_tasks(self, tasks: list[dict]) -> list[dict]:
         return _merge_pending_tasks(tasks, self._pending_mutations)
 
-    def _enqueue_event_create(self, title: str, start, end, all_day: bool) -> None:
+    def _enqueue_event_create(self, title: str, start, end, all_day: bool,
+                              description: str = "") -> None:
         """Queue an offline New-Event. `start`/`end` are date/datetime objects
         from CreateEventModal; stored as ISO strings so the mutation is plain-
-        JSON (the queue is persisted to the cache as JSON)."""
+        JSON (the queue is persisted to the cache as JSON). `description` is
+        used by the Email → Event flow (a link + snippet back to the thread)."""
         self._enqueue_mutation({
             "type": "create_event", "temp_id": _new_temp_id(),
-            "summary": title, "all_day": all_day,
+            "summary": title, "all_day": all_day, "description": description,
             "start": start.isoformat(), "end": end.isoformat(),
         })
         self.notify("Offline — queued, will create once reconnected.")
 
-    def _enqueue_task_create(self, list_id: str, title: str, parent: str | None) -> str:
+    def _enqueue_task_create(self, list_id: str, title: str, parent: str | None,
+                             notes: str | None = None) -> str:
         temp_id = _new_temp_id()
         self._enqueue_mutation({
             "type": "create_task", "temp_id": temp_id,
-            "list_id": list_id, "title": title, "parent": parent,
+            "list_id": list_id, "title": title, "parent": parent, "notes": notes,
         })
         self.notify("Offline — queued, will add once reconnected.")
         return temp_id
@@ -3109,9 +3114,11 @@ class GoogleTUI(App):
             else:
                 start = dt.datetime.fromisoformat(mutation["start"])
                 end = dt.datetime.fromisoformat(mutation["end"])
-            gauth.create_event(self.svc, mutation["summary"], start, end, all_day=all_day)
+            gauth.create_event(self.svc, mutation["summary"], start, end, all_day=all_day,
+                               description=mutation.get("description", ""))
         elif t == "create_task":
             created = gauth.create_task(self.svc, mutation["list_id"], mutation["title"],
+                                        notes=mutation.get("notes"),
                                         parent=mutation.get("parent"))
             # If the user toggled this not-yet-synced task complete while still
             # offline (see _toggle_pending_task), apply that now that it has a
@@ -3990,6 +3997,63 @@ class GoogleTUI(App):
             self._refresh_all_thread()
 
         self.run_worker(_work, thread=True, exclusive=True)
+
+    def _email_reference(self, tid: str) -> tuple[str, str]:
+        """(subject, notes) for turning thread `tid` into a task or event,
+        built from the cached thread summary so it works offline too. `notes`
+        is the sender + snippet + a Gmail permalink back to the thread."""
+        s = self._threads_cache.get(tid, {})
+        subject = s.get("subject") or "(no subject)"
+        permalink = f"https://mail.google.com/mail/u/0/#all/{tid}"
+        parts = []
+        if s.get("from"):
+            parts.append(f"From: {s['from']}")
+        if (s.get("snippet") or "").strip():
+            parts.append(s["snippet"].strip())
+        parts.append(permalink)
+        return subject, "\n\n".join(parts)
+
+    def _open_email_to_task(self, tid: str | None) -> None:
+        if not tid:
+            return
+        if not self._tasklists:
+            self.notify("No task lists available", severity="warning")
+            return
+        subject, notes = self._email_reference(tid)
+        self.push_screen(EmailToTaskModal(self.svc, self._tasklists, subject, notes),
+                         self._on_email_to_task_result)
+
+    def _on_email_to_task_result(self, result) -> None:
+        # "created" (online) refetches so the new task shows on the Dashboard
+        # Tasks card; "queued" (offline) is already overlaid via the pending-
+        # mutation reconcile, so just re-render the tasks from cache.
+        if result == "created" and self._online:
+            self.run_worker(self._refresh_all_thread, thread=True, exclusive=True)
+        elif result == "queued":
+            self._refresh_task_list()
+
+    def _open_email_to_event(self, tid: str | None) -> None:
+        if not tid:
+            return
+        subject, notes = self._email_reference(tid)
+        self.push_screen(
+            CreateEventModal(self.svc, dt.date.today(), default_title=subject,
+                             description=notes),
+            self._on_create_event_result)
+
+    def action_email_to_task(self) -> None:
+        """Create a Google Task from the highlighted Email-pane thread ('t').
+        Mail tab only; no-op elsewhere."""
+        if self._main_tabs().active != "tab-mail":
+            return
+        self._open_email_to_task(self._selected_thread())
+
+    def action_email_to_event(self) -> None:
+        """Create a Calendar event from the highlighted Email-pane thread
+        ('e'). Mail tab only; no-op elsewhere."""
+        if self._main_tabs().active != "tab-mail":
+            return
+        self._open_email_to_event(self._selected_thread())
 
     def action_focus_label_select(self) -> None:
         if self._main_tabs().active != "tab-mail":  # Mail tab is Email-only now
@@ -7645,6 +7709,15 @@ class ThreadModal(ModalScreen):
             LabelPickerModal(pickable, applied_ids=frozenset(self._label_ids)),
             self._on_labels_result)
 
+    def action_email_to_task(self) -> None:
+        # Delegates to the app: it owns the tasklists + the create/queue flow,
+        # and the modal it opens stacks on top of this one (create, then land
+        # back on the thread). Same thread_id either way.
+        self.app._open_email_to_task(self.thread_id)
+
+    def action_email_to_event(self) -> None:
+        self.app._open_email_to_event(self.thread_id)
+
     def _on_labels_result(self, add_ids) -> None:
         if not add_ids:
             return
@@ -8092,10 +8165,16 @@ class CreateEventModal(ModalScreen):
     them, so a mis-tap doesn't lose already-typed times.
     """
 
-    def __init__(self, svc, default_date: dt.date):
+    def __init__(self, svc, default_date: dt.date, default_title: str = "",
+                 description: str = ""):
         super().__init__()
         self.svc = svc
         self.default_date = default_date
+        # Prefilled by the Email → Event flow (subject as title, a link +
+        # snippet back to the thread as the event description); empty for the
+        # plain New-Event path.
+        self.default_title = default_title
+        self.description = description
         self._submitting = False
 
     def compose(self) -> ComposeResult:
@@ -8115,6 +8194,8 @@ class CreateEventModal(ModalScreen):
 
     def on_mount(self) -> None:
         self.query_one("#ce-date", Input).value = self.default_date.isoformat()
+        if self.default_title:
+            self.query_one("#ce-title", Input).value = self.default_title
         # 9-10am is just a sensible default block, not tied to "now" — the
         # user is very likely to change it, but an empty/zeroed field would
         # be a worse starting point than a plausible one-hour meeting.
@@ -8191,7 +8272,8 @@ class CreateEventModal(ModalScreen):
             # screen's reconcile-at-render overlay shows it immediately; a
             # reconnect replays the real insert (see _enqueue_event_create /
             # _replay_one_mutation's create_event branch).
-            self.app._enqueue_event_create(title, start, end, all_day)
+            self.app._enqueue_event_create(title, start, end, all_day,
+                                           description=self.description)
             self.dismiss("queued")
             return
         self.run_worker(lambda: self._create_thread(title, start, end, all_day),
@@ -8199,13 +8281,93 @@ class CreateEventModal(ModalScreen):
 
     def _create_thread(self, title: str, start, end, all_day: bool) -> None:
         try:
-            gauth.create_event(self.svc, title, start, end, all_day=all_day)
+            gauth.create_event(self.svc, title, start, end, all_day=all_day,
+                               description=self.description)
         except Exception as ex:
             self.app.call_from_thread(self._create_failed, f"Create event failed: {ex}")
             return
         self.app.call_from_thread(self.dismiss, True)
 
     def _create_failed(self, msg: str) -> None:
+        self._submitting = False
+        self.notify(msg, severity="error")
+
+    def on_key(self, e) -> None:
+        if e.key == "escape":
+            self.dismiss(None)
+
+
+class EmailToTaskModal(ModalScreen):
+    """Turn the highlighted email thread into a Google Task (ROADMAP:
+    "create task from email"). Prefills the title from the subject and the
+    notes with a link + snippet back to the thread; a Select picks which task
+    list to add to (defaulting to the first). Mirrors CreateEventModal's
+    submit/queue-offline shape — there was no standalone task-create modal
+    before this (tasks were only created as subtasks inside TaskModal)."""
+
+    def __init__(self, svc, tasklists: list[dict], default_title: str = "",
+                 notes: str = ""):
+        super().__init__()
+        self.svc = svc
+        self.tasklists = tasklists
+        self.default_title = default_title
+        self.notes = notes
+        self._submitting = False
+
+    def compose(self) -> ComposeResult:
+        with Container(id="ett-box", classes="pane"):
+            yield Label("EMAIL → TASK", classes="pane-title-text")
+            yield Input(placeholder="Task title", id="ett-title")
+            first = self.tasklists[0]["id"] if self.tasklists else None
+            yield Select([(tl["title"], tl["id"]) for tl in self.tasklists],
+                         id="ett-list", value=first, allow_blank=False)
+            yield TextArea(id="ett-notes")
+            with Horizontal(classes="btnrow"):
+                yield Button("Create", id="ett-create")
+                yield Button("Cancel", id="cancel")
+
+    def on_mount(self) -> None:
+        self.query_one("#ett-title", Input).value = self.default_title
+        self.query_one("#ett-notes", TextArea).text = self.notes
+        self.query_one("#ett-title", Input).focus()
+
+    def on_button_pressed(self, e: Button.Pressed) -> None:
+        if e.button.id == "cancel":
+            self.dismiss(None)
+        elif e.button.id == "ett-create":
+            self._try_create()
+
+    def _try_create(self) -> None:
+        if self._submitting:
+            return
+        title = self.query_one("#ett-title", Input).value.strip()
+        if not title:
+            self.notify("Title is required", severity="warning")
+            return
+        list_id = self.query_one("#ett-list", Select).value
+        if not list_id:
+            self.notify("No task list to add to", severity="warning")
+            return
+        notes = self.query_one("#ett-notes", TextArea).text.strip() or None
+        self._submitting = True
+        if not self.app._online:
+            # Offline: queue with a temp id (same reconcile-at-render overlay
+            # the offline subtask-create path uses) instead of blocking.
+            self.app._enqueue_task_create(list_id, title, parent=None, notes=notes)
+            self.dismiss("queued")
+            return
+        self.run_worker(lambda: self._create_thread(list_id, title, notes),
+                         thread=True, exclusive=True, group="task-create")
+
+    def _create_thread(self, list_id: str, title: str, notes: str | None) -> None:
+        try:
+            gauth.create_task(self.svc, list_id, title, notes=notes)
+        except Exception as ex:
+            self.app.call_from_thread(self._failed, f"Create task failed: {ex}")
+            return
+        self.app.call_from_thread(self.dismiss, "created")
+
+    def _failed(self, msg: str) -> None:
         self._submitting = False
         self.notify(msg, severity="error")
 

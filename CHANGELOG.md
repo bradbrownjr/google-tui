@@ -3,6 +3,32 @@
 Format: keep newest at top. One entry per meaningful change. Reference files
 touched and any breaking notes.
 
+## [2026-07-21] — Create a task or event from an email
+
+New: turn the highlighted Email thread into a Google Task (`t`) or a Calendar
+event (`e`), from the list or an open `ThreadModal`. Both prefill from the
+thread's cached summary (so they work offline) — title/summary from the
+subject, and notes/description with the sender + snippet + a Gmail permalink
+back to the thread (`_email_reference`).
+
+- **Task** (`main.py`) — new `EmailToTaskModal`: editable title + notes and a
+  task-list `Select` (defaults to the first list). It's the first standalone
+  task-create modal — tasks were previously only created as subtasks inside
+  `TaskModal`. Reuses `gauth.create_task(..., notes=...)`; online creates on
+  a worker then refreshes, offline queues (`_enqueue_task_create` gained a
+  `notes` arg; the `create_task` replay branch now replays notes too).
+- **Event** (`main.py`) — reuses `CreateEventModal`, which gained
+  `default_title`/`description` params and threads the description through
+  both `create_event` and the offline `create_event` mutation
+  (`_enqueue_event_create` + its replay branch gained `description`). Same
+  `_on_create_event_result` refresh path as the plain New-Event flow.
+- Bindings/help (`bindings.py`): global `t`/`e` (Mail-tab-gated, no-op
+  elsewhere like the other single-letter mail actions) + `T`/`E` in
+  `ThreadModal`'s scope; Mail + ThreadModal context-help rows and HELP_TEXT
+  updated, both keys clickable.
+
+New pilot `tests/pilot/email_to_task_event.py`.
+
 ## [2026-07-21] — P2 mail completeness: star from list, Undo for trash/archive, Drafts + CC/BCC in compose
 
 Three of the five ROADMAP P2 "email client completeness" items. The other
