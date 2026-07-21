@@ -60,6 +60,33 @@ CC/BCC in compose.
 
 ## P3 — Calendar, Contacts, and cross-cutting UX
 
+- [ ] **Migrate list views from `ListView`+`Label` to Textual `DataTable`.**
+  Every list (Mail, News, Contacts, Drive, Tasks, Events) is currently a
+  `ListView` of `ListItem(Label(...))` where each row is a hand-padded string,
+  so column alignment is our own arithmetic — which has now bitten twice
+  (`[2026-07-21]` emoji/CJK cell-width shifts across two commits). `DataTable`
+  is a single virtualized widget that owns real columns, measures cell width
+  internally (the whole `_cell_col`/`_truncate` layer disappears), and renders
+  one line-based widget instead of two widgets *per row* — the mount cost the
+  code already fights with `extend()`-not-`append()`. Expected wins: faster
+  render/scroll and lower memory as lists grow, free column correctness, and a
+  cleaner model for **threaded mail** — reveal each message as its own row
+  (add/remove; there's no native row-hide, model it against a full backing
+  list) instead of today's tall multi-line string.
+  Real friction to design around before committing: (a) selection moves from
+  `ListItem` ids to DataTable **row keys** (rework the mail handlers); (b) the
+  multi-select bulk-action highlight currently uses the `email-selected` CSS
+  class per item — DataTable has no per-row class, so selected state becomes
+  cell re-styling; (c) no native "flex column that fills remaining width", so
+  the responsive subject column returns as one width calc (not per-glyph); (d)
+  "Load more" sentinel rows and Task group-header rows don't belong in a
+  uniform grid — rehome them. **Approach: spike it first** on a throwaway
+  branch — build a DataTable mail list in parallel (real columns, one revealed
+  row per message, expand/collapse) and *measure* render/scroll vs. the current
+  list, plus prove the multi-select highlight and expansion feel right, before
+  converting the simpler flat lists (Contacts, Drive) that have none of the
+  friction. Don't rip-and-replace. *(Suggested model: Opus — cross-cutting
+  widget swap touching every list view, selection, and the mail handlers.)*
 - [ ] **RSVP to received invitations** (accept / decline / tentative).
   Distinct from *sending* invites (explicitly out of scope per the `gauth.py`
   note). No `responseStatus` handling exists — reading the self-attendee's

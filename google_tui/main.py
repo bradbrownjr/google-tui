@@ -8325,56 +8325,73 @@ class ComposeModal(ModalScreen):
             yield Button("Cancel", id="cancel")
         yield Static("", id="send-countdown")
 
-    def on_mount(self) -> None:
+    def _prefill_from_cache(self) -> tuple[str, str, str]:
+        """(to, cc, subject) from the cached thread summary — no network. Used
+        offline, and as the fallback when the live fetch below fails. The
+        summary carries subject/from only (list_threads never fetches To/Cc),
+        so reply_all degrades to replying just to the sender; the actual send
+        gets QUEUED (see _send_now), so this degraded prefill is the only thing
+        compose loses, not the send itself."""
+        cached = self.app._threads_cache.get(self.thread_id, {})
+        subj = cached.get("subject", "")
+        if self.mode == "forward":
+            return "", "", subj if subj.lower().startswith("fwd:") else "Fwd: " + subj
+        subject = subj if subj.lower().startswith("re:") else "Re: " + subj
+        if self.mode == "reply_all":
+            self.notify("Replying from cached info; Cc'd recipients may be missing.",
+                        severity="warning")
+        return cached.get("from", ""), "", subject
+
+    def _prefill_from_server(self) -> tuple[str, str, str]:
+        """(to, cc, subject) from a live threads().get(), and inserts the reply
+        quote into #c-body. Raises on any network/auth error — the caller falls
+        back to the cached prefill rather than letting it crash the app."""
         cc = ""
+        g = self.svc["gmail"]
+        # format="full" (not "metadata") so the last message's payload
+        # carries body parts too -- needed below for quote_on_reply.
+        th = g.users().threads().get(userId="me", id=self.thread_id, format="full").execute()
+        last = th["messages"][-1]
+        hdrs = {h["name"].lower(): h["value"] for h in last.get("payload", {}).get("headers", [])}
+        subj = hdrs.get("subject", "")
+        if self.mode == "reply":
+            to = hdrs.get("from", "")
+            subject = subj if subj.lower().startswith("re:") else "Re: " + subj
+        elif self.mode == "reply_all":
+            to = hdrs.get("from", "")
+            cc = ", ".join(filter(None, [hdrs.get("to", ""), hdrs.get("cc", "")]))
+            subject = subj if subj.lower().startswith("re:") else "Re: " + subj
+        else:  # forward
+            to = ""
+            subject = subj if subj.lower().startswith("fwd:") else "Fwd: " + subj
+        if self.mode in ("reply", "reply_all") and self.app.settings.quote_on_reply:
+            quote = gauth.quote_for_reply(last.get("payload", {}), hdrs.get("from", ""), hdrs.get("date", ""))
+            body_area = self.query_one("#c-body", TextArea)
+            body_area.text = "\n\n" + quote
+            # Cursor at the very top, above the quote, so typing starts
+            # the new reply text where the roadmap item asked for it --
+            # "below" the reply text, i.e. above the quote block.
+            body_area.move_cursor((0, 0))
+        return to, cc, subject
+
+    def on_mount(self) -> None:
         if self.mode == "new":
-            to, subject = self._prefill_to, ""
+            to, cc, subject = self._prefill_to, "", ""
         elif not self.app._online:
-            # Offline: no threads().get() round trip to block on (there's no
-            # network to make it with). Fall back to the already-cached
-            # thread summary (self.app._threads_cache — subject/from only;
-            # list_threads never fetches To/Cc headers, so reply_all
-            # degrades to replying just to the sender when working from
-            # cache). The actual send gets QUEUED — see _send_now — so this
-            # degraded prefill is the only place offline compose loses
-            # anything, not the send itself.
-            cached = self.app._threads_cache.get(self.thread_id, {})
-            subj = cached.get("subject", "")
-            if self.mode == "forward":
-                to = ""
-                subject = subj if subj.lower().startswith("fwd:") else "Fwd: " + subj
-            else:
-                to = cached.get("from", "")
-                subject = subj if subj.lower().startswith("re:") else "Re: " + subj
-                if self.mode == "reply_all":
-                    self.notify("Offline — replying from cached info; Cc'd recipients may be missing.",
-                                severity="warning")
+            # Offline: no threads().get() round trip to block on.
+            to, cc, subject = self._prefill_from_cache()
         else:
-            g = self.svc["gmail"]
-            # format="full" (not "metadata") so the last message's payload
-            # carries body parts too -- needed below for quote_on_reply.
-            th = g.users().threads().get(userId="me", id=self.thread_id, format="full").execute()
-            last = th["messages"][-1]
-            hdrs = {h["name"].lower(): h["value"] for h in last.get("payload", {}).get("headers", [])}
-            subj = hdrs.get("subject", "")
-            if self.mode == "reply":
-                to = hdrs.get("from", "")
-                subject = subj if subj.lower().startswith("re:") else "Re: " + subj
-            elif self.mode == "reply_all":
-                to = hdrs.get("from", "")
-                cc = ", ".join(filter(None, [hdrs.get("to", ""), hdrs.get("cc", "")]))
-                subject = subj if subj.lower().startswith("re:") else "Re: " + subj
-            else:  # forward
-                to = ""
-                subject = subj if subj.lower().startswith("fwd:") else "Fwd: " + subj
-            if self.mode in ("reply", "reply_all") and self.app.settings.quote_on_reply:
-                quote = gauth.quote_for_reply(last.get("payload", {}), hdrs.get("from", ""), hdrs.get("date", ""))
-                body_area = self.query_one("#c-body", TextArea)
-                body_area.text = "\n\n" + quote
-                # Cursor at the very top, above the quote, so typing starts
-                # the new reply text where the roadmap item asked for it --
-                # "below" the reply text, i.e. above the quote block.
-                body_area.move_cursor((0, 0))
+            # Online but a live fetch can still fail (a transient SSL/auth
+            # hiccup while the app's own background reconnect is in flight, an
+            # expired token) — same class of failure ThreadModal._fetch_thread
+            # guards against. Falling back to the cached prefill keeps a bad
+            # round trip from crashing the whole app in on_mount.
+            try:
+                to, cc, subject = self._prefill_from_server()
+            except Exception as e:
+                self.notify(f"Couldn't load the thread ({e}); using cached info.",
+                            severity="warning")
+                to, cc, subject = self._prefill_from_cache()
         self.query_one("#c-to").value = to
         self.query_one("#c-cc").value = cc
         self.query_one("#c-subject").value = subject

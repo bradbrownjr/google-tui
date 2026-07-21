@@ -14,6 +14,7 @@ import pytest
 SCENARIOS = [
     "tests.pilot.startup_smoke",
     "tests.pilot.email_reply_modal",
+    "tests.pilot.email_reply_fetch_error",
     "tests.pilot.event_task_markdown",
     "tests.pilot.email_offline_preview",
     "tests.pilot.mail_star_undo_compose",
