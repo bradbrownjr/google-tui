@@ -85,6 +85,12 @@ GLOBAL_ACTIONS: list[ActionSpec] = [
     ActionSpec("forward", "f", "Forward"),
     ActionSpec("compose_new", "c", "Compose"),
     ActionSpec("mark_unread", "u", "Unread"),
+    # `*` (Textual key name "asterisk") toggles STARRED on the highlighted
+    # Email-list thread. Chose `*` over Gmail's `s` because `s` is already
+    # ThreadModal's Archive binding — keeping `s` free of a second meaning
+    # avoids a "same key, different action depending on whether a thread is
+    # open" trap; `*` is unclaimed and reads as the star glyph.
+    ActionSpec("star", "asterisk", "Star"),
     ActionSpec("focus_label_select", "l", "Labels"),
     ActionSpec("focus_search", "/", "Search"),
     ActionSpec("context_space", "space", "Context"),
@@ -100,6 +106,12 @@ GLOBAL_ACTIONS: list[ActionSpec] = [
     ActionSpec("toggle_preview", "p", "Toggle Preview"),
     ActionSpec("download_drive_file", "d", "Download"),
     ActionSpec("refresh", "ctrl+r", "Refresh"),
+    # Reverses the most recent trash/archive within a short window (see
+    # GoogleTUI._UNDO_WINDOW_SECONDS). Ctrl+Z is ASCII SUB — delivered as a
+    # key in Textual's raw-mode terminal (no SIGTSTP suspend), same as the
+    # other Ctrl+<letter> bindings here. Shown in the Mail context help row,
+    # not the global one, since trash/archive are Mail-only.
+    ActionSpec("undo", "ctrl+z", "Undo"),
     ActionSpec("help", "ctrl+h", "Help"),
     ActionSpec("toggle_mouse", "f12", "Mouse"),
     ActionSpec("quit", "ctrl+q", "Quit"),
@@ -181,7 +193,7 @@ HELP_GLOBAL_TEXT = (
 # 2026-07-17, pane:dash-weather/dash-stocks/dash-word/dash-potd from
 # 2026-07-19 (ROADMAP P4's external cards).
 CONTEXT_HELP: dict[str, str] = {
-    "tab:tab-mail": "Enter Open   c Compose   r Reply   a Reply All   f Forward   u Unread   Space Expand   l Labels   / Search   p Toggle Preview",
+    "tab:tab-mail": "Enter Open   c Compose   r Reply   a Reply All   f Forward   u Unread   * Star   Space Expand   l Labels   / Search   p Toggle Preview   Ctrl+Z Undo",
     "pane:events": "Enter/Space Detail   n New Event   / Search",
     "pane:tasks": "Space Toggle Complete   Enter Detail   / Search",
     "pane:dash-mail": "Enter/Space Open Thread (header: open Mail tab)",
@@ -232,6 +244,7 @@ _CLICK_ACTIONS: dict[str, dict[str, str]] = {
         "a Reply All": "reply_all",
         "f Forward": "forward",
         "u Unread": "mark_unread",
+        "* Star": "star",
         "Space Expand": "context_space",
         "l Labels": "focus_label_select",
         "/ Search": "focus_search",
@@ -339,7 +352,8 @@ GLOBAL
 MAIL TAB
   Email-only: Enter open thread, Space expand/collapse (shows snippet),
   l show labels filter (Esc hides), c Compose new, r Reply, a Reply All,
-  f Forward, / search (live filter over subject/from/snippet).
+  f Forward, u mark unread, * star/unstar (★ column), / search (live filter
+  over subject/from/snippet).
   p toggles a preview pane on the right showing the highlighted thread's
   latest message (hidden by default — Settings → General to change the
   default) — while visible, it live-updates as you move the highlight,
@@ -348,7 +362,13 @@ MAIL TAB
   visible.
 
   Thread view (opened via Enter): R/A/F Reply / Reply All / Forward — same
-  keys as the Email pane, now with visible button hints — Esc/Close closes.
+  keys as the Email pane, now with visible button hints — D Trash, S Archive,
+  L Labels, Esc/Close closes. After a Trash or Archive, Ctrl+Z (back in the
+  list) undoes it within a minute — restores from Trash / moves back to Inbox.
+
+  Compose (r/a/f/c): To / Cc / Bcc / Subject fields — reply-all pre-fills Cc
+  from the thread. "Send" (5s undo countdown) or "Save Draft" to file it in
+  Gmail Drafts instead. Both queue offline and replay on reconnect.
 
 DASHBOARD TAB (card grid + Hermes; Google-native cards 2026-07-17, external
 cards 2026-07-19. Settings → Dashboard lets you enable/disable any card and

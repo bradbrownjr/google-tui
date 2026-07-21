@@ -395,24 +395,59 @@ def quote_for_reply(payload: dict, sender: str, date: str) -> str:
     return f"{header}\n{quoted_lines}" if quoted_lines else header
 
 
-def send_message(svc, to: str, subject: str, body: str,
-                 in_reply_to: str | None = None, references: str | None = None,
-                 thread_id: str | None = None) -> dict:
+def _build_raw(to: str, subject: str, body: str, cc: str | None = None,
+               bcc: str | None = None, in_reply_to: str | None = None,
+               references: str | None = None) -> str:
+    """Assemble a base64url-encoded RFC 822 message shared by send + draft.
+    A Bcc header on the raw message is honored by the Gmail send/draft API:
+    the recipients get it, but Gmail strips the header from what's delivered
+    (standard blind-carbon behavior)."""
     msg = MIMEText(body)
     msg["to"] = to
+    if cc:
+        msg["cc"] = cc
+    if bcc:
+        msg["bcc"] = bcc
     msg["subject"] = subject
     if in_reply_to:
         msg["In-Reply-To"] = in_reply_to
     if references:
         msg["References"] = references
-    raw = base64.urlsafe_b64encode(msg.as_bytes()).decode()
+    return base64.urlsafe_b64encode(msg.as_bytes()).decode()
+
+
+def send_message(svc, to: str, subject: str, body: str,
+                 cc: str | None = None, bcc: str | None = None,
+                 in_reply_to: str | None = None, references: str | None = None,
+                 thread_id: str | None = None) -> dict:
+    raw = _build_raw(to, subject, body, cc=cc, bcc=bcc,
+                     in_reply_to=in_reply_to, references=references)
     obj = {"raw": raw}
     if thread_id:
         obj["threadId"] = thread_id
     return svc["gmail"].users().messages().send(userId="me", body=obj).execute()
 
 
-def reply_to(svc, thread_id: str, body: str, reply_all: bool = False) -> dict:
+def create_draft(svc, to: str, subject: str, body: str,
+                 cc: str | None = None, bcc: str | None = None,
+                 in_reply_to: str | None = None, references: str | None = None,
+                 thread_id: str | None = None) -> dict:
+    """Save a message as a Gmail draft (``drafts().create``) instead of
+    sending it. Same MIME assembly as ``send_message`` — a draft on a reply
+    keeps its ``threadId``/In-Reply-To so Gmail files it against the right
+    conversation."""
+    msg: dict = {"raw": _build_raw(to, subject, body, cc=cc, bcc=bcc,
+                                   in_reply_to=in_reply_to, references=references)}
+    if thread_id:
+        msg["threadId"] = thread_id
+    return svc["gmail"].users().drafts().create(userId="me", body={"message": msg}).execute()
+
+
+def _reply_headers(svc, thread_id: str, reply_all: bool) -> dict:
+    """Fetch the last message's headers for a reply and derive the default
+    recipients/subject/threading headers. Split out of ``reply_to`` so the
+    compose UI can prefill editable To/Cc fields from the same logic the
+    send path uses."""
     g = svc["gmail"]
     th = g.users().threads().get(userId="me", id=thread_id, format="metadata",
                                  metadataHeaders=["From", "To", "Cc", "Subject", "Message-ID", "References"]).execute()
@@ -420,34 +455,56 @@ def reply_to(svc, thread_id: str, body: str, reply_all: bool = False) -> dict:
     hdrs = {h["name"].lower(): h["value"] for h in last.get("payload", {}).get("headers", [])}
     sender = hdrs.get("from", "")
     to = sender
+    cc = ""
     if reply_all:
-        extra = []
-        for k in ("to", "cc"):
-            if hdrs.get(k):
-                extra.append(hdrs[k])
-        to = ", ".join([sender] + extra)
+        extra = [v for v in (hdrs.get("to", ""), hdrs.get("cc", "")) if v]
+        cc = ", ".join(extra)
     subject = hdrs.get("subject", "")
     if not subject.lower().startswith("re:"):
         subject = "Re: " + subject
+    return {
+        "to": to, "cc": cc, "subject": subject,
+        "in_reply_to": hdrs.get("message-id"),
+        "references": (hdrs.get("references", "") + " " + hdrs.get("message-id", "")).strip(),
+    }
+
+
+def reply_to(svc, thread_id: str, body: str, reply_all: bool = False,
+             to: str | None = None, cc: str | None = None,
+             bcc: str | None = None, subject: str | None = None) -> dict:
+    """Reply to a thread. With no ``to``/``cc``/``subject`` overrides this
+    derives them from the last message (the historical behavior); the compose
+    UI passes the user-edited field values instead so what's shown is what's
+    sent (and Cc/Bcc are honored)."""
+    d = _reply_headers(svc, thread_id, reply_all)
     return send_message(
-        svc, to=to, subject=subject, body=body,
-        in_reply_to=hdrs.get("message-id"),
-        references=(hdrs.get("references", "") + " " + hdrs.get("message-id", "")).strip(),
+        svc,
+        to=d["to"] if to is None else to,
+        subject=d["subject"] if subject is None else subject,
+        body=body,
+        cc=d["cc"] if cc is None else cc,
+        bcc=bcc,
+        in_reply_to=d["in_reply_to"],
+        references=d["references"],
         thread_id=thread_id,
     )
 
 
-def forward(svc, thread_id: str, to: str, body_prefix: str = "") -> dict:
+def forward(svc, thread_id: str, to: str, body_prefix: str = "",
+            cc: str | None = None, bcc: str | None = None,
+            subject: str | None = None) -> dict:
     g = svc["gmail"]
     th = g.users().threads().get(userId="me", id=thread_id, format="full").execute()
     last = th["messages"][-1]
     hdrs = {h["name"].lower(): h["value"] for h in last.get("payload", {}).get("headers", [])}
-    subject = hdrs.get("subject", "")
-    if not subject.lower().startswith("fwd:"):
-        subject = "Fwd: " + subject
+    if subject is None:
+        subject = hdrs.get("subject", "")
+        if not subject.lower().startswith("fwd:"):
+            subject = "Fwd: " + subject
     original = _extract_body(last.get("payload", {}))
     forwarded = f"\n\n---------- Forwarded message ----------\nFrom: {hdrs.get('from','')}\nDate: {hdrs.get('date','')}\nSubject: {hdrs.get('subject','')}\nTo: {hdrs.get('to','')}\n\n{original}"
-    return send_message(svc, to=to, subject=subject, body=body_prefix + forwarded)
+    return send_message(svc, to=to, subject=subject, body=body_prefix + forwarded,
+                        cc=cc, bcc=bcc)
 
 
 def mark_read(svc, thread_id: str) -> None:
@@ -481,6 +538,14 @@ def trash_thread(svc, thread_id: str) -> dict:
     pressing a "delete" key expects. See CHANGELOG [2026-07-15]."""
     g = svc["gmail"]
     return g.users().threads().trash(userId="me", id=thread_id).execute()
+
+
+def untrash_thread(svc, thread_id: str) -> dict:
+    """Restore a thread from Trash — the inverse of ``trash_thread``, used by
+    the Undo affordance. ``threads().untrash`` puts every message back to
+    exactly the labels it had before being trashed."""
+    g = svc["gmail"]
+    return g.users().threads().untrash(userId="me", id=thread_id).execute()
 
 
 def archive_thread(svc, thread_id: str) -> dict:

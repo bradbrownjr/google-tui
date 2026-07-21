@@ -16,6 +16,7 @@ SCENARIOS = [
     "tests.pilot.email_reply_modal",
     "tests.pilot.event_task_markdown",
     "tests.pilot.email_offline_preview",
+    "tests.pilot.mail_star_undo_compose",
     "tests.pilot.dashboard_external_cards",
     "tests.pilot.popular_feeds_picker",
     "tests.pilot.config_toml_overrides",

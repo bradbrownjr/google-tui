@@ -3,6 +3,62 @@
 Format: keep newest at top. One entry per meaningful change. Reference files
 touched and any breaking notes.
 
+## [2026-07-21] — P2 mail completeness: star from list, Undo for trash/archive, Drafts + CC/BCC in compose
+
+Three of the five ROADMAP P2 "email client completeness" items. The other
+two (Attachments; multi-select bulk actions) stay open — Attachments is its
+own effort (a TUI file-picker + multipart build on send + a raw-MIME sample
+to test the receive side), and multi-select is a ListView selection-model
+piece worth doing on its own. "Snooze" (the third piece of the star/unread
+bullet) also stays open — it needs a scheduling/re-surface mechanism the
+others don't.
+
+**Star / unstar a thread from the Email list** (`main.py`, `bindings.py`) —
+`*` (Textual key `asterisk`) toggles `STARRED` on the highlighted thread via
+the existing `gauth.modify_labels`, same optimistic-then-refresh pattern as
+`mark_unread` (`u`, already shipped — this closes the "star / mark-unread"
+half of that ROADMAP bullet). A new one-glyph `★` column in
+`_email_collapsed_line` shows the state; `_EMAIL_ROW_FIXED_W` grew by one
+(mark + star + gap = 3, was mark + gap = 2) so the responsive subject-column
+arithmetic still pins the date column to the right edge. `*` was chosen over
+Gmail's `s` because `s` is already `ThreadModal`'s Archive binding — keeping
+one key = one action. Offline queues a `modify_labels` mutation (already a
+replayable type).
+
+**Undo for destructive mail actions** (`main.py`, `gauth.py`, `bindings.py`)
+— `Ctrl+Z` reverses the most recent trash/archive within a 60-second window
+(`GoogleTUI._UNDO_WINDOW_SECONDS`). `ThreadModal.action_trash`/`action_archive`
+record the reversible action (`_record_mail_undo`) on success; `action_undo`
+issues the inverse — new `gauth.untrash_thread` (`threads().untrash`) for
+trash, `modify_labels(add=["INBOX"])` for archive — on a worker thread, then
+refreshes so the thread reappears. Online only (the inverse is a network
+write; an offline trash/archive was only queued anyway — cancel it from the
+pending-actions view). The undo record is consumed on use so a double
+`Ctrl+Z` can't double-apply.
+
+**Drafts + CC/BCC in compose** (`ComposeModal` in `main.py`, `gauth.py`) —
+`ComposeModal` gained `#c-cc`/`#c-bcc` inputs and a "Save Draft" button.
+Reply-all now splits recipients properly: the sender goes to `To`, the
+original To/Cc land in the editable `Cc` field (previously all three were
+crammed into `To`). `gauth.send_message` gained `cc`/`bcc` params (a `Bcc`
+header on the raw message is honored-then-stripped by the Gmail API);
+`reply_to`/`forward` gained `to`/`cc`/`bcc`/`subject` overrides so what the
+compose form shows is what's sent — an explicitly-cleared `Cc` stays cleared
+rather than falling back to the header-derived recipients (that fallback now
+only fires for the offline-replay path, where a pre-upgrade queued mutation
+genuinely lacks those keys). New `gauth.create_draft` (`drafts().create`,
+sharing a `_build_raw` MIME helper with `send_message`); reply/reply-all
+drafts carry their `threadId` so Gmail files them in-thread. Both send and
+save-draft queue offline and replay on reconnect (new `draft` mutation type;
+`reply`/`reply_all`/`forward`/`new` mutations now carry `cc`/`bcc`/`subject`).
+No `Ctrl+S` binding for Save Draft — `Ctrl+S` is XOFF in many terminals; the
+button (and Tab-to-it) is the affordance.
+
+New tests: `tests/unit/test_gauth_send.py` (CC/BCC, draft assembly, reply
+overrides incl. cleared-Cc, untrash), `tests/unit/test_email_row.py` (★
+column), pilot `tests/pilot/mail_star_undo_compose.py` (star, both undo
+paths, compose Cc prefill + Save Draft). 100 tests total, all green.
+
 ## [2026-07-19] — Config file (`config.toml`): LLM model, timezone, pane order, refresh interval, SearXNG fallback
 
 Closes out ROADMAP P4's "Config file." Unlike `Settings` (`settings.py`,

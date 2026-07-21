@@ -65,28 +65,17 @@ build directly on infrastructure that already exists.
   `EXPORT_DIR`), and a file-picker + multipart-build path on send. Biggest
   value of this batch. *(Suggested model: Opus — MIME assembly on both the
   read and send sides, plus new UI.)*
-- [ ] **Undo for destructive mail actions.** `action_trash`/`action_archive`
-  (`main.py:7500-7508`) fire immediately with no undo window. The optimistic
-  `_run_mutation` machinery already tracks/reverts queued mutations, so a
-  Gmail-style "Undo" toast (revert within ~5s before the API call commits, or
-  issue the inverse `modify_labels` after) is a high-value safety net on top of
-  existing infra. Small.
-- [ ] **Star / mark-unread / snooze from the list.** Backend already exists —
-  `gauth.mark_unread` and `gauth.modify_labels` are implemented and `STARRED`
-  is already in `_SYSTEM_LABEL_ORDER` — but there are no key bindings to star a
-  thread or re-mark it unread from the Email list. Wire up bindings + optimistic
-  updates (same pattern as trash/archive). Snooze needs a small "remind at"
-  modal and a `SNOOZED`-style label or a scheduled re-surface. Mostly wiring for
-  star/unread; snooze is the larger piece.
+- [ ] **Snooze a thread from the list.** The star + mark-unread pieces of the
+  former "Star / mark-unread / snooze" bullet shipped (`[2026-07-21]` and
+  earlier); snooze is what's left. It's the larger piece: Gmail's API has no
+  native snooze, so it needs a small "remind at" modal plus either a
+  `SNOOZED`-style user label the app hides-until-due or a scheduled re-surface
+  hooked into `_periodic_refresh`. No new backend for the label-move part
+  (`modify_labels`), but the "resurface at time T" scheduling is genuinely new.
 - [ ] **Multi-select bulk actions.** No way to select N threads and
   archive/label/trash them at once — every action is single-thread. Needs a
   selection model on the Email `ListView` (Space-to-check, visual marker) and
   bulk variants of the mutation actions.
-- [ ] **Drafts + CC/BCC in compose.** `DRAFT` is only a browsable folder today;
-  there's no "save draft" (`drafts().create`) and `ComposeModal`'s new-message
-  path has no explicit CC/BCC fields (only reply-all inherits Cc from headers).
-  Add CC/BCC inputs and a save-draft action/exit path.
-
 ## P3 — Calendar, Contacts, and cross-cutting UX
 
 - [ ] **RSVP to received invitations** (accept / decline / tentative).

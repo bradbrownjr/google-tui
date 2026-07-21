@@ -397,6 +397,7 @@ _PENDING_MUTATION_LABELS = {
     "reply_all": "Reply All",
     "forward": "Forward",
     "new": "New message",
+    "draft": "Save draft",
     "toggle_task": "Toggle task",
     "mark_unread": "Mark unread",
     "trash": "Trash",
@@ -417,7 +418,7 @@ def _pending_mutation_summary(mutation: dict) -> str:
     label = _PENDING_MUTATION_LABELS.get(mutation["type"], mutation["type"])
     if mutation["type"] == "forward":
         return f"{label} to {mutation.get('to', '')}"
-    if mutation["type"] == "new":
+    if mutation["type"] in ("new", "draft"):
         return f"{label} to {mutation.get('to', '')}"
     if mutation["type"] == "toggle_task":
         state = "complete" if mutation.get("done") else "incomplete"
@@ -759,22 +760,25 @@ def _thread_label_chips(th: dict, labels_by_id: dict | None) -> str:
 # to the right edge on any width (see GoogleTUI._email_list_width /
 # _reflow_email_rows). At _EMAIL_ROW_DEFAULT_W the arithmetic reproduces the
 # old fixed 36/50/20 layout exactly (subj_w == 50), so nothing shifts on a
-# ~124-col terminal; wider terminals just give the subject more room instead of
+# ~125-col terminal; wider terminals just give the subject more room instead of
 # leaving dead space on the right.
 _EMAIL_SENDER_W = 36
 _EMAIL_CHIPS_W = 20
 _EMAIL_DATE_W = 13   # len("07/20 04:05PM") -- strftime zero-pads, always 13
 _EMAIL_SUBJ_MIN_W = 20
-# 2 (mark + gap) + sender + 1 + subj + 1 + chips + 1 + date == width, so the
-# fixed overhead around the flexible subject column is:
-_EMAIL_ROW_FIXED_W = 2 + _EMAIL_SENDER_W + 1 + 1 + _EMAIL_CHIPS_W + 1 + _EMAIL_DATE_W
-_EMAIL_ROW_DEFAULT_W = _EMAIL_ROW_FIXED_W + 50  # == 124; pre-responsive width
+# 3 (unread mark + star mark + gap) + sender + 1 + subj + 1 + chips + 1 + date
+# == width, so the fixed overhead around the flexible subject column is
+# (the star column, ROADMAP P2 "star from the list", added the +1 over the
+# original 2-char mark+gap prefix):
+_EMAIL_ROW_FIXED_W = 3 + _EMAIL_SENDER_W + 1 + 1 + _EMAIL_CHIPS_W + 1 + _EMAIL_DATE_W
+_EMAIL_ROW_DEFAULT_W = _EMAIL_ROW_FIXED_W + 50  # == 125; pre-responsive width
 
 
 def _email_collapsed_line(th: dict, show_sender_address: bool = False,
                           labels_by_id: dict | None = None,
                           width: int = _EMAIL_ROW_DEFAULT_W) -> str:
     mark = "•" if th["unread"] else " "
+    star = "★" if "STARRED" in (th.get("labelIds") or []) else " "
     subj = th["subject"] or "(no subject)"
     frm = _format_sender(th["from"], show_sender_address)
     count_note = f"  ({th['count']})" if th["count"] > 1 else ""
@@ -786,7 +790,7 @@ def _email_collapsed_line(th: dict, show_sender_address: bool = False,
     subj_field = f"{subj}{count_note}"
     if len(subj_field) > subj_w:
         subj_field = subj_field[:subj_w - 1] + "…"
-    line = (f"{mark} {frm[:_EMAIL_SENDER_W]:<{_EMAIL_SENDER_W}} "
+    line = (f"{mark}{star} {frm[:_EMAIL_SENDER_W]:<{_EMAIL_SENDER_W}} "
             f"{subj_field:<{subj_w}} {chips:<{_EMAIL_CHIPS_W}}")
     return f"{line} {date_str:>{_EMAIL_DATE_W}}" if date_str else line
 
@@ -3060,16 +3064,32 @@ class GoogleTUI(App):
 
     def _replay_one_mutation(self, mutation: dict) -> None:
         t = mutation["type"]
-        if t == "reply":
-            gauth.reply_to(self.svc, mutation["thread_id"], mutation["body"], reply_all=False)
-        elif t == "reply_all":
-            gauth.reply_to(self.svc, mutation["thread_id"], mutation["body"], reply_all=True)
+        if t in ("reply", "reply_all"):
+            # `key in mutation else None`: a mutation queued before those
+            # fields existed lacks the keys entirely, so it falls back to
+            # reply_to's header-derived defaults (None). A NEW mutation always
+            # carries all four together, so an explicitly-cleared Cc ("") is
+            # preserved rather than being coalesced back to the derived value.
+            gauth.reply_to(self.svc, mutation["thread_id"], mutation["body"],
+                           reply_all=(t == "reply_all"),
+                           to=mutation.get("to"),
+                           cc=(mutation["cc"] if "cc" in mutation else None),
+                           bcc=(mutation["bcc"] if "bcc" in mutation else None),
+                           subject=(mutation["subject"] if "subject" in mutation else None))
         elif t == "forward":
             gauth.forward(self.svc, mutation["thread_id"], mutation["to"],
-                          body_prefix=mutation["body"] + "\n")
+                          body_prefix=mutation["body"] + "\n",
+                          cc=mutation.get("cc") or None, bcc=mutation.get("bcc") or None,
+                          subject=mutation.get("subject") or None)
         elif t == "new":
             gauth.send_message(self.svc, to=mutation["to"], subject=mutation["subject"],
-                               body=mutation["body"])
+                               body=mutation["body"], cc=mutation.get("cc") or None,
+                               bcc=mutation.get("bcc") or None)
+        elif t == "draft":
+            gauth.create_draft(self.svc, to=mutation.get("to", ""),
+                               subject=mutation.get("subject", ""), body=mutation.get("body", ""),
+                               cc=mutation.get("cc") or None, bcc=mutation.get("bcc") or None,
+                               thread_id=mutation.get("thread_id"))
         elif t == "toggle_task":
             gauth.set_task_status(self.svc, mutation["list_id"], mutation["task_id"], mutation["done"])
         elif t == "mark_unread":
@@ -3877,6 +3897,100 @@ class GoogleTUI(App):
 
         self.run_worker(_work, thread=True, exclusive=True)
 
+    def _set_summary_starred(self, summary: dict, starred: bool) -> None:
+        """Optimistically flip STARRED in a cached thread summary's labelIds
+        so the ★ column in the list is right before the authoritative refresh
+        lands. Kept sorted, matching gauth._thread_summary's own labelIds."""
+        ids = set(summary.get("labelIds") or [])
+        if starred:
+            ids.add("STARRED")
+        else:
+            ids.discard("STARRED")
+        summary["labelIds"] = sorted(ids)
+
+    def action_star(self) -> None:
+        """Star / unstar the highlighted Email-pane thread from the list
+        (no need to open it). Toggles based on the cached summary's current
+        STARRED state; STARRED is a system label modify_labels handles like
+        any other. Email pane only; no-op elsewhere."""
+        if self._main_tabs().active != "tab-mail":  # Mail tab is Email-only now
+            return
+        tid = self._selected_thread()
+        if not tid:
+            return
+        summary = self._threads_cache.get(tid)
+        starred = summary is not None and "STARRED" in (summary.get("labelIds") or [])
+        add = [] if starred else ["STARRED"]
+        remove = ["STARRED"] if starred else []
+        verb = "Unstarred" if starred else "Starred"
+        if not self._online:
+            self._enqueue_mutation({"type": "modify_labels", "thread_id": tid,
+                                    "add": add, "remove": remove})
+            if summary is not None:
+                self._set_summary_starred(summary, not starred)
+                self._apply_email_list(list(self._threads_cache.values()))
+            self.notify("Offline — queued, will apply once reconnected.")
+            return
+
+        def _work() -> None:
+            try:
+                gauth.modify_labels(self.svc, tid, add=add, remove=remove)
+            except Exception as e:
+                self.call_from_thread(self.notify, f"Star error: {e}", severity="error")
+                return
+            if summary is not None:
+                self._set_summary_starred(summary, not starred)
+            self.call_from_thread(self.notify, verb)
+            self._refresh_all_thread()
+
+        self.run_worker(_work, thread=True, exclusive=True)
+
+    # Window (seconds) after a trash/archive during which Ctrl+Z will still
+    # reverse it. Generous vs. Gmail's ~5s toast because a TUI user reaching
+    # for undo isn't racing a disappearing toast — but bounded so a stale
+    # Ctrl+Z minutes later doesn't resurrect a long-forgotten action.
+    _UNDO_WINDOW_SECONDS = 60
+
+    def _record_mail_undo(self, action: str, thread_id: str) -> None:
+        """Remember the just-committed reversible mail action so action_undo
+        can invert it. `action` is "trash" or "archive"; the inverse is
+        untrash / re-add INBOX respectively (see action_undo)."""
+        self._pending_undo = {"action": action, "thread_id": thread_id,
+                              "ts": time.monotonic()}
+
+    def action_undo(self) -> None:
+        """Reverse the most recent trash/archive (Ctrl+Z). Issues the inverse
+        API call rather than trying to hold the original back — the write has
+        already committed by the time the ThreadModal closed. Online only:
+        the inverse is a network write, and an offline trash/archive was only
+        queued anyway (cancel it from the pending-actions view instead)."""
+        undo = getattr(self, "_pending_undo", None)
+        if not undo or time.monotonic() - undo["ts"] > self._UNDO_WINDOW_SECONDS:
+            self._pending_undo = None
+            self.notify("Nothing to undo")
+            return
+        if not self._online:
+            self.notify("Undo needs a connection", severity="warning")
+            return
+        self._pending_undo = None  # consume it now so a double Ctrl+Z can't double-undo
+        action, tid = undo["action"], undo["thread_id"]
+
+        def _work() -> None:
+            try:
+                if action == "trash":
+                    gauth.untrash_thread(self.svc, tid)
+                else:  # archive
+                    gauth.modify_labels(self.svc, tid, add=["INBOX"])
+            except Exception as e:
+                self.call_from_thread(self.notify, f"Undo failed: {e}", severity="error")
+                return
+            self.call_from_thread(self.notify,
+                                  "Restored from Trash" if action == "trash"
+                                  else "Moved back to Inbox")
+            self._refresh_all_thread()
+
+        self.run_worker(_work, thread=True, exclusive=True)
+
     def action_focus_label_select(self) -> None:
         if self._main_tabs().active != "tab-mail":  # Mail tab is Email-only now
             return
@@ -4579,7 +4693,9 @@ class GoogleTUI(App):
         self.push_screen(ComposeModal(self.svc, tid, mode), self._on_compose_result)
 
     def _on_compose_result(self, result) -> None:
-        if result == "sent":
+        # "draft" refreshes too so a newly-saved draft shows up if the Email
+        # pane happens to be viewing the Drafts label.
+        if result in ("sent", "draft"):
             self.run_worker(self._refresh_all_thread, thread=True, exclusive=True)
 
     def _on_task_modal_result(self, mutated) -> None:
@@ -7503,7 +7619,8 @@ class ThreadModal(ModalScreen):
                                  "Offline — queued, will move to Trash once reconnected.")
             return
         self._run_mutation(lambda: gauth.trash_thread(self.svc, self.thread_id),
-                           "Moved to Trash")
+                           "Moved to Trash — Ctrl+Z to undo",
+                           on_success=lambda: self.app._record_mail_undo("trash", self.thread_id))
 
     def action_archive(self) -> None:
         if not self.app._online:
@@ -7511,7 +7628,8 @@ class ThreadModal(ModalScreen):
                                  "Offline — queued, will archive once reconnected.")
             return
         self._run_mutation(lambda: gauth.archive_thread(self.svc, self.thread_id),
-                           "Archived (removed from Inbox)")
+                           "Archived (removed from Inbox) — Ctrl+Z to undo",
+                           on_success=lambda: self.app._record_mail_undo("archive", self.thread_id))
 
     def action_labels(self) -> None:
         # No online gate here — same reasoning as ComposeModal: picking labels
@@ -7626,14 +7744,18 @@ class ComposeModal(ModalScreen):
             yield Label("COMPOSE", classes="pane-title-text")
             yield Input(placeholder="To", id="c-to")
             yield ListView(id="c-to-suggestions", classes="hidden")
+            yield Input(placeholder="Cc", id="c-cc")
+            yield Input(placeholder="Bcc", id="c-bcc")
             yield Input(placeholder="Subject", id="c-subject")
             yield TextArea(id="c-body", language="markdown")
         with Horizontal(classes="btnrow"):
             yield Button("Send", id="send")
+            yield Button("Save Draft", id="save-draft")
             yield Button("Cancel", id="cancel")
         yield Static("", id="send-countdown")
 
     def on_mount(self) -> None:
+        cc = ""
         if self.mode == "new":
             to, subject = self._prefill_to, ""
         elif not self.app._online:
@@ -7668,7 +7790,8 @@ class ComposeModal(ModalScreen):
                 to = hdrs.get("from", "")
                 subject = subj if subj.lower().startswith("re:") else "Re: " + subj
             elif self.mode == "reply_all":
-                to = ", ".join(filter(None, [hdrs.get("from", ""), hdrs.get("to", ""), hdrs.get("cc", "")]))
+                to = hdrs.get("from", "")
+                cc = ", ".join(filter(None, [hdrs.get("to", ""), hdrs.get("cc", "")]))
                 subject = subj if subj.lower().startswith("re:") else "Re: " + subj
             else:  # forward
                 to = ""
@@ -7682,6 +7805,7 @@ class ComposeModal(ModalScreen):
                 # "below" the reply text, i.e. above the quote block.
                 body_area.move_cursor((0, 0))
         self.query_one("#c-to").value = to
+        self.query_one("#c-cc").value = cc
         self.query_one("#c-subject").value = subject
         if self.mode == "new" and not to:
             self.query_one("#c-to", Input).focus()
@@ -7750,6 +7874,9 @@ class ComposeModal(ModalScreen):
             return
         if e.button.id == "send":
             self._try_send()
+            return
+        if e.button.id == "save-draft":
+            self._save_draft()
 
     def _try_send(self) -> None:
         if self._countdown_timer is not None:
@@ -7761,9 +7888,12 @@ class ComposeModal(ModalScreen):
     def _start_send_countdown(self) -> None:
         self._countdown_remaining = self.SEND_COUNTDOWN_SECONDS
         self.query_one("#c-to").disabled = True
+        self.query_one("#c-cc").disabled = True
+        self.query_one("#c-bcc").disabled = True
         self.query_one("#c-subject").disabled = True
         self.query_one("#c-body").disabled = True
         self.query_one("#send", Button).disabled = True
+        self.query_one("#save-draft", Button).disabled = True
         self._update_countdown_label()
         self._countdown_timer = self.set_interval(1.0, self._countdown_tick)
 
@@ -7783,9 +7913,12 @@ class ComposeModal(ModalScreen):
 
     def _reenable_fields(self) -> None:
         self.query_one("#c-to").disabled = False
+        self.query_one("#c-cc").disabled = False
+        self.query_one("#c-bcc").disabled = False
         self.query_one("#c-subject").disabled = False
         self.query_one("#c-body").disabled = False
         self.query_one("#send", Button).disabled = False
+        self.query_one("#save-draft", Button).disabled = False
         self.query_one("#send-countdown", Static).update("")
 
     def _cancel_countdown(self) -> None:
@@ -7793,32 +7926,53 @@ class ComposeModal(ModalScreen):
         self._countdown_timer = None
         self._reenable_fields()
 
+    def _fields(self) -> tuple[str, str, str, str, str]:
+        """Current (to, cc, bcc, subject, body) from the form — shared by the
+        send and save-draft paths."""
+        return (
+            self.query_one("#c-to").value.strip(),
+            self.query_one("#c-cc").value.strip(),
+            self.query_one("#c-bcc").value.strip(),
+            self.query_one("#c-subject").value.strip(),
+            self.query_one("#c-body").text,
+        )
+
     def _send_now(self) -> None:
-        to = self.query_one("#c-to").value.strip()
-        subject = self.query_one("#c-subject").value.strip()
-        body = self.query_one("#c-body").text
+        to, cc, bcc, subject, body = self._fields()
         if not self.app._online:
             # Queue instead of attempting a call with no network to make it
             # over — see GoogleTUI._enqueue_mutation /
             # _replay_pending_mutations_thread for the replay-on-reconnect
             # side of this.
             if self.mode == "forward":
-                mutation = {"type": "forward", "thread_id": self.thread_id, "to": to, "body": body}
+                mutation = {"type": "forward", "thread_id": self.thread_id, "to": to,
+                            "cc": cc, "bcc": bcc, "subject": subject, "body": body}
             elif self.mode == "new":
-                mutation = {"type": "new", "to": to, "subject": subject, "body": body}
+                mutation = {"type": "new", "to": to, "cc": cc, "bcc": bcc,
+                            "subject": subject, "body": body}
             else:  # reply / reply_all
-                mutation = {"type": self.mode, "thread_id": self.thread_id, "body": body}
+                mutation = {"type": self.mode, "thread_id": self.thread_id, "to": to,
+                            "cc": cc, "bcc": bcc, "subject": subject, "body": body}
             self.app._enqueue_mutation(mutation)
             self.app.notify("Offline — queued, will send once reconnected.")
             self.dismiss("queued")
             return
         try:
             if self.mode == "forward":
-                gauth.forward(self.svc, self.thread_id, to, body_prefix=body + "\n")
+                gauth.forward(self.svc, self.thread_id, to, body_prefix=body + "\n",
+                              cc=cc or None, bcc=bcc or None, subject=subject or None)
             elif self.mode == "new":
-                gauth.send_message(self.svc, to=to, subject=subject, body=body)
+                gauth.send_message(self.svc, to=to, subject=subject, body=body,
+                                   cc=cc or None, bcc=bcc or None)
             else:
-                gauth.reply_to(self.svc, self.thread_id, body, reply_all=(self.mode == "reply_all"))
+                # Pass the raw field values (not `or None`): the compose form
+                # is authoritative for a reply, so an explicitly-cleared Cc
+                # must stay cleared rather than falling back to reply_to's
+                # header-derived recipients (None is what triggers that
+                # fallback — only the offline-replay path relies on it).
+                gauth.reply_to(self.svc, self.thread_id, body,
+                               reply_all=(self.mode == "reply_all"),
+                               to=to, cc=cc, bcc=bcc, subject=subject)
         except Exception as e:
             # Previously uncaught here — an exception from a set_interval
             # timer callback (this runs via _countdown_tick) would otherwise
@@ -7828,6 +7982,31 @@ class ComposeModal(ModalScreen):
             self._reenable_fields()
             return
         self.dismiss("sent")
+
+    def _save_draft(self) -> None:
+        """Save the current form as a Gmail draft instead of sending. Reply/
+        reply-all drafts carry the thread_id so Gmail files them in-thread;
+        a forward starts a fresh conversation, so it doesn't. Offline this
+        queues just like a send does."""
+        if self._countdown_timer is not None:
+            return  # a send is already counting down; don't also draft it
+        to, cc, bcc, subject, body = self._fields()
+        thread_id = self.thread_id if self.mode in ("reply", "reply_all") else None
+        if not self.app._online:
+            self.app._enqueue_mutation({
+                "type": "draft", "to": to, "cc": cc, "bcc": bcc,
+                "subject": subject, "body": body, "thread_id": thread_id})
+            self.app.notify("Offline — queued, will save the draft once reconnected.")
+            self.dismiss("queued")
+            return
+        try:
+            gauth.create_draft(self.svc, to=to, subject=subject, body=body,
+                               cc=cc or None, bcc=bcc or None, thread_id=thread_id)
+        except Exception as e:
+            self.app.notify(f"Save draft failed: {e}", severity="error")
+            return
+        self.app.notify("Draft saved")
+        self.dismiss("draft")
 
     def on_key(self, e) -> None:
         if e.key == "ctrl+enter":
