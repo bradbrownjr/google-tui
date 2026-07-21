@@ -87,6 +87,24 @@ CC/BCC in compose.
   no color theming. Textual 8.x has native theme support
   (`App.register_theme`, command-palette theme picker); wire a curated set +
   a Settings → General selector persisted to `Settings`. Mostly wiring.
+- [ ] **File picker for attachments — local + cloud-hosted sources.** Compose
+  attach (`[2026-07-21]`) takes a typed/pasted file **path** today; there's no
+  browse-and-pick UI, and nothing lets you attach a file that lives in Google
+  Drive / an FTP or SSH host rather than the local filesystem. Build a
+  `FilePickerModal` that reuses the Drive tab's existing source-agnostic
+  `drive_sources.py` `DriveBackend` abstraction (`GoogleDriveSource`/
+  `FtpSource`/`SshSource`, plus a new local-filesystem backend) behind the
+  same source `Select` the Drive tab already has, so the picker browses
+  folders and selects a file from any configured source. A local pick passes
+  its path straight to the existing `attachments` list; a cloud/remote pick
+  downloads to a temp file first (reusing each backend's `download()`), then
+  attaches that — so `ComposeModal`/`gauth._build_raw`'s file-path contract is
+  unchanged. Wire it into `ComposeModal`'s attach row (a "Browse…" button
+  alongside the current path Input, which stays as the fast path). Also usable
+  as a general destination/source picker later (e.g. choosing where a Drive
+  download lands, replacing the no-prompt `EXPORT_DIR` default). *(Suggested
+  model: Opus — new modal + local backend + temp-file bridge, though most of
+  the remote plumbing already exists in `drive_sources.py`.)*
 
 ## P4 — Nice-to-have
 
