@@ -976,6 +976,24 @@ def _contact_line(contact: dict, width: int = _CONTACT_ROW_DEFAULT_W) -> str:
 
 _DRIVE_ROW_DEFAULT_W = 40  # #drive-list-col is only 40% wide -> stays modest
 
+# Google Drive's folder sentinel mimeType (mirrors drive_sources._GoogleBackend).
+_DRIVE_FOLDER_MIME = "application/vnd.google-apps.folder"
+
+
+def _with_is_folder(f: dict) -> dict:
+    """Guarantee an `is_folder` key on a Drive file dict, deriving it from the
+    folder mimeType when absent. Live listings already carry it (the backend's
+    list_children sets it), but the `drive_listing` offline cache persists
+    whatever shape was written: a cache saved by a version predating the field
+    would KeyError('is_folder') the instant a row renders — an app-exiting
+    worker crash seen in the wild right after upgrading with a warm cache.
+    Normalizing here (mutates in place, only fills a missing key) makes every
+    ingest path — cache restore, live refresh, folder nav, load-more —
+    crash-proof and re-writes the healthy shape back to cache on next save."""
+    if "is_folder" not in f:
+        f["is_folder"] = f.get("mimeType") == _DRIVE_FOLDER_MIME
+    return f
+
 
 def _drive_line(f: dict, width: int = _DRIVE_ROW_DEFAULT_W) -> str:
     icon = "📁" if f["is_folder"] else "📄"
@@ -6089,6 +6107,11 @@ class GoogleTUI(App):
             self._drive_folder_stack = []
         self._drive_folder_id = folder_id
         self._drive_path = path
+        # Single normalization choke point: every ingest path (startup cache
+        # restore, live refresh, folder nav, load-more) funnels through here,
+        # so guaranteeing is_folder once keeps a stale-schema cache from
+        # crashing the render worker (see _with_is_folder).
+        files = [_with_is_folder(f) for f in files]
         self._drive_files = files
         self.query_one("#drive-path").update(path)
         # See the NOTE in _apply_mail_data_async: ListView.clear() must
