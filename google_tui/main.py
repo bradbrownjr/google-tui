@@ -753,27 +753,51 @@ def _thread_label_chips(th: dict, labels_by_id: dict | None) -> str:
     return ", ".join(names)
 
 
+# Email-list row column layout. The mark, sender, chips and date columns are
+# fixed width; the SUBJECT column is the flexible one that grows/shrinks with
+# the terminal so the row fills the whole pane and the date column stays pinned
+# to the right edge on any width (see GoogleTUI._email_list_width /
+# _reflow_email_rows). At _EMAIL_ROW_DEFAULT_W the arithmetic reproduces the
+# old fixed 36/50/20 layout exactly (subj_w == 50), so nothing shifts on a
+# ~124-col terminal; wider terminals just give the subject more room instead of
+# leaving dead space on the right.
+_EMAIL_SENDER_W = 36
+_EMAIL_CHIPS_W = 20
+_EMAIL_DATE_W = 13   # len("07/20 04:05PM") -- strftime zero-pads, always 13
+_EMAIL_SUBJ_MIN_W = 20
+# 2 (mark + gap) + sender + 1 + subj + 1 + chips + 1 + date == width, so the
+# fixed overhead around the flexible subject column is:
+_EMAIL_ROW_FIXED_W = 2 + _EMAIL_SENDER_W + 1 + 1 + _EMAIL_CHIPS_W + 1 + _EMAIL_DATE_W
+_EMAIL_ROW_DEFAULT_W = _EMAIL_ROW_FIXED_W + 50  # == 124; pre-responsive width
+
+
 def _email_collapsed_line(th: dict, show_sender_address: bool = False,
-                          labels_by_id: dict | None = None) -> str:
+                          labels_by_id: dict | None = None,
+                          width: int = _EMAIL_ROW_DEFAULT_W) -> str:
     mark = "•" if th["unread"] else " "
     subj = th["subject"] or "(no subject)"
     frm = _format_sender(th["from"], show_sender_address)
     count_note = f"  ({th['count']})" if th["count"] > 1 else ""
-    subj_field = f"{subj[:44]}{count_note}"
     chips = _thread_label_chips(th, labels_by_id)
-    if len(chips) > 20:
-        chips = chips[:19] + "…"
+    if len(chips) > _EMAIL_CHIPS_W:
+        chips = chips[:_EMAIL_CHIPS_W - 1] + "…"
     date_str = _fmt_email_date(th.get("date", ""))
-    line = f"{mark} {frm[:36]:<36} {subj_field:<50} {chips:<20}"
-    return f"{line} {date_str}" if date_str else line
+    subj_w = max(width - _EMAIL_ROW_FIXED_W, _EMAIL_SUBJ_MIN_W)
+    subj_field = f"{subj}{count_note}"
+    if len(subj_field) > subj_w:
+        subj_field = subj_field[:subj_w - 1] + "…"
+    line = (f"{mark} {frm[:_EMAIL_SENDER_W]:<{_EMAIL_SENDER_W}} "
+            f"{subj_field:<{subj_w}} {chips:<{_EMAIL_CHIPS_W}}")
+    return f"{line} {date_str:>{_EMAIL_DATE_W}}" if date_str else line
 
 
 def _thread_expanded_text(th: dict, msgs: list[dict], show_sender_address: bool = False,
-                          labels_by_id: dict | None = None) -> str:
+                          labels_by_id: dict | None = None,
+                          width: int = _EMAIL_ROW_DEFAULT_W) -> str:
     """Space-expand preview for a multi-message thread: one line per message
     (From + a short body snippet), so a "(N)" thread actually shows all N
     messages inline instead of just the latest one's snippet."""
-    lines = [_email_collapsed_line(th, show_sender_address, labels_by_id)]
+    lines = [_email_collapsed_line(th, show_sender_address, labels_by_id, width)]
     for m in msgs:
         frm = _format_sender((m.get("from") or "").strip(), show_sender_address)
         snippet = (m.get("body") or "").strip().replace("\n", " ")
@@ -784,14 +808,15 @@ def _thread_expanded_text(th: dict, msgs: list[dict], show_sender_address: bool 
 
 
 def _append_email_items(email_list, threads, show_sender_address: bool = False,
-                        labels_by_id: dict | None = None) -> None:
+                        labels_by_id: dict | None = None,
+                        width: int = _EMAIL_ROW_DEFAULT_W) -> None:
     # extend(), not append()-in-a-loop: ListView.append mounts ONE widget per
     # call (a mount + layout + repaint each), so an 80-thread inbox paid for 80
     # separate mount cycles. extend() batches the whole list into a single one.
     # Same reason every other list in this file builds its items first and
     # extends once.
     email_list.extend(
-        ListItem(Label(_email_collapsed_line(th, show_sender_address, labels_by_id)),
+        ListItem(Label(_email_collapsed_line(th, show_sender_address, labels_by_id, width)),
                  id=_mk_id("t", th["threadId"]))
         for th in threads
     )
@@ -1349,14 +1374,18 @@ class GoogleTUI(App):
     #nav-log { height: 1fr; border: round $panel-darken-1; }
     #thread-messages { height: 1fr; }
     #thread-search { margin-bottom: 1; }
-    #thread-help { color: $text-muted; height: auto; margin-top: 1; }
+    #thread-help { color: $text-muted; height: auto; margin-top: 1; link-style: none; }
     #labelpick-box { height: auto; max-height: 80%; }
     #labelpick-list { height: auto; max-height: 20; border: round $panel-darken-1; margin-bottom: 1; }
     #feedpick-box { height: auto; max-height: 80%; }
     #feedpick-list { height: auto; max-height: 20; border: round $panel-darken-1; margin-bottom: 1; }
     .thread-msg-header { color: $text-muted; text-style: bold; margin-top: 1; border-bottom: solid $panel-darken-2; }
     #help-bar { height: auto; background: $panel; padding: 0 1; }
-    #help-context { color: $text; }
+    /* link-style: none removes the underline Textual draws on [@click]
+       action links by default -- the context help row's clickable "Key Label"
+       spans (bindings.apply_click_actions) are still clickable, just no
+       longer underlined, so the whole row reads as one uniform hint strip. */
+    #help-context { color: $text; link-style: none; }
     #help-global { color: $text-muted; }
     #settings-remote-hosts-list { height: auto; max-height: 8; border: round $panel-darken-1; margin-bottom: 1; }
     .settings-row { height: 3; align: left middle; }
@@ -1926,6 +1955,37 @@ class GoogleTUI(App):
         self._apply_narrow_layout()
         self._update_help_bar()
         self._update_help_global()
+        # Re-flow the Email list so the subject column fills the new width and
+        # the date stays pinned to the right edge -- the rows are plain padded
+        # strings, so they don't otherwise re-wrap on resize.
+        self._reflow_email_rows()
+
+    def _email_list_width(self) -> int:
+        """Usable character width for one Email-list row: the #email-list
+        content region, which already excludes its border/padding and the
+        2-col vertical scrollbar. Falls back to the fixed legacy width before
+        the list has been laid out (content_size is 0 until the first layout
+        pass, e.g. when rows are built during startup)."""
+        try:
+            w = self.query_one("#email-list").content_size.width
+        except Exception:
+            w = 0
+        return w if w > 0 else _EMAIL_ROW_DEFAULT_W
+
+    def _reflow_email_rows(self) -> None:
+        """Re-render collapsed Email rows at the current list width. Expanded
+        rows are left as-is -- they re-flow the next time they're toggled or
+        the mail data refreshes; resizing while a thread is expanded is rare
+        and their extra lines aren't date-aligned anyway."""
+        if not getattr(self, "_threads_cache", None):
+            return
+        width = self._email_list_width()
+        show_addr = self.settings.show_sender_address
+        labels = self._labels_by_id()
+        for tid, th in self._threads_cache.items():
+            if tid in self._expanded_thread_ids:
+                continue
+            self._set_thread_label(tid, _email_collapsed_line(th, show_addr, labels, width))
 
     def _adjacent(self, direction: str) -> None:
         # Mail tab has nothing to move to now -- Email is its only pane.
@@ -3154,7 +3214,8 @@ class GoogleTUI(App):
             query = ""
         visible = _fuzzy_filter_threads(threads, query) if query.strip() else threads
         email_list = self.query_one("#email-list")
-        _append_email_items(email_list, visible, self.settings.show_sender_address, self._labels_by_id())
+        _append_email_items(email_list, visible, self.settings.show_sender_address,
+                            self._labels_by_id(), self._email_list_width())
         _append_load_more_row(email_list, bool(self._email_next_page_token) and not query.strip(),
                               LOAD_MORE_EMAIL_ID, "↓ Load more messages…")
 
@@ -3190,7 +3251,8 @@ class GoogleTUI(App):
             email_query = ""
         visible_threads = _fuzzy_filter_threads(threads, email_query) if email_query.strip() else threads
         email_list = self.query_one("#email-list")
-        _append_email_items(email_list, visible_threads, self.settings.show_sender_address, self._labels_by_id())
+        _append_email_items(email_list, visible_threads, self.settings.show_sender_address,
+                            self._labels_by_id(), self._email_list_width())
         _append_load_more_row(email_list, bool(self._email_next_page_token) and not email_query.strip(),
                               LOAD_MORE_EMAIL_ID, "↓ Load more messages…")
 
@@ -3787,24 +3849,25 @@ class GoogleTUI(App):
             return
         show_addr = self.settings.show_sender_address
         labels = self._labels_by_id()
+        width = self._email_list_width()
         if thread_id in self._expanded_thread_ids:
             self._expanded_thread_ids.discard(thread_id)
-            self._set_thread_label(thread_id, _email_collapsed_line(th, show_addr, labels))
+            self._set_thread_label(thread_id, _email_collapsed_line(th, show_addr, labels, width))
             return
         self._expanded_thread_ids.add(thread_id)
         if th.get("count", 1) > 1:
             cached = self._thread_full_cache.get(thread_id)
             if cached is not None:
-                self._set_thread_label(thread_id, _thread_expanded_text(th, cached, show_addr, labels))
+                self._set_thread_label(thread_id, _thread_expanded_text(th, cached, show_addr, labels, width))
             else:
-                self._set_thread_label(thread_id, _email_collapsed_line(th, show_addr, labels) + "\n    Loading messages…")
+                self._set_thread_label(thread_id, _email_collapsed_line(th, show_addr, labels, width) + "\n    Loading messages…")
                 self.run_worker(lambda: self._fetch_thread_preview(thread_id),
                                  thread=True, exclusive=False, group="thread-preview")
             return
         snippet = (th.get("snippet") or "").strip()
         if len(snippet) > 100:
             snippet = snippet[:100].rstrip() + "…"
-        text = _email_collapsed_line(th, show_addr, labels) + (("\n    " + snippet) if snippet else "")
+        text = _email_collapsed_line(th, show_addr, labels, width) + (("\n    " + snippet) if snippet else "")
         self._set_thread_label(thread_id, text)
 
     def _fetch_thread_preview(self, thread_id: str) -> None:
@@ -3821,7 +3884,8 @@ class GoogleTUI(App):
         if not th or thread_id not in self._expanded_thread_ids:
             return
         self._set_thread_label(thread_id, _thread_expanded_text(
-            th, msgs, self.settings.show_sender_address, self._labels_by_id()))
+            th, msgs, self.settings.show_sender_address, self._labels_by_id(),
+            self._email_list_width()))
 
     def _apply_thread_preview_error(self, thread_id: str) -> None:
         th = self._threads_cache.get(thread_id)
@@ -3832,7 +3896,8 @@ class GoogleTUI(App):
             snippet = snippet[:100].rstrip() + "…"
         extra = (f"\n    {snippet}  " if snippet else "\n    ") + f"({th['count']} messages — press Enter for full thread)"
         self._set_thread_label(thread_id, _email_collapsed_line(
-            th, self.settings.show_sender_address, self._labels_by_id()) + extra)
+            th, self.settings.show_sender_address, self._labels_by_id(),
+            self._email_list_width()) + extra)
 
     # ---- email preview pane ("p" / action_toggle_preview) ----
     # Outlook-style: hidden by default (Settings.email_preview_default_visible
