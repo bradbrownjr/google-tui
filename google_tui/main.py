@@ -1423,10 +1423,17 @@ class GoogleTUI(App):
     #right { width: 1fr; border: round $panel-darken-1; padding: 0 1; }
     /* Dashboard card grid + full-width Hermes row (2026-07-17, grown
        2026-07-19 with the weather/stocks/word-of-day/picture-of-day cards).
-       The grid is 2 columns x 5 rows; #hermes spans both columns on the
-       bottom row. Narrow-mode collapses this to a single column (below). */
-    #dashboard-body { height: 1fr; grid-size: 2 5; grid-rows: 1fr 1fr 1fr 1fr 1fr; grid-gutter: 0; }
-    #hermes { column-span: 2; }
+       dashboard-body is a Vertical: the adaptive card grid (#dash-cards) over
+       a full-width HERMES. #dash-cards is a 2-column grid with `grid-rows:
+       1fr` (each row an equal share, however many rows the ENABLED cards
+       need) rather than a fixed 5-row grid -- so any Settings -> Dashboard
+       enable/disable combo tiles without leaving a blank trailing row. The
+       4fr/1fr split gives HERMES ~1/5 of the height, matching its old
+       single-grid-row size. Narrow-mode collapses the grid to one column and
+       lets whichever single pane is visible fill (below). */
+    #dashboard-body { height: 1fr; }
+    #dash-cards { height: 4fr; grid-size: 2; grid-rows: 1fr; grid-gutter: 0; }
+    #hermes { height: 1fr; }
     #dash-mail-list, #dash-news-list, #dash-weather-list, #dash-stocks-list,
     #dash-word-list, #dash-potd-list { height: 1fr; }
     /* TASKS/MAIL group-header + Email multi-select rows are styled per-cell on
@@ -1607,11 +1614,13 @@ class GoogleTUI(App):
        the primary content dominant instead of squeezed. See
        GoogleTUI._apply_narrow_layout, which toggles this class. */
     .narrow-hidden { display: none; }
-    /* ...and collapse the 2x3 grid to a single full-height cell when narrow,
-       so the one still-visible card (the rest are .narrow-hidden'd) fills the
-       tab instead of sitting in a 2-column quadrant. */
-    Screen.-narrow #dashboard-body { grid-size: 1; grid-rows: 1fr; }
-    Screen.-narrow #hermes { column-span: 1; }
+    /* ...and collapse the card grid to a single column when narrow, so the
+       one still-visible card (the rest are .narrow-hidden'd) fills the tab
+       instead of sitting in a 2-column quadrant. When HERMES is the active
+       pane, _apply_narrow_layout .narrow-hidden's #dash-cards itself (all its
+       cards are hidden anyway) so HERMES -- normally the 1fr bottom slice --
+       gets the whole tab instead of an empty grid hogging 4/5 of it. */
+    Screen.-narrow #dash-cards { grid-size: 1; grid-rows: 1fr; }
 
     /* Settings -> Dashboard checklist (2026-07-18): a disabled card is
        hidden the same way (display: none) regardless of narrow/normal --
@@ -2062,6 +2071,15 @@ class GoogleTUI(App):
                 self.query_one(f"#{pid}").set_class(narrow and pid != active_pane, "narrow-hidden")
             except Exception:
                 pass
+        # HERMES lives outside #dash-cards now (its own full-width slice), so
+        # when it's the active narrow pane every card in #dash-cards is hidden
+        # -- hide the (now empty) grid too, or its 4fr share would strand
+        # HERMES in the bottom 1fr with a blank band above. Non-narrow, or
+        # when a card is active, #dash-cards stays visible.
+        try:
+            self.query_one("#dash-cards").set_class(narrow and active_pane == "hermes", "narrow-hidden")
+        except Exception:
+            pass
 
     def _resolve_dash_cycle_ids(self) -> list[str]:
         """config.toml's pane_order, filtered to real DASH_PANE_IDS entries
@@ -2335,36 +2353,50 @@ class GoogleTUI(App):
             # so they pass 0 -- _pane_title_row omits the number label for a
             # falsy num.
             with TabPane(_tab_label("Dashboard", 1, self.settings.ascii_mode), id="tab-dashboard"):
-                with Grid(id="dashboard-body"):
-                    with Container(id="events", classes="pane"):
-                        yield self._pane_title_row("TODAY  (events, enter=detail)", 2)
-                        with Horizontal(id="events-bar", classes="btnrow hidden"):
-                            yield Input(placeholder="Search events (summary/description)… (/)",
-                                        id="events-search")
-                        yield DataTable(id="event-list", cursor_type="row", zebra_stripes=True)
-                    with Container(id="tasks", classes="pane"):
-                        yield self._pane_title_row("TASKS  (space=done, enter=detail)", 3)
-                        with Horizontal(id="tasks-bar", classes="btnrow hidden"):
-                            yield Input(placeholder="Search tasks (title/notes)… (/)", id="tasks-search")
-                        yield DataTable(id="task-list", cursor_type="row", zebra_stripes=True)
-                    with Container(id="dash-mail", classes="pane"):
-                        yield self._pane_title_row("MAIL  (unread, enter=open)", 0)
-                        yield DataTable(id="dash-mail-list", cursor_type="row", zebra_stripes=True)
-                    with Container(id="dash-news", classes="pane"):
-                        yield self._pane_title_row("NEWS  (top headlines)", 0)
-                        yield DataTable(id="dash-news-list", cursor_type="row", zebra_stripes=True)
-                    with Container(id="dash-weather", classes="pane"):
-                        yield self._pane_title_row("WEATHER", 0)
-                        yield ListView(id="dash-weather-list")
-                    with Container(id="dash-stocks", classes="pane"):
-                        yield self._pane_title_row("STOCKS", 0)
-                        yield ListView(id="dash-stocks-list")
-                    with Container(id="dash-word", classes="pane"):
-                        yield self._pane_title_row("WORD OF THE DAY  (enter=open)", 0)
-                        yield ListView(id="dash-word-list")
-                    with Container(id="dash-potd", classes="pane"):
-                        yield self._pane_title_row("PICTURE OF THE DAY  (enter=open)", 0)
-                        yield ListView(id="dash-potd-list")
+                # dashboard-body is a Vertical of two parts: the adaptive card
+                # grid (#dash-cards) on top, HERMES full-width below. HERMES
+                # used to be an in-grid cell with column-span:2 on a fixed
+                # 2x5 grid, which only tiled cleanly when ALL 8 non-Hermes
+                # cards were enabled (8 + a 2-wide Hermes == exactly 10 cells
+                # == 5 full rows). Disable any single card (Settings ->
+                # Dashboard) and the count goes odd: Textual auto-flow can't
+                # give the 2-wide Hermes its own row, so it got clamped to a
+                # half-width cell and a whole grid row was left empty -- a
+                # blank band at the bottom of the tab (2026-07-22 bug report).
+                # Splitting Hermes out of the grid makes the card grid free to
+                # use however many rows the enabled cards need, and keeps
+                # Hermes full width regardless of that count.
+                with Vertical(id="dashboard-body"):
+                    with Grid(id="dash-cards"):
+                        with Container(id="events", classes="pane"):
+                            yield self._pane_title_row("TODAY  (events, enter=detail)", 2)
+                            with Horizontal(id="events-bar", classes="btnrow hidden"):
+                                yield Input(placeholder="Search events (summary/description)… (/)",
+                                            id="events-search")
+                            yield DataTable(id="event-list", cursor_type="row", zebra_stripes=True)
+                        with Container(id="tasks", classes="pane"):
+                            yield self._pane_title_row("TASKS  (space=done, enter=detail)", 3)
+                            with Horizontal(id="tasks-bar", classes="btnrow hidden"):
+                                yield Input(placeholder="Search tasks (title/notes)… (/)", id="tasks-search")
+                            yield DataTable(id="task-list", cursor_type="row", zebra_stripes=True)
+                        with Container(id="dash-mail", classes="pane"):
+                            yield self._pane_title_row("MAIL  (unread, enter=open)", 0)
+                            yield DataTable(id="dash-mail-list", cursor_type="row", zebra_stripes=True)
+                        with Container(id="dash-news", classes="pane"):
+                            yield self._pane_title_row("NEWS  (top headlines)", 0)
+                            yield DataTable(id="dash-news-list", cursor_type="row", zebra_stripes=True)
+                        with Container(id="dash-weather", classes="pane"):
+                            yield self._pane_title_row("WEATHER", 0)
+                            yield ListView(id="dash-weather-list")
+                        with Container(id="dash-stocks", classes="pane"):
+                            yield self._pane_title_row("STOCKS", 0)
+                            yield ListView(id="dash-stocks-list")
+                        with Container(id="dash-word", classes="pane"):
+                            yield self._pane_title_row("WORD OF THE DAY  (enter=open)", 0)
+                            yield ListView(id="dash-word-list")
+                        with Container(id="dash-potd", classes="pane"):
+                            yield self._pane_title_row("PICTURE OF THE DAY  (enter=open)", 0)
+                            yield ListView(id="dash-potd-list")
                     with Container(id="hermes", classes="pane"):
                         yield self._pane_title_row(self._hermes_ask_title(), 4, text_id="hermes-pane-title")
                         yield RichLog(id="hermes-log", markup=False, wrap=True)
