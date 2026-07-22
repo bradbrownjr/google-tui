@@ -1397,6 +1397,23 @@ class GoogleTUI(App):
        active/inactive panes are a real distinction) is untouched. */
     ModalScreen .pane { border: round $accent; }
     #main-tabs { height: 1fr; }
+    /* Pin the whole TabbedContent chain to a definite height instead of
+       leaning on Textual implicitly stretching the active TabPane to fill.
+       Textual's own defaults make ContentSwitcher AND TabPane `height: auto`
+       (size-to-content) -- 8.2.8 happens to stretch the shown pane to fill a
+       1fr TabbedContent anyway, but that's version-dependent behavior, not a
+       contract: a newer Textual (this repo doesn't pin the version) stops
+       doing it, and then any `height: 1fr` content inside a pane -- most
+       visibly the Dashboard's card Grid -- collapses to content height and
+       won't grow when the terminal is made TALLER (width still tracks,
+       because the width chain is definite; only the height chain was
+       auto). These two `> ` (direct-child) rules make the height chain
+       definite regardless of Textual version, so 1fr children resolve.
+       Direct-child selectors deliberately DON'T reach the Settings tab's
+       nested inner TabbedContent/TabPanes -- those keep their own auto
+       height so their VerticalScroll content sizes normally. */
+    #main-tabs > ContentSwitcher { height: 1fr; }
+    #main-tabs > ContentSwitcher > TabPane { height: 1fr; }
     #main-tabs > ContentTabs { height: 1; background: $primary; }
     #main-tabs > ContentTabs Underline { display: none; }
     #main-tabs > ContentTabs Tab { color: $text; }
@@ -9808,9 +9825,22 @@ def main():
     # without restarting would claim an update that isn't the one running).
     # Skippable with --no-update, GOOGLE_TUI_NO_UPDATE=1, or the
     # check_for_updates setting; see updater.py for the safety rules.
-    if _update_check_enabled():
+    #
+    # updater.restart()'s re-exec runs this same main() again from scratch, so
+    # without the marker below, a successful update would print "Downloading
+    # update... updated to vX" immediately followed by the RESTARTED process's
+    # own "No update found, loading application" -- both individually correct
+    # (two different process invocations, milliseconds apart) but genuinely
+    # contradictory-looking as one block of terminal output (confirmed
+    # confusing a user 2026-07-22). _GOOGLE_TUI_JUST_UPDATED, set right before
+    # the re-exec, survives into the new process via os.execv's environment
+    # inheritance and skips exactly one (already-redundant) recheck silently.
+    if os.environ.pop("_GOOGLE_TUI_JUST_UPDATED", None):
+        pass
+    elif _update_check_enabled():
         try:
             if updater.check_for_update():
+                os.environ["_GOOGLE_TUI_JUST_UPDATED"] = "1"
                 updater.restart()  # does not return
         except Exception as e:
             # A broken update check must never be the reason you can't read your
