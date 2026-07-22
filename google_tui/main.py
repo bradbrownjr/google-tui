@@ -2701,12 +2701,20 @@ class GoogleTUI(App):
         # 80x25 terminal starts in narrow mode instead of only fixing itself
         # on the first actual resize.
         self._narrow = self.size.width < NARROW_WIDTH_THRESHOLD
-        self._focus_pane(0)
         # Applies Settings.dashboard_panes_enabled (Settings -> Dashboard) --
         # must run before anything reads self._dash_active/_dash_enabled_ids,
         # since it's what first populates _dash_enabled_ids and can move
         # _dash_active off its __init__ default if that card's disabled.
+        # Also must run before _activate_tab below, in case the startup tab
+        # IS the Dashboard (_activate_tab's "tab-dashboard" branch reads
+        # _dash_enabled_ids via _focus_dash_pane).
         self._apply_dashboard_panes_enabled()
+        # TabbedContent.TabActivated never fires for the tab active from
+        # mount (see _activate_tab's docstring) -- run its setup explicitly
+        # for whatever Settings.default_start_tab resolved to, instead of
+        # the old hardcoded "always focus Mail's email-list" call this
+        # replaced.
+        self._activate_tab(self._main_tabs().active)
         # Dashboard NEWS card rotation — cycles the visible headline window
         # (see _rotate_dash_news, which no-ops while the card is focused or
         # when there aren't enough entries to rotate).
@@ -3690,7 +3698,28 @@ class GoogleTUI(App):
     def on_tabbed_content_tab_activated(self, event: TabbedContent.TabActivated) -> None:
         if event.tabbed_content.id != "main-tabs":
             return
-        tab_id = event.tabbed_content.active
+        self._activate_tab(event.tabbed_content.active)
+
+    def _activate_tab(self, tab_id: str) -> None:
+        """Per-tab "just became visible" setup (focus the tab's natural
+        input, kick a first-visit fetch, etc). Textual only fires
+        TabbedContent.TabActivated on an actual switch — never for whichever
+        tab is active from the start (ContentSwitcher's `_on_mount` sets its
+        initial child's `display` directly, bypassing the reactive watcher
+        that normally fires this) — so on_mount calls this explicitly too,
+        for whatever Settings.default_start_tab resolved to. Confirmed
+        2026-07-22 the hard way: on_mount used to unconditionally focus
+        #email-list (assuming Mail was always the startup tab, back when it
+        was hardcoded), which — now that the startup tab is configurable —
+        actively fought a *different* tab's initial activation: focusing a
+        widget inside a TabPane makes TabbedContent auto-switch to that pane
+        (TabbedContent._on_tab_pane_focused), so starting on Dashboard while
+        still unconditionally focusing Mail's email-list silently flipped
+        the active tab back to Mail right after mount, before Dashboard's
+        grid ever got a real (non-initial) layout pass — the actual cause of
+        a "Dashboard cards not filling the screen" report that turned out to
+        have nothing to do with CSS or terminal resize handling at all.
+        """
         if tab_id == "tab-dashboard":
             self._focus_dash_pane(self._dash_active)
         elif tab_id == "tab-mail":
