@@ -33,7 +33,6 @@ import platformdirs
 from google.auth.exceptions import RefreshError
 from googleapiclient.errors import HttpError
 from rapidfuzz import fuzz
-from rich.cells import cell_len, set_cell_size
 from rich.text import Text
 from textual import events
 from textual.actions import SkipAction
@@ -800,26 +799,6 @@ _EMAIL_ROW_FIXED_W = 3 + _EMAIL_SENDER_W + 1 + 1 + _EMAIL_CHIPS_W + 1 + _EMAIL_D
 _EMAIL_ROW_DEFAULT_W = _EMAIL_ROW_FIXED_W + 50  # == 125; pre-responsive width
 
 
-def _cell_col(text: str, width: int) -> str:
-    """Fit `text` into EXACTLY `width` terminal cells: left-pad-truncate that
-    is display-width-aware. Subjects/senders routinely contain emoji (🚀, 📫)
-    and CJK glyphs that render 2 cells wide but count as 1 code point, so the
-    old `f"{text:<{w}}"` / `text[:w]` (which measure code points) let every row
-    with a wide glyph shift its later columns and unpin the date. rich.cells
-    measures the real rendered width, keeping the sender/subject/chips/date
-    columns aligned regardless of content. A cut is marked with a trailing '…'.
-    """
-    if width <= 0:
-        return ""
-    if cell_len(text) <= width:
-        return set_cell_size(text, width)   # pads with spaces to exactly width
-    if width == 1:
-        return "…"
-    # Truncate to width-1 cells (set_cell_size may pad a split wide glyph with a
-    # space so the result is exactly width-1), then the ellipsis fills the last.
-    return set_cell_size(text, width - 1) + "…"
-
-
 # Email-list DataTable columns (ROADMAP P3): the mark/From/Labels/Date columns
 # are fixed width; Subject is the single flexible column (list_tables sizes it).
 _EMAIL_TABLE_COLS = [("", 2), ("From", _EMAIL_SENDER_W), ("Subject", None),
@@ -837,21 +816,12 @@ def _email_marks(th: dict) -> str:
 # Sentinel ids (not _mk_id — no underlying thread/event/file) that
 # on_list_view_selected special-cases to a load-more action instead of
 # opening a detail view.
+# Sentinel row keys for the Email/Drive lists' "Load more" rows (each list's
+# _rebuild_* appends one as an ordinary DataTable row when a next page exists
+# and no search filter is active; the row-selected dispatch special-cases these
+# keys to a load-more action instead of a detail view).
 LOAD_MORE_EMAIL_ID = "load-more-email"
-LOAD_MORE_EVENTS_ID = "load-more-events"
 LOAD_MORE_DRIVE_ID = "load-more-drive"
-
-
-def _append_load_more_row(list_view, show: bool, item_id: str, label: str) -> None:
-    """Appends a clickable "Load more" row — shared by the Email pane
-    (LOAD_MORE_EMAIL_ID), the Events pane (LOAD_MORE_EVENTS_ID), and the
-    Drive tab (LOAD_MORE_DRIVE_ID) — only when `show` (there's more to
-    load: a next_page_token for Email/Drive, or Events' always-extendable
-    window) and the caller hasn't already filtered the list by search
-    (loading more while a filter's active would be confusing: which
-    page/window's worth of rows is the filter even matching against?)."""
-    if show:
-        list_view.append(ListItem(Label(label, classes="muted"), id=item_id))
 
 
 def _child_tasks(task: dict, all_tasks: list[dict]) -> list[dict]:
@@ -874,23 +844,11 @@ def _child_tasks(task: dict, all_tasks: list[dict]) -> list[dict]:
 _PENDING_MARK = "⏳ "
 
 
-# --- Responsive row builders for the non-Email list views ----------------
-# Same idea as _email_collapsed_line above: a fixed-width prefix (date / when /
-# checkbox / icon) plus one flexible field that grows to fill the pane, so wide
-# terminals stop wasting horizontal space and narrow ones still truncate
-# cleanly with an ellipsis. Each takes the domain dict + the list's live
-# content width (0 before first layout -> fall back to the field's default);
-# the app's _reflow_*_rows re-run them on resize so the rows track the terminal.
-
-def _truncate(text: str, width: int) -> str:
-    """Trim `text` to at most `width` terminal cells, marking a cut with a
-    trailing '…'. Cell-width-aware (see _cell_col): emoji/CJK count as the 2
-    cells they render, so a wide glyph can't overrun the column. A width <= 0
-    (list not laid out yet) leaves the text unchanged."""
-    if width > 0 and cell_len(text) > width:
-        return set_cell_size(text, width - 1) + "…"
-    return text
-
+# --- Column-width constants for the DataTable list views ------------------
+# Fixed columns' widths + each list's "default" content width (the fallback
+# list_tables.rebuild_flat_table uses to size the one flexible column before
+# the table has been laid out). DataTable measures cell width itself now, so
+# the old per-row string builders (_cell_col/_truncate/_*_line) are gone.
 
 _NEWS_DATE_W = 5    # _fmt_date's date half is "MM/DD"; clamp the rare
                     #   parse-failure fallback (a raw ISO string) to this too
@@ -902,27 +860,10 @@ _NEWS_ROW_FIXED_W = _NEWS_DATE_W + 2 + (_NEWS_FEED_W + 2) + 1
 _NEWS_ROW_DEFAULT_W = _NEWS_ROW_FIXED_W + 40
 
 
-def _news_line(entry: dict, width: int = _NEWS_ROW_DEFAULT_W) -> str:
-    date = _fmt_date(entry.get("published", "")).split(" ")[0][:_NEWS_DATE_W]
-    feed = _cell_col(entry.get("feed_title") or "", _NEWS_FEED_W)
-    title = entry.get("title") or "(untitled)"
-    title_w = max(width - _NEWS_ROW_FIXED_W, _NEWS_TITLE_MIN_W)
-    return f"{date:<{_NEWS_DATE_W}}  [{feed}] {_truncate(title, title_w)}"
-
-
 _CONTACT_NAME_W = 30
 _CONTACT_ADDR_MIN_W = 20
 _CONTACT_ROW_FIXED_W = _CONTACT_NAME_W + 1
 _CONTACT_ROW_DEFAULT_W = _CONTACT_ROW_FIXED_W + 40
-
-
-def _contact_line(contact: dict, width: int = _CONTACT_ROW_DEFAULT_W) -> str:
-    name = (contact.get("name") or "").strip()
-    addr = (contact.get("email") or "").strip()
-    if not name:  # address-only contact: let the address use the whole row
-        return _truncate(addr, width if width > 0 else _CONTACT_ROW_DEFAULT_W)
-    addr_w = max(width - _CONTACT_ROW_FIXED_W, _CONTACT_ADDR_MIN_W)
-    return f"{_cell_col(name, _CONTACT_NAME_W)} {_truncate(addr, addr_w)}"
 
 
 _DRIVE_ROW_DEFAULT_W = 40  # #drive-list-col is only 40% wide -> stays modest
@@ -946,22 +887,7 @@ def _with_is_folder(f: dict) -> dict:
     return f
 
 
-def _drive_line(f: dict, width: int = _DRIVE_ROW_DEFAULT_W) -> str:
-    icon = "📁" if f["is_folder"] else "📄"
-    # 3 cells of prefix: the folder/file emoji renders 2 cells wide + 1 gap.
-    name_w = (width - 3) if width > 0 else _DRIVE_ROW_DEFAULT_W
-    return f"{icon} {_truncate(f.get('name', ''), name_w)}"
-
-
 _TASK_ROW_DEFAULT_W = 50
-
-
-def _task_line(t: dict, width: int = _TASK_ROW_DEFAULT_W) -> str:
-    pend = _PENDING_MARK if t.get("_pending") else ""
-    box = "[x]" if t.get("status") == "completed" else "[ ]"
-    prefix = f"{pend}{box} "
-    title_w = (width - cell_len(prefix)) if width > 0 else _TASK_ROW_DEFAULT_W
-    return f"{prefix}{_truncate(t.get('title', ''), title_w)}"
 
 
 _EVENT_WHEN_W = 8
@@ -976,13 +902,6 @@ def _event_when(e: dict) -> str:
     if start.get("date"):
         return "all day"
     return _fmt_date(start.get("dateTime", "")).split(" ")[-1].lower()
-
-
-def _event_line(e: dict, width: int = _EVENT_ROW_DEFAULT_W) -> str:
-    pend = _PENDING_MARK if e.get("_pending") else ""
-    when = _event_when(e)
-    summary_w = max(width - _EVENT_ROW_FIXED_W - cell_len(pend), 10)
-    return f"{pend}{when:>{_EVENT_WHEN_W}}  {_truncate(e.get('summary', ''), summary_w)}"
 
 
 def _append_task_items(task_list, tasks, width: int = _TASK_ROW_DEFAULT_W,
@@ -1416,11 +1335,8 @@ class GoogleTUI(App):
     #hermes { column-span: 2; }
     #dash-mail-list, #dash-news-list, #dash-weather-list, #dash-stocks-list,
     #dash-word-list, #dash-potd-list { height: 1fr; }
-    /* Group/section header rows inside the TASKS and MAIL cards (OVERDUE, DUE
-       TODAY, unread count, ...): accent + bold, and no cursor highlight since
-       they're not selectable targets (they carry no widget id). */
-    .dash-group-header-item { color: $accent; text-style: bold; }
-    .dash-group-header-item.-highlight { background: $panel; }
+    /* TASKS/MAIL group-header + Email multi-select rows are styled per-cell on
+       their DataTables now (bold Text / _email_sel_style), not via a CSS class. */
     #email-preview-meta { height: auto; border-bottom: solid $panel-darken-2; padding-bottom: 1; }
     .pane { height: 1fr; border: round $panel-darken-2; padding: 0 1; }
     .pane-active { border: round $accent; }
@@ -2127,39 +2043,6 @@ class GoogleTUI(App):
         self._reflow_drive_rows()
         self._reflow_task_rows()
         self._reflow_event_rows()
-
-    def _content_width(self, list_id: str, fallback: int) -> int:
-        """Live content-region width for a list widget (already excludes its
-        border/padding and the 2-col vertical scrollbar), or `fallback` before
-        the list has been laid out (content_size is 0 until the first layout
-        pass, e.g. when rows are built during startup)."""
-        try:
-            w = self.query_one(f"#{list_id}").content_size.width
-        except Exception:
-            w = 0
-        return w if w > 0 else fallback
-
-    def _reflow_list_rows(self, list_id: str, by_cid: dict, line_fn) -> None:
-        """Re-render each row of #list_id in place at the current content width.
-        line_fn(data, width) -> str builds the row text; rows whose id isn't in
-        by_cid (group headers, the drive '.. (up)' row, load-more chrome) are
-        left untouched. Updates labels in place, so selection and scroll
-        position survive the resize -- unlike a clear()+repopulate."""
-        try:
-            lst = self.query_one(f"#{list_id}")
-        except Exception:
-            return
-        width = lst.content_size.width
-        if width <= 0 or not by_cid:
-            return
-        for item in lst.children:
-            data = by_cid.get(getattr(item, "id", None))
-            if data is None:
-                continue
-            try:
-                item.query_one(Label).update(line_fn(data, width))
-            except Exception:
-                pass
 
     def _reflow_news_rows(self) -> None:
         # DataTable: rebuild through the current filter to re-flow the Title
@@ -3412,32 +3295,6 @@ class GoogleTUI(App):
         for t in new_threads:
             merged[t["threadId"]] = t
         self.call_from_thread(self._apply_email_list, list(merged.values()))
-
-    def action_load_more_events(self) -> None:
-        if not self._online:
-            self.notify("Can't load more events while offline.", severity="warning")
-            return
-        self.run_worker(self._load_more_events_thread, thread=True, exclusive=True, group="events-loadmore")
-
-    def _load_more_events_thread(self) -> None:
-        # Calendar's events.list is a plain date-range query, not
-        # cursor-paginated like Gmail — "load more" just means refetching
-        # the WHOLE window at a wider size (no incremental page to merge),
-        # so this replaces self._events_cache outright rather than merging.
-        new_window = self._events_window_days + _EVENTS_WINDOW_STEP_DAYS
-        try:
-            events = gauth.list_events(self.svc, days=new_window)
-        except Exception as e:
-            self.call_from_thread(self.notify, f"Load more error: {e}", severity="error")
-            return
-        self._events_window_days = new_window
-        if self._cache:
-            self._cache.put_many("event", {e["id"]: e for e in events})
-        self.call_from_thread(self._apply_events_after_load_more, events)
-
-    def _apply_events_after_load_more(self, events: list[dict]) -> None:
-        self._events_cache = events
-        self._refresh_event_list()
 
     def _labels_by_id(self) -> dict:
         return {l["id"]: l for l in self._labels_cache}

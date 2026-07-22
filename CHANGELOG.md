@@ -3,6 +3,56 @@
 Format: keep newest at top. One entry per meaningful change. Reference files
 touched and any breaking notes.
 
+## [2026-07-22] — Migrate every list view from `ListView` to Textual `DataTable`
+
+The cross-cutting ROADMAP P3 widget swap: every tab list — Mail, News,
+Contacts, Drive, Tasks, Events — plus the Dashboard MAIL/NEWS mini-cards, the
+Settings feed + saved-remote-hosts lists, and the Browser bookmarks are now
+`DataTable`s instead of a `ListView` of `ListItem(Label(one hand-padded
+string))`. Only the four single-item Dashboard info cards
+(weather/stocks/word/potd) and modal-internal sub-lists stay `ListView`.
+
+**Why.** Column alignment used to be our own display-width arithmetic
+(`_cell_col`/`_truncate` + a per-list row builder), which bit twice with
+emoji/CJK cell-width shifts (`[2026-07-21]`). `DataTable` owns real columns and
+measures each cell itself, so that whole layer is deleted. It's also one
+virtualized line-based widget instead of two widgets per row — a throwaway
+spike (`scripts/spike_datatable_mail.py`, `SPIKE_FINDINGS.md`) measured
+populate/scroll/memory **74–90% faster** than the ListView on a 200–500 thread
+inbox, with the gap widening as the list grows (ListView degraded
+superlinearly under its per-row mount cost).
+
+**How.** New `google_tui/list_tables.py` centralizes the one flexible-column
+width calc (`flex_fill_width` — DataTable has no native "fill remaining width")
+and a uniform `clear(columns=True)`→`add_column(width=)`→`add_row` rebuild,
+mirroring the Calendar grids' existing idiom. Cells are Rich `Text`, so styling
+rides along and a literal `[Feed]` can't be mis-parsed as markup. `current_row_key`
+replaces `ListView.highlighted_child.id`.
+
+Because `DataTable.clear()` is synchronous (unlike `ListView.clear()`'s
+`AwaitRemove`), **every list dropped its generation-counter async apply-worker**
+— including the big shared `_apply_mail_data_async` — and now rebuilds inline
+on the main thread. Selection moved from `ListItem` ids to **row keys**, routed
+through `on_data_table_row_selected` / `on_data_table_row_highlighted`
+(highlight-driven previews gated on the owning tab being active, since a rebuild
+re-emits `RowHighlighted`).
+
+Per-friction: **threaded mail** reveals one real dimmed row per message
+(rebuild, since DataTable has no insert-at-index) instead of the old tall
+multi-line string; **multi-select** tints a row's cells via `_email_sel_style`
++ `update_cell_at` (no per-row CSS class exists); **Task group headers** became
+bold full-width `hdr-<group>` rows that select as no-ops; the responsive
+**Subject** column is one width calc. Found and removed the events "Load more"
+as pre-existing dead code (its sentinel row was never appended).
+
+Deleted with the migration: `_cell_col`, `_truncate`, all five `_*_line`
+builders, `_email_collapsed_line`/`_thread_expanded_text`/`_append_email_items`,
+`_reflow_list_rows`, `_content_width`, `_append_load_more_row`. New pilots:
+`contacts_datatable`, `drive_datatable_nav`, `news_datatable`,
+`dashboard_lists_datatable`, `bookmarks_datatable`, `mail_datatable_expand`; the
+obsolete cell-width unit tests were retired (the star/unread mark logic survives
+as unit-tested `_email_marks`). See `main.py`, `list_tables.py`.
+
 ## [2026-07-21] — Attachments: view/download received + attach on compose
 
 The last open P2 item — closes out "Email client completeness".

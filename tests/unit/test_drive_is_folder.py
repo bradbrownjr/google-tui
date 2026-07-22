@@ -7,7 +7,7 @@ field held raw Google dicts, so after upgrading with a warm cache the first row
 render raised KeyError('is_folder') in the apply worker and exited the app.
 _with_is_folder() normalizes any ingested file dict so that can't happen.
 """
-from google_tui.main import _with_is_folder, _drive_line, _DRIVE_FOLDER_MIME
+from google_tui.main import _with_is_folder, _DRIVE_FOLDER_MIME
 
 
 def test_folder_mime_becomes_is_folder_true():
@@ -32,9 +32,11 @@ def test_existing_is_folder_is_not_overwritten():
     assert _with_is_folder(f)["is_folder"] is True
 
 
-def test_stale_cache_dict_renders_without_crashing():
+def test_stale_cache_dict_gets_is_folder_key():
     # The exact failure: a raw Google dict (no is_folder) reaching the row
-    # builder. Pre-fix this raised KeyError; post-fix it renders.
+    # builder, which subscripts f["is_folder"] (both the old string row and the
+    # DataTable rebuild do). Pre-fix this raised KeyError and exited the app;
+    # _with_is_folder guarantees the key so the subscript is safe.
     raw = {"id": "5", "name": "Report", "mimeType": _DRIVE_FOLDER_MIME}
-    line = _drive_line(_with_is_folder(raw))
-    assert "📁" in line and "Report" in line
+    normalized = _with_is_folder(raw)
+    assert normalized["is_folder"] is True  # f["is_folder"] can't KeyError now
