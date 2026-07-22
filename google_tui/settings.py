@@ -31,8 +31,12 @@ class Settings:
     browser_home_url: str = "https://www.google.com"  # Browser tab's H home destination
     # Browser tab bookmarks: a list of {"type": "bookmark", "label", "url"} or
     # {"type": "folder", "label", "children": [...]} dicts, editable via the
-    # Browser tab's bookmarks ListView ("B" to show, Ctrl+B to add the current
-    # page). Default matches the app's original hardcoded starter list.
+    # Browser tab's bookmarks table ("B" to show, Ctrl+B to add the current
+    # page, Delete to remove the highlighted one). Default matches the app's
+    # original hardcoded starter list. Each dict may also carry "added_at"/
+    # "last_opened_at" ISO-8601 UTC timestamps (stamped by main.py on create/
+    # open, not present here) -- missing on a legacy entry is fine, sort code
+    # treats that as "" (oldest/never-used), never a crash.
     browser_bookmarks: list[dict] = field(default_factory=lambda: [
         {"type": "bookmark", "label": "Google", "url": "https://www.google.com"},
         {"type": "bookmark", "label": "Wikipedia", "url": "https://en.wikipedia.org"},
@@ -43,6 +47,9 @@ class Settings:
     # activated each session. Defaults to "bookmarks" to match the app's
     # original (pre-this-setting) behavior.
     browser_start_page: str = "bookmarks"
+    # "name" | "added" | "used" -- Browser tab bookmarks list order, cycled by
+    # "S" (shown live in that tab's shortcut bar).
+    browser_bookmark_sort: str = "name"
     # Saved remote-host (FTP/SSH) credentials are NOT stored here -- see
     # remote_creds.py's module docstring for why (Settings is plaintext;
     # credentials need the same optional encryption the local cache uses,

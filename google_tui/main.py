@@ -122,8 +122,8 @@ REFRESH_COOLDOWN_SECONDS = 5.0
 
 TAB_ORDER = ["tab-dashboard", "tab-mail", "tab-calendar", "tab-drive", "tab-browser", "tab-news", "tab-navigation",
              "tab-contacts", "tab-settings"]
-SETTINGS_TAB_ORDER = ["settings-tab-general", "settings-tab-ai", "settings-tab-feeds", "settings-tab-search",
-                       "settings-tab-navigation", "settings-tab-dashboard"]
+SETTINGS_TAB_ORDER = ["settings-tab-general", "settings-tab-browser", "settings-tab-ai", "settings-tab-feeds",
+                       "settings-tab-search", "settings-tab-navigation", "settings-tab-dashboard"]
 
 # Narrow-terminal responsive layout (P2, 2026-07-15). Textual 8.2.8 has no
 # CSS media-query/container-query feature scoped to an arbitrary container,
@@ -327,6 +327,28 @@ class TabCyclingInput(Input):
 
     def action_cycle_tab(self) -> None:
         self.app.action_cycle_tab()
+
+
+class BookmarksTable(DataTable):
+    """DataTable's own Home/End bindings (scroll_home/scroll_end) only
+    scroll the viewport -- they don't move the row cursor at all, unlike
+    every other list in this app where Home/End jump to the first/last row.
+    Redefining the same keys here (subclass BINDINGS override the base
+    class's for a given key, same trick TabCyclingInput uses above) makes
+    the Browser tab's bookmarks table behave the same way.
+    """
+    BINDINGS = [
+        ("home", "cursor_home", "Cursor Home"),
+        ("end", "cursor_end", "Cursor End"),
+    ]
+
+    def action_cursor_home(self) -> None:
+        if self.row_count:
+            self.move_cursor(row=0)
+
+    def action_cursor_end(self) -> None:
+        if self.row_count:
+            self.move_cursor(row=self.row_count - 1)
 
 
 def _fmt_date(s: str) -> str:
@@ -1185,7 +1207,27 @@ _BOOKMARK_PROTOCOL_STYLE = {
 
 def _bookmark_scheme_style(url: str) -> tuple[str, str]:
     scheme = url.split("://", 1)[0].lower() if "://" in url else ""
-    return _BOOKMARK_PROTOCOL_STYLE.get(scheme, ("🔗", "white"))
+    # Fallback matches the app's actual theme foreground (#e0e0e0, textual-dark)
+    # rather than the raw ANSI "white" keyword, which some terminals remap.
+    return _BOOKMARK_PROTOCOL_STYLE.get(scheme, ("🔗", "#e0e0e0"))
+
+
+# Bookmark list sort modes, cycled by the Browser tab's "S" key (M2 follow-up,
+# 2026-07-22) -- "name" first since it's the most predictable default for a
+# fresh/legacy list with no timestamps at all.
+_BOOKMARK_SORT_CYCLE = ["name", "added", "used"]
+_BOOKMARK_SORT_LABELS = {"name": "Name", "added": "Added", "used": "Used"}
+
+
+def _sort_bookmark_entries(entries: list[dict], mode: str) -> list[dict]:
+    """Sort a shallow copy of one bookmark-folder level for display. Missing
+    added_at/last_opened_at (legacy entries, or folders that were never
+    entered) sort as "" -- oldest/never-used, never an error."""
+    if mode == "added":
+        return sorted(entries, key=lambda e: e.get("added_at") or "", reverse=True)
+    if mode == "used":
+        return sorted(entries, key=lambda e: e.get("last_opened_at") or "", reverse=True)
+    return sorted(entries, key=lambda e: (e.get("label") or e.get("url") or "").lower())
 
 
 @dataclass
@@ -1360,7 +1402,7 @@ class GoogleTUI(App):
     .pane-active { border: round $accent; }
     .pane-title-row { height: 1; }
     .pane-title-text { text-style: bold; color: $accent; width: 1fr; }
-    .pane-title-num { color: $text-muted; width: auto; }
+    .pane-title-num { color: $text 75%; width: auto; }
     #email-label-select { height: 3; }
     #email-search, #tasks-search, #events-search { width: 1fr; }
     #email-list { height: 1fr; }
@@ -1376,11 +1418,11 @@ class GoogleTUI(App):
     #att-box { height: auto; max-height: 90%; }
     #att-list { height: auto; max-height: 20; border: round $panel-darken-1; margin: 1 0; }
     #c-attach { width: 1fr; margin-right: 1; }
-    #c-attach-list { height: auto; color: $text-muted; }
+    #c-attach-list { height: auto; color: $text 75%; }
     #event-list, #task-list { height: 1fr; }
     #hermes-log { height: 1fr; border: round $panel-darken-1; }
     #hermes-input { dock: bottom; }
-    .muted { color: $text-muted; }
+    .muted { color: $text 75%; }
     .btnrow { height: 3; align: left middle; }
     #send-countdown { height: 1; color: $accent; text-style: bold; }
     .section { height: 1fr; border: round $panel-darken-2; padding: 0 1; }
@@ -1400,8 +1442,8 @@ class GoogleTUI(App):
     #browser-bar { height: 3; align: left middle; }
     #browser-mode { width: 10; color: $accent; text-style: bold; content-align: center middle; }
     #browser-url { width: 1fr; }
-    #browser-status { width: auto; color: $text-muted; margin-left: 1; }
-    #browser-bookmarks { height: auto; max-height: 12; border: round $panel-darken-1; margin-bottom: 1; }
+    #browser-status { width: auto; color: $text 75%; margin-left: 1; }
+    #browser-bookmarks { height: 1fr; border: round $panel-darken-1; margin-bottom: 1; }
     #browser-doc { height: 1fr; border: round $panel-darken-1; padding: 0 1; }
     #news-search { width: 1fr; }
     #news-list { height: 1fr; }
@@ -1410,27 +1452,27 @@ class GoogleTUI(App):
     #nav-log { height: 1fr; border: round $panel-darken-1; }
     #thread-messages { height: 1fr; }
     #thread-search { margin-bottom: 1; }
-    #thread-help { color: $text-muted; height: auto; margin-top: 1; link-style: none; }
+    #thread-help { color: $text 75%; height: auto; margin-top: 1; link-style: none; }
     #labelpick-box { height: auto; max-height: 80%; }
     #labelpick-list { height: auto; max-height: 20; border: round $panel-darken-1; margin-bottom: 1; }
     #feedpick-box { height: auto; max-height: 80%; }
     #feedpick-list { height: auto; max-height: 20; border: round $panel-darken-1; margin-bottom: 1; }
-    .thread-msg-header { color: $text-muted; text-style: bold; margin-top: 1; border-bottom: solid $panel-darken-2; }
+    .thread-msg-header { color: $text 75%; text-style: bold; margin-top: 1; border-bottom: solid $panel-darken-2; }
     #help-bar { height: auto; background: $panel; padding: 0 1; }
     /* link-style: none removes the underline Textual draws on [@click]
        action links by default -- the context help row's clickable "Key Label"
        spans (bindings.apply_click_actions) are still clickable, just no
        longer underlined, so the whole row reads as one uniform hint strip. */
     #help-context { color: $text; link-style: none; }
-    #help-global { color: $text-muted; }
-    #settings-remote-hosts-list { height: auto; max-height: 8; border: round $panel-darken-1; margin-bottom: 1; }
+    #help-global { color: $text 75%; }
+    #settings-remote-hosts-list { height: 1fr; border: round $panel-darken-1; margin-bottom: 1; }
     .settings-row { height: 3; align: left middle; }
     .settings-row Label { width: auto; margin-right: 2; }
     #settings-nous-key { width: 40; margin-right: 2; }
     .hidden { display: none; }
     #settings-key-method { height: auto; margin: 1 0; }
     #settings-cache-info { margin-top: 1; }
-    #settings-feed-list { height: 8; border: round $panel-darken-1; margin-bottom: 1; }
+    #settings-feed-list { height: 1fr; border: round $panel-darken-1; margin-bottom: 1; }
     #settings-dashboard-panes { height: auto; max-height: 12; border: round $panel-darken-1; margin-top: 1; }
     #settings-feed-url { width: 1fr; margin-right: 2; }
     #settings-google-cse-key, #settings-google-cse-id, #settings-searxng-url { width: 40; margin-right: 2; }
@@ -1492,6 +1534,8 @@ class GoogleTUI(App):
     #browser-doc.ascii-border { border: ascii $panel-darken-1; }
     #nav-log.ascii-border { border: ascii $panel-darken-1; }
     #settings-feed-list.ascii-border { border: ascii $panel-darken-1; }
+    #browser-bookmarks.ascii-border { border: ascii $panel-darken-1; }
+    #settings-remote-hosts-list.ascii-border { border: ascii $panel-darken-1; }
     #c-to-suggestions.ascii-border { border: ascii $panel-darken-1; }
     #drive-preview-meta.ascii-border { border-bottom: ascii $panel-darken-2; }
     #email-preview-meta.ascii-border { border-bottom: ascii $panel-darken-2; }
@@ -1718,6 +1762,10 @@ class GoogleTUI(App):
         # to fetch. Reset to the root list whenever "B" is pressed.
         self._bookmark_current_list: list[dict] = self.settings.browser_bookmarks
         self._bookmark_parent_stack: list[list[dict]] = []
+        # Sorted copy of _bookmark_current_list built by _bookmarks_render;
+        # "bm-<i>" row keys index into this, not _bookmark_current_list
+        # itself (see _bookmarks_render's docstring).
+        self._bookmark_sorted_list: list[dict] = self._bookmark_current_list
         # See _ESCAPE_ALT_ARROW_ACTIONS above / on_key below: timestamp of the
         # most recent bare "escape" Key event, used to detect the terminals
         # that encode Alt+Arrow as a double-ESC sequence Textual's parser
@@ -2130,28 +2178,43 @@ class GoogleTUI(App):
         return f"pane:{self._dash_active}" if tab == "tab-dashboard" else f"tab:{tab}"
 
     def _context_help_text(self) -> str:
-        """Plain (non-clickable) context help text. Used only as the basis
+        """Plain (non-clickable) context help text. Used both as the basis
         for narrow-mode line wrapping (see _narrow_wrap_help) — wrapping
         must be computed against the VISIBLE width, not one inflated by
-        invisible [@click=...] markup tags."""
-        text = bindings.CONTEXT_HELP.get(self._context_help_scope(), "")
+        invisible [@click=...] markup tags — and, for the Browser tab, as
+        the one place its "S Sort: <mode>" suffix gets appended, since the
+        current sort mode is app state, not something bindings.CONTEXT_HELP's
+        static dict can hold."""
+        scope = self._context_help_scope()
+        text = bindings.CONTEXT_HELP.get(scope, "")
+        if scope == "tab:tab-browser":
+            mode_label = _BOOKMARK_SORT_LABELS.get(self.settings.browser_bookmark_sort, "Name")
+            text += f"   S Sort: {mode_label}"
         return bindings.ascii_safe(text) if self.settings.ascii_mode else text
 
     def _narrow_wrap_help(self) -> str:
         """Like _narrow_wrap, but keeps the context help row's shortcuts
-        clickable (bindings.help_markup — the same affordance ThreadModal's
-        help bar has) even when narrow. Line breaks are computed from the
-        PLAIN text first, then each already-wrapped line gets its "Key
-        Label" spans turned into action links — doing it in that order
-        means wrap width isn't thrown off by markup tags that render as zero
-        width. A span that happens to straddle a wrap boundary is just left
-        plain on that occasion (rare, and harmless: it already wraps
-        mid-phrase today without clickability).
+        clickable (bindings.apply_click_actions — the same affordance
+        ThreadModal's help bar has) even when narrow. Line breaks are
+        computed from the PLAIN text first, then each already-wrapped line
+        gets its "Key Label" spans turned into action links — doing it in
+        that order means wrap width isn't thrown off by markup tags that
+        render as zero width. A span that happens to straddle a wrap
+        boundary is just left plain on that occasion (rare, and harmless: it
+        already wraps mid-phrase today without clickability).
+
+        The non-narrow fast path applies click actions directly to the
+        already-built `plain` text (rather than re-deriving it via
+        bindings.help_markup, which re-fetches straight from the static
+        CONTEXT_HELP dict) so the Browser tab's dynamic "S Sort: <mode>"
+        suffix survives here too, not just in the wrapped case.
         """
         scope = self._context_help_scope()
         plain = self._context_help_text()
-        if not self._narrow or not plain:
-            return bindings.help_markup(scope, self.settings.ascii_mode)
+        if not plain:
+            return ""
+        if not self._narrow:
+            return bindings.apply_click_actions(plain, scope)
         width = max(20, self.size.width - 2)
         lines = textwrap.wrap(plain, width=width)
         return "\n".join(bindings.apply_click_actions(line, scope) for line in lines)
@@ -2181,6 +2244,7 @@ class GoogleTUI(App):
         ".pane", ".pane-active", ".section", "#hermes-log", "#drive-list-col",
         "#drive-preview-col", "#right", "#browser-doc", "#nav-log", "#settings-feed-list",
         "#c-to-suggestions", "#drive-preview-meta", "#email-preview-meta", ".thread-msg-header",
+        "#browser-bookmarks", "#settings-remote-hosts-list",
     )
 
     def _apply_ascii_mode(self) -> None:
@@ -2323,7 +2387,7 @@ class GoogleTUI(App):
                         yield TabCyclingInput(placeholder="URL, or type to search…", id="browser-url")
                         yield Button("Go", id="browser-go")
                         yield Static("", id="browser-status")
-                    yield DataTable(id="browser-bookmarks", cursor_type="row", zebra_stripes=True)
+                    yield BookmarksTable(id="browser-bookmarks", cursor_type="row", zebra_stripes=True)
                     yield DocumentView(id="browser-doc")
             with TabPane(_tab_label("News", 6, self.settings.ascii_mode), id="tab-news"):
                 with Container(id="news-section", classes="section"):
@@ -2404,29 +2468,6 @@ class GoogleTUI(App):
                                     "Takes effect immediately.",
                                     id="settings-ascii-mode-note", classes="muted",
                                 )
-                                yield Label("Browser", classes="pane-title-text")
-                                with Horizontal(classes="settings-row"):
-                                    yield Label("Home page (H)")
-                                    yield Input(value=self.settings.browser_home_url,
-                                                placeholder="https://www.google.com",
-                                                id="settings-browser-home-url")
-                                    yield Button("Save", id="settings-save-browser-home")
-                                with Horizontal(classes="settings-row"):
-                                    yield Label("Start page (first Browser-tab visit each session)")
-                                    yield Select(
-                                        _BROWSER_START_PAGE_CHOICES,
-                                        value=self.settings.browser_start_page,
-                                        allow_blank=False, id="settings-browser-start-page",
-                                    )
-                                yield Static(
-                                    "Saved remote hosts (FTP/SSH — added from the Drive tab's "
-                                    "source picker, \"+ Add remote host…\"):",
-                                    classes="muted",
-                                )
-                                yield DataTable(id="settings-remote-hosts-list",
-                                                cursor_type="row", zebra_stripes=True)
-                                with Horizontal(classes="btnrow"):
-                                    yield Button("Remove selected host", id="settings-remove-remote-host")
                                 with Horizontal(classes="settings-row"):
                                     yield Label("Encrypt local cache at rest")
                                     yield Switch(value=self.settings.encrypt_at_rest, id="settings-encrypt-switch")
@@ -2468,6 +2509,31 @@ class GoogleTUI(App):
                                     yield Button("Apply limits now", id="settings-prune-cache")
                                     yield Button("Clear local cache now", id="settings-clear-cache")
                                 yield Static("", id="settings-cache-info", classes="muted")
+                        with TabPane("Browser", id="settings-tab-browser"):
+                            with VerticalScroll(id="settings-browser-scroll"):
+                                yield Label("Browser", classes="pane-title-text")
+                                with Horizontal(classes="settings-row"):
+                                    yield Label("Home page (H)")
+                                    yield Input(value=self.settings.browser_home_url,
+                                                placeholder="https://www.google.com",
+                                                id="settings-browser-home-url")
+                                    yield Button("Save", id="settings-save-browser-home")
+                                with Horizontal(classes="settings-row"):
+                                    yield Label("Start page (first Browser-tab visit each session)")
+                                    yield Select(
+                                        _BROWSER_START_PAGE_CHOICES,
+                                        value=self.settings.browser_start_page,
+                                        allow_blank=False, id="settings-browser-start-page",
+                                    )
+                                yield Static(
+                                    "Saved remote hosts (FTP/SSH — added from the Drive tab's "
+                                    "source picker, \"+ Add remote host…\"):",
+                                    classes="muted",
+                                )
+                                yield DataTable(id="settings-remote-hosts-list",
+                                                cursor_type="row", zebra_stripes=True)
+                                with Horizontal(classes="btnrow"):
+                                    yield Button("Remove selected host", id="settings-remove-remote-host")
                         with TabPane("AI Provider", id="settings-tab-ai"):
                             with VerticalScroll(id="settings-ai-scroll"):
                                 yield Label("AI provider (Ask pane)", classes="pane-title-text")
@@ -3574,7 +3640,6 @@ class GoogleTUI(App):
             if cid:
                 self._drive_on_highlight(cid)
         elif tab_id == "tab-browser":
-            self.query_one("#browser-url").focus()
             if not self._browser_started:
                 self._browser_started = True
                 if self.settings.browser_start_page == "home":
@@ -3586,6 +3651,21 @@ class GoogleTUI(App):
                     self._browser_navigate(url, push_history=True)
                 else:
                     self._bookmarks_render()
+            # Focus the bookmarks table (not the URL bar) whenever it's the
+            # visible view -- otherwise arrow/Home/End/PageUp/Down never
+            # reach DataTable's own cursor bindings, since Input consumes
+            # them as caret movement first. Same "hidden" check
+            # action_browser_show_bookmarks already uses. Checked AFTER the
+            # first-visit block above, since that's what decides whether the
+            # bookmarks table or the page view ends up visible.
+            try:
+                bookmarks_visible = "hidden" not in self.query_one("#browser-bookmarks").classes
+            except Exception:
+                bookmarks_visible = False
+            if bookmarks_visible:
+                self.query_one("#browser-bookmarks").focus()
+            else:
+                self.query_one("#browser-url").focus()
         elif tab_id == "tab-news":
             self.query_one("#news-list").focus()
         elif tab_id == "tab-navigation":
@@ -3736,7 +3816,9 @@ class GoogleTUI(App):
     def _browser_bookmark_save(self, url: str, label: str | None) -> None:
         if not label:
             return
-        self.settings.browser_bookmarks.append({"type": "bookmark", "label": label, "url": url})
+        added_at = dt.datetime.now(dt.timezone.utc).isoformat()
+        self.settings.browser_bookmarks.append(
+            {"type": "bookmark", "label": label, "url": url, "added_at": added_at})
         save_settings(self.settings)
         self.notify(f"Bookmarked: {label}")
 
@@ -5087,15 +5169,24 @@ class GoogleTUI(App):
         whenever "B" resets to root. Synchronous: DataTable.clear() is
         immediate, so the old awaited-worker + generation-counter (needed only
         for ListView.clear()'s AwaitRemove and the reused bm-<idx> keys) is
-        gone. Single column; folder/protocol icon + label as a styled Text."""
+        gone. Single column; folder/protocol icon + label as a styled Text.
+
+        Rows are built from a *sorted copy* (self._bookmark_sorted_list, per
+        Settings.browser_bookmark_sort) so "bm-<i>" keys index into that copy,
+        not the underlying (unsorted, folder-order-preserving) list — the
+        dicts themselves are shared references either way, so
+        _bookmark_open_selected/_delete still mutate the real settings data.
+        """
         try:
             table = self.query_one("#browser-bookmarks", DataTable)
         except Exception:
             return
+        self._bookmark_sorted_list = _sort_bookmark_entries(
+            self._bookmark_current_list, self.settings.browser_bookmark_sort)
         rows: list[tuple[str, list]] = []
         if self._bookmark_parent_stack:
             rows.append(("bm-up", [Text("📂 .. (up)")]))
-        for i, entry in enumerate(self._bookmark_current_list):
+        for i, entry in enumerate(self._bookmark_sorted_list):
             if entry.get("type") == "folder":
                 cell = Text(f"📂 {entry.get('label') or '(folder)'}")
             else:
@@ -5117,10 +5208,13 @@ class GoogleTUI(App):
         if not cid.startswith("bm-"):
             return
         idx = int(cid.removeprefix("bm-"))
-        if idx >= len(self._bookmark_current_list):
+        if idx >= len(self._bookmark_sorted_list):
             return
-        entry = self._bookmark_current_list[idx]
+        entry = self._bookmark_sorted_list[idx]
+        now = dt.datetime.now(dt.timezone.utc).isoformat()
         if entry.get("type") == "folder":
+            entry["last_opened_at"] = now
+            save_settings(self.settings)
             self._bookmark_parent_stack.append(self._bookmark_current_list)
             self._bookmark_current_list = entry.get("children") or []
             self._bookmarks_render()
@@ -5128,11 +5222,49 @@ class GoogleTUI(App):
         url = entry.get("url", "")
         if not url:
             return
+        entry["last_opened_at"] = now
+        save_settings(self.settings)
         try:
             self.query_one("#browser-url", Input).value = url
         except Exception:
             pass
         self._browser_navigate(url, push_history=True)
+
+    def action_browser_cycle_sort(self) -> None:
+        """S: cycle the Browser tab's bookmark sort order (Name -> Added ->
+        Used -> Name), shown live in that tab's shortcut bar. Browser-tab-
+        only, same guard as action_browser_home."""
+        if self._main_tabs().active != "tab-browser":
+            return
+        cur = self.settings.browser_bookmark_sort
+        idx = _BOOKMARK_SORT_CYCLE.index(cur) if cur in _BOOKMARK_SORT_CYCLE else 0
+        self.settings.browser_bookmark_sort = _BOOKMARK_SORT_CYCLE[(idx + 1) % len(_BOOKMARK_SORT_CYCLE)]
+        save_settings(self.settings)
+        self._bookmarks_render()
+        self._update_help_bar()
+
+    def action_browser_delete_bookmark(self) -> None:
+        """Delete: remove the highlighted bookmark (or folder, with its
+        contents) from the Browser tab's bookmarks table. Browser-tab-only,
+        same guard as action_browser_home. No confirmation dialog, matching
+        the same convention _remove_selected_feed already uses for Settings
+        -> News Feeds."""
+        if self._main_tabs().active != "tab-browser":
+            return
+        cid = list_tables.current_row_key(self.query_one("#browser-bookmarks", DataTable)) or ""
+        if not cid or cid == "bm-up" or not cid.startswith("bm-"):
+            return
+        idx = int(cid.removeprefix("bm-"))
+        if idx >= len(self._bookmark_sorted_list):
+            return
+        entry = self._bookmark_sorted_list[idx]
+        label = entry.get("label") or entry.get("url") or "(untitled)"
+        # Remove by identity, not equality -- two bookmarks could otherwise
+        # share an identical label+url and .remove() would drop the wrong one.
+        self._bookmark_current_list[:] = [e for e in self._bookmark_current_list if e is not entry]
+        save_settings(self.settings)
+        self._bookmarks_render()
+        self.notify(f"Removed bookmark: {label}")
 
     def _open_dashboard_link(self, item: dict | None) -> None:
         """Dashboard WORD OF THE DAY / PICTURE OF THE DAY cards' Enter

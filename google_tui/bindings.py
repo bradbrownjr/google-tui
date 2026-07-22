@@ -110,6 +110,8 @@ GLOBAL_ACTIONS: list[ActionSpec] = [
     ActionSpec("browser_home", "h", "Home"),
     ActionSpec("browser_show_bookmarks", "b", "Bookmarks"),
     ActionSpec("browser_bookmark_page", "ctrl+b", "Bookmark Page"),
+    ActionSpec("browser_cycle_sort", "s", "Sort"),
+    ActionSpec("browser_delete_bookmark", "delete", "Delete Bookmark"),
     ActionSpec("cal_prev", "[", "Prev"),
     ActionSpec("cal_next", "]", "Next"),
     ActionSpec("new_event", "n", "New Event"),
@@ -221,11 +223,15 @@ CONTEXT_HELP: dict[str, str] = {
     "pane:hermes": "Enter Ask",
     "tab:tab-calendar": "[ / ] Prev/Next Month or Week   Enter Day Detail   n New Event",
     "tab:tab-drive": "Enter Open Folder / Reload Preview   / Search (this folder)   p Toggle Preview   d Download",
-    "tab:tab-browser": "Enter Load/Search   Alt+←/→ Back/Forward   H Home   B Bookmarks   Ctrl+B Bookmark Page   Tab Toggle Focus   0-9+Enter Link",
+    # "S Sort: <mode>" is appended live by GoogleTUI._context_help_text (the
+    # current bookmark sort mode isn't static text -- see that method).
+    "tab:tab-browser": "Enter Load/Search   Alt+←/→ Back/Forward   H Home   B Bookmarks   Ctrl+B Bookmark Page   "
+                        "Delete Remove Bookmark   Tab Toggle Focus   0-9+Enter Link",
     "tab:tab-news": "Enter/Space Open Entry   / Search",
     "tab:tab-navigation": "Enter/Go Compute Route   Export Save Itinerary To File",
     "tab:tab-settings": "Alt+←/→ Switch Section   Toggle encryption   Choose key method   Clear local cache   "
-                         "Manage feeds   Search provider   Routes API key   Enable/disable Dashboard cards",
+                         "Browser home/start page   Manage feeds   Search provider   Routes API key   "
+                         "Enable/disable Dashboard cards",
     "tab:tab-contacts": "Type to search (or / from elsewhere in the tab)   Enter/Space Detail (compose to contact)   Refresh",
     # ThreadModal's own contextual help row (P2 2026-07-15). Rendered as a
     # clickable help bar via help_markup() below — each "Key Label" pair
@@ -286,6 +292,11 @@ _CLICK_ACTIONS: dict[str, dict[str, str]] = {
         "H Home": "browser_home",
         "B Bookmarks": "browser_show_bookmarks",
         "Ctrl+B Bookmark Page": "browser_bookmark_page",
+        "Delete Remove Bookmark": "browser_delete_bookmark",
+        # Matches only the fixed "S Sort" prefix -- the dynamic ": <mode>"
+        # suffix _context_help_text appends stays outside the click span,
+        # which is fine, .replace() still finds "S Sort" as a substring.
+        "S Sort": "browser_cycle_sort",
     },
     "tab:tab-news": {
         "/ Search": "focus_search",
@@ -462,15 +473,22 @@ DRIVE TAB
 
 BROWSER TAB
   Enter (address bar)    Load URL, or run a search (bare text w/ no scheme searches)
-  Bookmarks list         A folder-nested list (arrow keys + Enter to descend,
-                         "up" row to go back) of saved destinations across
-                         web/Gopher/Gemini/FTP/SSH, color-coded by protocol.
-                         Shown on first Browser-tab visit if Settings ->
-                         General's start page is "Bookmarks" (the default);
-                         B re-shows it any time; Ctrl+B saves the current
-                         page into it.
+  Bookmarks list         A folder-nested list (arrow/Home/End/PageUp/Down +
+                         Enter to descend, "up" row to go back) of saved
+                         destinations across web/Gopher/Gemini/FTP/SSH,
+                         color-coded by protocol. Focused automatically
+                         whenever it's the visible view. Shown on first
+                         Browser-tab visit if Settings -> Browser's start
+                         page is "Bookmarks" (the default); B re-shows it
+                         any time; Ctrl+B saves the current page into it;
+                         Delete removes the highlighted bookmark or folder
+                         (with its contents) — no confirmation prompt, same
+                         as removing a News feed subscription.
+  S                      Cycle the bookmarks list's sort order: Name ->
+                         Added -> Used -> Name. Shown live in this tab's
+                         shortcut bar.
   Alt+Left / Alt+Right   Back / forward through this session's history
-  H                      Go to your configured home page (Settings -> General)
+  H                      Go to your configured home page (Settings -> Browser)
   Tab                    Toggle focus: address bar <-> page content
   0-9 then Enter (page)  Jump to numbered link
   Esc (page)             Cancel a pending number entry
@@ -494,14 +512,19 @@ NAVIGATION TAB
   Needs a Routes API key, set in Settings -> Navigation.
 
 SETTINGS TAB
-  Sub-tabs      General / AI Provider / News Feeds / Search / Navigation /
-                Dashboard — Alt+Left/Right cycles between them while the
-                Settings tab is active
+  Sub-tabs      General / Browser / AI Provider / News Feeds / Search /
+                Navigation / Dashboard — Alt+Left/Right cycles between them
+                while the Settings tab is active
   Switch        Show the Mail tab's preview pane by default at launch —
                 "p" still toggles it per-session either way (General)
   Switch        Toggle encrypt-at-rest for the local cache (General)
   RadioSet      Choose passphrase-at-launch vs. local key file (General)
   Button        Clear the local cache immediately (General)
+  Input+Button  Set/save the Browser tab's home page ("H") (Browser)
+  Select        Choose what the Browser tab shows on first visit each
+                session: Bookmarks (default) or Home (Browser)
+  DataTable+Button  Saved remote hosts (FTP/SSH, added from the Drive tab's
+                    source picker) — remove one (Browser)
   RadioSet      Choose AI provider for the Hermes Ask pane (AI Provider)
   Input+Button  Set/save the Nous API key (AI Provider)
   Input+Button  Add a News-tab feed subscription (URL) (News Feeds)

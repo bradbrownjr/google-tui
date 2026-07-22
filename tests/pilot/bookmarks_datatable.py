@@ -17,10 +17,13 @@ from tests.pilot.fakes import applied, base_patches  # noqa: E402
 from textual.widgets import DataTable  # noqa: E402
 
 BOOKMARKS = [
+    # Labels chosen so the default "name" sort (alphabetical) preserves this
+    # list order — "Work" < "Zed" — since this scenario is about folder-nav
+    # mechanics, not sort order (see bookmarks_sort.py for that).
     {"type": "folder", "label": "Work", "children": [
         {"type": "bookmark", "label": "Example", "url": "https://example.com"},
     ]},
-    {"type": "bookmark", "label": "Gemini", "url": "gemini://geminiprotocol.net"},
+    {"type": "bookmark", "label": "Zed", "url": "gemini://geminiprotocol.net"},
 ]
 
 
