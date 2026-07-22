@@ -429,6 +429,18 @@ def _is_not_found_error(e: Exception) -> bool:
     return isinstance(e, HttpError) and getattr(e.resp, "status", None) == 404
 
 
+def _is_google_auth_error(message: str) -> bool:
+    """True if `message` is a notify() string produced by a dead Google
+    OAuth token (revoked/expired refresh_token). When that happens, every
+    data source touched by a single refresh — mail, labels, calendar, drive
+    — independently gets rejected and each formats its own
+    "<Section> error: ... invalid_grant ..." toast. They all carry the same
+    OAuth signature, which is what lets notify() rewrite them to one
+    actionable re-auth message and dedup the burst down to a single toast."""
+    low = message.lower()
+    return "invalid_grant" in low or "token has been expired or revoked" in low
+
+
 _PENDING_MUTATION_LABELS = {
     "reply": "Reply",
     "reply_all": "Reply All",
@@ -1932,6 +1944,20 @@ class GoogleTUI(App):
         # and the help-bar wrap helper both need to read it, and self.size
         # isn't meaningful until the first Resize event arrives anyway.
         self._narrow = False
+        # Toast de-duplication (see notify()). Maps a normalized message key to
+        # the monotonic time it was last shown, so a burst of identical toasts
+        # — e.g. one revoked Google token surfacing once per data source on a
+        # single refresh — collapses to a single, longer-dwelling toast.
+        self._recent_toasts: dict[str, float] = {}
+
+    # How long a toast stays on screen when the caller doesn't specify.
+    # Textual's own default is 5s, which is too quick to read a stack of
+    # errors before they scroll off — bumped so a burst is actually legible.
+    _NOTIFY_DEFAULT_TIMEOUT = 6.0
+    _NOTIFY_ERROR_TIMEOUT = 10.0
+    # Within this window, a repeat of the same (normalized) message is
+    # swallowed instead of stacking another identical toast.
+    _NOTIFY_DEDUP_WINDOW = 8.0
 
     def notify(self, message: str, *, title: str = "", severity: str = "information",
                timeout: float | None = None, markup: bool = True) -> None:
@@ -1942,9 +1968,48 @@ class GoogleTUI(App):
         and worse when a bug fires the same one twice); error/warning ones
         also get a durable line in LOG_FILE so a missed toast isn't gone
         for good.
+
+        This funnel also (a) gives toasts a longer default dwell time so a
+        burst is readable, and (b) de-duplicates: a revoked/expired Google
+        token surfaces once per data source (mail/labels/calendar/drive) on a
+        single refresh — six near-identical error toasts flashing by. Those
+        all carry the same OAuth signature, so they're rewritten to one clear
+        re-auth message and then collapsed to a single toast.
         """
+        # Collapse the OAuth-revoked fan-out (Refresh/Labels/Calendar/Drive
+        # error: ... invalid_grant ...) into one actionable message so the
+        # dedup below merges them instead of showing six variants.
+        if severity == "error" and _is_google_auth_error(message):
+            message = (
+                "Google sign-in expired and couldn't refresh automatically. "
+                "Go to Settings (F8) -> General -> 'Re-authorize Google "
+                "account' to fix this."
+            )
+
         if severity in ("error", "warning"):
             _logger.log(logging.ERROR if severity == "error" else logging.WARNING, message)
+
+        # De-duplicate identical toasts fired within a short window. The log
+        # line above still records every occurrence; only the on-screen toast
+        # is suppressed, so nothing is actually lost.
+        key = f"{severity}\x00{title}\x00{message}"
+        now = time.monotonic()
+        last = self._recent_toasts.get(key)
+        if last is not None and now - last < self._NOTIFY_DEDUP_WINDOW:
+            self._recent_toasts[key] = now
+            return
+        self._recent_toasts[key] = now
+        # Opportunistically drop stale keys so this dict can't grow unbounded
+        # over a long-running session.
+        if len(self._recent_toasts) > 64:
+            cutoff = now - self._NOTIFY_DEDUP_WINDOW
+            self._recent_toasts = {
+                k: t for k, t in self._recent_toasts.items() if t >= cutoff
+            }
+
+        if timeout is None:
+            timeout = (self._NOTIFY_ERROR_TIMEOUT if severity in ("error", "warning")
+                       else self._NOTIFY_DEFAULT_TIMEOUT)
         super().notify(message, title=title, severity=severity, timeout=timeout, markup=markup)
 
     def _handle_exception(self, error: Exception) -> None:
