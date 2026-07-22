@@ -443,7 +443,7 @@ checklist is a "library" future cards can still grow into.)
                 Browser tab
   Hermes card:  type a question, Enter to ask. Its title always shows the
                 currently configured AI provider (Settings → AI Provider),
-                e.g. "CLAUDE CODE ASK". Also reachable as a Ctrl+K popup
+                e.g. "ASK CLAUDE CODE". Also reachable as a Ctrl+K popup
                 from anywhere — see GLOBAL above.
 
 CALENDAR TAB

@@ -6,7 +6,7 @@ Ctrl+1..8 -- Settings is the odd one out at Ctrl+9, no F-key alias, since
 F9+ isn't reliably delivered by every terminal). The Mail tab is Email-only
 (list + toggleable preview pane, "p"). The Dashboard tab (2026-07-17) is a
 2x2 card grid --- TODAY (today's events), TASKS (grouped), MAIL (unread),
-NEWS (rotating headlines) --- plus a full-width HERMES ASK card below; the
+NEWS (rotating headlines) --- plus a full-width ASK HERMES card below; the
 external cards (weather/stocks/dictionary/Wikipedia -- ROADMAP P4) are still
 open. Alt+2/3/4 jump to Today/Tasks/Hermes, Mail/News are Tab/arrows-only;
 Alt+1 stays on the Mail tab's Email. See AGENTS.md for the full keybinding
@@ -91,7 +91,7 @@ PANE_TITLES = {
     "dash-stocks": "STOCKS",
     "dash-word": "WORD OF THE DAY",
     "dash-potd": "PICTURE OF THE DAY",
-    "hermes": "HERMES ASK",
+    "hermes": "ASK HERMES",
 }
 # The card grid + full-width Hermes below drives Alt+arrow adjacency as a
 # real 2-D map (see CHANGELOG 2026-07-16/2026-07-17/2026-07-19). Layout (2
@@ -5244,7 +5244,7 @@ class GoogleTUI(App):
         names the currently configured AI provider (Settings -> AI Provider),
         not a hardcoded "Hermes", since ai_provider can be claude_code/
         opencode/gemini_cli too. See ask.display_name."""
-        return f"{ask.display_name(self.settings.ai_provider).upper()} ASK  (type a question, Enter)"
+        return f"ASK {ask.display_name(self.settings.ai_provider).upper()}  (type a question, Enter)"
 
     def _update_hermes_labels(self) -> None:
         """Keeps every always-mounted Hermes-Ask surface in sync with
