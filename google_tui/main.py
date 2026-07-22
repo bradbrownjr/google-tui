@@ -7208,6 +7208,14 @@ class GoogleReauthModal(ModalScreen):
         self.flow = None
         self._auth_url: str | None = None
         self._error: str | None = None
+        # $TMUX/$STY only tell us THIS process is inside a multiplexer, not
+        # whether OSC 52 clipboard forwarding actually works there -- that
+        # depends on the multiplexer's version and its own clipboard config
+        # (confirmed in practice: a tmux upgrade silently broke `set -g
+        # set-clipboard on` for one user, invisible from in here — see
+        # git history). So this only prompts a "try outside tmux" step,
+        # it can't detect or fix the underlying config itself.
+        self._multiplexer = "tmux" if os.environ.get("TMUX") else "screen" if os.environ.get("STY") else None
         try:
             self.flow = gauth.build_reauth_flow()
             self._auth_url = gauth.reauth_authorization_url(self.flow)
@@ -7242,14 +7250,22 @@ class GoogleReauthModal(ModalScreen):
                 with Horizontal(classes="btnrow"):
                     yield Button("Copy URL", id="reauth-copy", variant="primary")
                     yield Button("Save to file", id="reauth-save")
-                yield Static(
+                copy_help = (
                     "Copy URL puts it on your computer's clipboard even over "
                     "SSH (terminal must allow OSC 52 — in tmux: "
                     "set -g set-clipboard on). If nothing lands on your "
                     "clipboard, use Save to file, or press F12 to release the "
-                    "mouse and select the URL with your terminal as usual.",
-                    id="reauth-copy-help", classes="muted",
+                    "mouse and select the URL with your terminal as usual."
                 )
+                if self._multiplexer:
+                    copy_help += (
+                        f" Detected {self._multiplexer} — if it still doesn't "
+                        f"land after that, some {self._multiplexer} versions "
+                        "block OSC 52 regardless of config; try detaching/"
+                        f"exiting {self._multiplexer} and running this step "
+                        "outside it."
+                    )
+                yield Static(copy_help, id="reauth-copy-help", classes="muted")
                 yield Static(
                     "2. Sign in and grant access. You will land on a page "
                     "that fails to load (\"can't reach this page\" / "
@@ -7278,9 +7294,17 @@ class GoogleReauthModal(ModalScreen):
         mouse-release toggle exist alongside it.
         """
         self.app.copy_to_clipboard(self._auth_url or "")
-        self.query_one("#reauth-status", Static).update(
+        status = (
             "Copied to clipboard. If your clipboard is still empty, your "
-            "terminal blocks OSC 52 — use Save to file or F12 instead.")
+            "terminal blocks OSC 52 — use Save to file or F12 instead."
+        )
+        if self._multiplexer:
+            status += (
+                f" Still empty and you're in {self._multiplexer}? Some "
+                f"versions block OSC 52 no matter how it's configured — try "
+                f"exiting {self._multiplexer} and copying from a plain shell."
+            )
+        self.query_one("#reauth-status", Static).update(status)
 
     def _save_url(self) -> None:
         """Bulletproof fallback for terminals that swallow OSC 52: drop the URL
