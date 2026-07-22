@@ -1904,7 +1904,6 @@ class GoogleTUI(App):
         self._events_apply_gen = 0
         self._drive_search_timer = None
         self._news_search_timer = None
-        self._news_search_apply_gen = 0
         # F12 hands the mouse back to the terminal so its native click-drag
         # selection works (see action_toggle_mouse).
         self._mouse_released = False
@@ -2235,7 +2234,10 @@ class GoogleTUI(App):
                 pass
 
     def _reflow_news_rows(self) -> None:
-        self._reflow_list_rows("news-list", getattr(self, "_news_by_cid", {}), _news_line)
+        # DataTable: rebuild through the current filter to re-flow the Title
+        # column, rather than editing Labels in place.
+        if getattr(self, "_news_entries_cache", None):
+            self._refresh_news_list()
 
     def _reflow_contact_rows(self) -> None:
         # DataTable: re-render at the new width by rebuilding through the live
@@ -2508,7 +2510,7 @@ class GoogleTUI(App):
                     yield Label("NEWS  (all subscribed feeds, newest first)", classes="pane-title-text")
                     with Horizontal(id="news-search-bar", classes="btnrow hidden"):
                         yield Input(placeholder="Search entries (title/summary)… (/)", id="news-search")
-                    yield ListView(id="news-list")
+                    yield DataTable(id="news-list", cursor_type="row", zebra_stripes=True)
             with TabPane(_tab_label("Navigation", 7, self.settings.ascii_mode), id="tab-navigation"):
                 with Container(id="navigation-section", classes="section"):
                     yield Label("NAVIGATION  (origin -> destination, turn-by-turn)", classes="pane-title-text")
@@ -4975,9 +4977,8 @@ class GoogleTUI(App):
     def action_context_space(self) -> None:
         tab = self._main_tabs().active
         if tab == "tab-news":
-            lst = self.query_one("#news-list")
-            item = lst.highlighted_child
-            entry = self._news_by_cid.get(item.id or "") if item is not None else None
+            cid = list_tables.current_row_key(self.query_one("#news-list", DataTable))
+            entry = self._news_by_cid.get(cid or "")
             if entry:
                 self.push_screen(NewsEntryModal(entry))
             return
@@ -5043,10 +5044,6 @@ class GoogleTUI(App):
                     self._on_task_modal_result)
         elif cid.startswith("bm-") or cid == "bm-up":
             self._bookmark_open_selected()
-        elif cid.startswith("n-"):
-            entry = self._news_by_cid.get(cid)
-            if entry:
-                self.push_screen(NewsEntryModal(entry))
         elif cid == "dm-open":
             # Dashboard MAIL card header row — jump to the full Mail tab.
             self._goto_tab("tab-mail")
@@ -5835,6 +5832,10 @@ class GoogleTUI(App):
         if table_id == "contacts-list":
             if cid.startswith("ct-"):
                 self._open_contact_detail(cid)
+        elif table_id == "news-list":
+            entry = self._news_by_cid.get(cid)
+            if entry:
+                self.push_screen(NewsEntryModal(entry))
         elif table_id == "drive-list":
             if cid == LOAD_MORE_DRIVE_ID:
                 self.action_load_more_drive()
@@ -6529,7 +6530,6 @@ class GoogleTUI(App):
         self.run_worker(self._apply_news_data_async(gen, entries), exclusive=True, group="news-apply")
 
     async def _apply_news_data_async(self, gen: int, entries: list[dict]) -> None:
-        await self.query_one("#news-list").clear()
         if gen != self._news_apply_gen:
             return  # superseded by a newer _apply_news_data call
         # Backs the News tab's search filter (Input#news-search) — same role
@@ -6608,45 +6608,35 @@ class GoogleTUI(App):
         self._populate_dash_news()
 
     def _populate_news_list(self, entries: list[dict]) -> None:
-        lst = self.query_one("#news-list")
+        # DataTable with real Date/Feed/Title columns. feed_title/title come
+        # straight from someone else's RSS/Atom feed; list_tables feeds each as
+        # a plain Rich Text (no markup parsing), so a literal "[Feed Title]"
+        # can't be mis-read as a style tag — the reason the old Label row
+        # needed markup=False.
         self._news_by_cid = {}
-        width = self._content_width("news-list", _NEWS_ROW_DEFAULT_W)
-        items = []
         seen: set = set()
+        rows: list[tuple[str, list]] = []
         for e in sorted(entries, key=lambda e: e.get("published") or "", reverse=True):
             cid = _unique_id(_mk_id("n", e["id"]), seen)
             self._news_by_cid[cid] = e
-            # feed_title/title come straight from someone else's RSS/Atom feed,
-            # and _news_line literally wraps feed_title in "[...]" — see the
-            # markup=False NOTE in _feed_list_item above for why this needs
-            # markup disabled rather than escaped: Textual's
-            # Content.from_markup() (what Label routes through) would otherwise
-            # silently swallow "[Feed Title]" as a bogus style tag.
-            items.append(ListItem(Label(_news_line(e, width), markup=False), id=cid))
-        lst.extend(items)
+            date = _fmt_date(e.get("published", "")).split(" ")[0][:_NEWS_DATE_W]
+            rows.append((cid, [date, e.get("feed_title") or "", e.get("title") or "(untitled)"]))
+        list_tables.rebuild_flat_table(
+            self.query_one("#news-list", DataTable),
+            [("Date", _NEWS_DATE_W), ("Feed", _NEWS_FEED_W), ("Title", None)], rows,
+            flex_min=_NEWS_TITLE_MIN_W, fallback_width=_NEWS_ROW_DEFAULT_W)
 
     def _refresh_news_list(self) -> None:
         # Debounced keystroke path for #news-search — filters the already-
         # fetched self._news_entries_cache, never re-fetches any feed per
-        # keystroke. Own exclusive group + own generation counter, same
-        # reason as _refresh_task_list/_refresh_event_list/_refresh_drive_list
-        # above: sharing "news-apply" would let a keystroke here cancel an
-        # in-flight full news apply (cache load / live refresh / feed
-        # add-remove) mid-rebuild.
-        self._news_search_apply_gen += 1
-        gen = self._news_search_apply_gen
-        self.run_worker(
-            self._apply_news_search_async(gen, self._news_entries_cache),
-            exclusive=True, group="news-search-apply")
-
-    async def _apply_news_search_async(self, gen: int, entries: list[dict]) -> None:
-        await self.query_one("#news-list").clear()
-        if gen != self._news_search_apply_gen:
-            return  # superseded by a newer apply call
+        # keystroke. Synchronous now (DataTable.clear() is immediate); the
+        # news-list rebuild can't overlap the full news apply the way the old
+        # ListView workers could, so no exclusive-group/gen guard is needed.
         try:
             query = self.query_one("#news-search", Input).value
         except Exception:
             query = ""
+        entries = self._news_entries_cache
         visible = _fuzzy_filter_news_entries(entries, query) if query.strip() else entries
         self._populate_news_list(visible)
 
