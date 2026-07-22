@@ -1432,8 +1432,14 @@ class GoogleTUI(App):
        single-grid-row size. Narrow-mode collapses the grid to one column and
        lets whichever single pane is visible fill (below). */
     #dashboard-body { height: 1fr; }
-    #dash-cards { height: 4fr; grid-size: 2; grid-rows: 1fr; grid-gutter: 0; }
-    #hermes { height: 1fr; }
+    /* #dash-cards takes all the vertical space HERMES doesn't. HERMES is
+       height:auto so it's just its title + input bar (~a few rows) until the
+       first question is asked -- #hermes-log starts `.hidden` and _hermes_submit
+       reveals it, at which point HERMES grows by the log's fixed height and the
+       card grid gives that space back. Keeps an empty response box from
+       squatting ~1/5 of the tab before it has anything to show. */
+    #dash-cards { height: 1fr; grid-size: 2; grid-rows: 1fr; grid-gutter: 0; }
+    #hermes { height: auto; }
     #dash-mail-list, #dash-news-list, #dash-weather-list, #dash-stocks-list,
     #dash-word-list, #dash-potd-list { height: 1fr; }
     /* TASKS/MAIL group-header + Email multi-select rows are styled per-cell on
@@ -1461,8 +1467,11 @@ class GoogleTUI(App):
     #c-attach { width: 1fr; margin-right: 1; }
     #c-attach-list { height: auto; color: $text 75%; }
     #event-list, #task-list { height: 1fr; }
-    #hermes-log { height: 1fr; border: round $panel-darken-1; }
-    #hermes-input { dock: bottom; }
+    /* Revealed (its `.hidden` removed) on the first question -- see
+       _hermes_submit. Fixed height so the auto-height #hermes pane has a
+       definite size to grow to (a 1fr child of an auto parent would collapse). */
+    #hermes-log { height: 8; border: round $panel-darken-1; }
+    #hermes-input { height: 3; }
     .muted { color: $text 75%; }
     .btnrow { height: 3; align: left middle; }
     #send-countdown { height: 1; color: $accent; text-style: bold; }
@@ -2399,7 +2408,9 @@ class GoogleTUI(App):
                             yield ListView(id="dash-potd-list")
                     with Container(id="hermes", classes="pane"):
                         yield self._pane_title_row(self._hermes_ask_title(), 4, text_id="hermes-pane-title")
-                        yield RichLog(id="hermes-log", markup=False, wrap=True)
+                        # Starts hidden; _hermes_submit reveals it on the first
+                        # question so an empty response box doesn't take space.
+                        yield RichLog(id="hermes-log", markup=False, wrap=True, classes="hidden")
                         yield Input(placeholder=f"Ask {ask.display_name(self.settings.ai_provider)} "
                                                  f"about your Google stuff…", id="hermes-input")
             with TabPane(_tab_label("Mail", 2, self.settings.ascii_mode), id="tab-mail"):
@@ -5262,6 +5273,11 @@ class GoogleTUI(App):
         event.input.value = ""
         if log is None:
             log = self.query_one("#hermes-log", RichLog)
+            # First question reveals the Dashboard card's response box (it
+            # starts hidden so an empty box doesn't squat the tab). Harmless
+            # once already shown. The HermesAskModal passes its own always-
+            # visible popup log, so this only affects the Dashboard card.
+            log.remove_class("hidden")
         log.write(f"You: {q}")
         self.run_worker(lambda: self._hermes_thread(q, log), thread=True,
                         exclusive=False, group="hermes")
