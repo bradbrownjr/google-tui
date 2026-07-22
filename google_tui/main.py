@@ -54,6 +54,7 @@ from .ask import needs_agent
 from . import setup_instructions
 from . import fetchers
 from . import drive_sources
+from . import list_tables
 from . import remote_creds
 from .popular_feeds import POPULAR_FEEDS
 from . import render
@@ -1918,7 +1919,6 @@ class GoogleTUI(App):
         # To-field autocomplete reads self._contacts_cache directly.
         self._contacts_cache: list[dict] = []
         self._contacts_by_cid: dict[str, dict] = {}
-        self._contacts_apply_gen = 0
         self._contacts_fetch_started = False
         self._contacts_search_timer = None
         self._email_search_timer = None
@@ -2263,7 +2263,11 @@ class GoogleTUI(App):
         self._reflow_list_rows("news-list", getattr(self, "_news_by_cid", {}), _news_line)
 
     def _reflow_contact_rows(self) -> None:
-        self._reflow_list_rows("contacts-list", getattr(self, "_contacts_by_cid", {}), _contact_line)
+        # DataTable: re-render at the new width by rebuilding through the live
+        # filter (recomputes the flex Email column), rather than editing Labels
+        # in place the way the ListView _reflow_list_rows did.
+        if getattr(self, "_contacts_cache", None) is not None:
+            self._refresh_contacts_list()
 
     def _reflow_drive_rows(self) -> None:
         self._reflow_list_rows("drive-list", getattr(self, "_drive_items_by_cid", {}), _drive_line)
@@ -2544,7 +2548,7 @@ class GoogleTUI(App):
                     with Horizontal(id="contacts-bar", classes="btnrow"):
                         yield Input(placeholder="Search contacts (name or email)…", id="contacts-search")
                         yield Button("Refresh", id="contacts-refresh")
-                    yield ListView(id="contacts-list")
+                    yield DataTable(id="contacts-list", cursor_type="row", zebra_stripes=True)
             with TabPane(_tab_label("Settings", 9, self.settings.ascii_mode), id="tab-settings"):
                 with Container(id="settings-section", classes="section"):
                     yield Label("SETTINGS", classes="pane-title-text")
@@ -4992,10 +4996,9 @@ class GoogleTUI(App):
                 self.push_screen(NewsEntryModal(entry))
             return
         if tab == "tab-contacts":
-            lst = self.query_one("#contacts-list")
-            item = lst.highlighted_child
-            if item is not None and item.id:
-                self._open_contact_detail(item.id)
+            cid = list_tables.current_row_key(self.query_one("#contacts-list", DataTable))
+            if cid and cid.startswith("ct-"):
+                self._open_contact_detail(cid)
             return
         if tab == "tab-mail":
             tid = self._selected_thread()
@@ -5077,8 +5080,6 @@ class GoogleTUI(App):
             entry = self._dash_news_by_cid.get(cid)
             if entry:
                 self.push_screen(NewsEntryModal(entry))
-        elif cid.startswith("ct-"):
-            self._open_contact_detail(cid)
         elif cid == "dw-open":
             # Dashboard WORD OF THE DAY card — no in-terminal detail view
             # (it's a single short definition already), so Enter opens the
@@ -5836,11 +5837,24 @@ class GoogleTUI(App):
             grid.add_row(*row)
 
     def on_data_table_cell_selected(self, event: DataTable.CellSelected) -> None:
+        # Calendar grids use the default CELL cursor; the migrated list views
+        # (ROADMAP P3) use cursor_type="row" and fire RowSelected instead
+        # (on_data_table_row_selected below), so these two never overlap.
         table_id = event.data_table.id
         if table_id == "cal-grid":
             self._cal_month_cell_selected(event)
         elif table_id == "cal-week-grid":
             self._cal_week_cell_selected(event)
+
+    def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
+        """Enter/click on a row of a migrated DataTable list. Dispatches by
+        table id to the same detail action the old ListView.Selected did,
+        looking the row up by its row key (was the ListItem id)."""
+        table_id = event.data_table.id
+        cid = event.row_key.value or ""
+        if table_id == "contacts-list":
+            if cid.startswith("ct-"):
+                self._open_contact_detail(cid)
 
     def _cal_month_cell_selected(self, event: DataTable.CellSelected) -> None:
         first_line = str(event.value).split("\n")[0]
@@ -6811,43 +6825,36 @@ class GoogleTUI(App):
         self._refresh_contacts_list()
 
     def _refresh_contacts_list(self) -> None:
+        """Rebuild #contacts-list (a DataTable) through the current search
+        filter. Synchronous: DataTable.clear() is immediate (no ListView
+        AwaitRemove), so the old generation-counter worker is gone — this can
+        run on the main thread on cache load, live fetch, and every debounced
+        search keystroke without overlapping rebuilds."""
         try:
             query = self.query_one("#contacts-search", Input).value
         except Exception:
             query = ""
-        self._contacts_apply_gen += 1
-        gen = self._contacts_apply_gen
-        self.run_worker(self._apply_contacts_list_async(gen, query), exclusive=True, group="contacts-apply")
-
-    async def _apply_contacts_list_async(self, gen: int, query: str) -> None:
-        # Same ListView.clear()-is-async trap as _apply_mail_data_async /
-        # _apply_news_data_async (AGENTS.md's ListView.clear() NOTE) — this
-        # can run more than once in quick succession (cache load, live
-        # fetch, every keystroke in the search box), so it's a properly
-        # awaited worker with a generation counter, not bare clear() +
-        # call_after_refresh.
-        await self.query_one("#contacts-list").clear()
-        if gen != self._contacts_apply_gen:
-            return  # superseded by a newer call
-        lst = self.query_one("#contacts-list")
+        table = self.query_one("#contacts-list", DataTable)
         self._contacts_by_cid = {}
         if self._contacts_auth_broken:
-            lst.append(ListItem(Label(
-                "Not connected — Google token is missing or expired.\n"
-                "Reconnect from Settings -> General to load contacts.",
-                markup=False)))
+            list_tables.rebuild_flat_table(table, [("", None)], [
+                ("ct-auth-broken", [
+                    "Not connected — Google token is missing or expired. "
+                    "Reconnect from Settings → General to load contacts."])])
             return
-        items = []
-        width = self._content_width("contacts-list", _CONTACT_ROW_DEFAULT_W)
+        seen: set[str] = set()
+        rows = []
         for c in _fuzzy_filter_contacts(self._contacts_cache, query):
             name = (c.get("name") or "").strip()
             addr = (c.get("email") or "").strip()
             if not name and not addr:
                 continue  # no usable info at all — not worth a row
-            cid = _mk_id("ct", c.get("resource_name", ""))
+            cid = _unique_id(_mk_id("ct", c.get("resource_name", "")), seen)
             self._contacts_by_cid[cid] = c
-            items.append(ListItem(Label(_contact_line(c, width), markup=False), id=cid))
-        lst.extend(items)
+            rows.append((cid, [name, addr]))
+        list_tables.rebuild_flat_table(
+            table, [("Name", _CONTACT_NAME_W), ("Email", None)], rows,
+            flex_min=_CONTACT_ADDR_MIN_W, fallback_width=_CONTACT_ROW_DEFAULT_W)
 
     def _open_contact_detail(self, cid: str) -> None:
         c = self._contacts_by_cid.get(cid)
