@@ -517,6 +517,8 @@ SETTINGS TAB
   Sub-tabs      General / Browser / AI Provider / News Feeds / Search /
                 Navigation / Dashboard — Alt+Left/Right cycles between them
                 while the Settings tab is active
+  Select        Choose which tab the app opens on at launch, default
+                Dashboard (General)
   Switch        Show the Mail tab's preview pane by default at launch —
                 "p" still toggles it per-session either way (General)
   Switch        Toggle encrypt-at-rest for the local cache (General)

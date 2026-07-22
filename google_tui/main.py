@@ -124,6 +124,17 @@ TAB_ORDER = ["tab-dashboard", "tab-mail", "tab-calendar", "tab-drive", "tab-brow
              "tab-contacts", "tab-settings"]
 SETTINGS_TAB_ORDER = ["settings-tab-general", "settings-tab-browser", "settings-tab-ai", "settings-tab-feeds",
                        "settings-tab-search", "settings-tab-navigation", "settings-tab-dashboard"]
+# TAB_ORDER id -> its tab label, for Settings -> General's "Start on tab"
+# Select (Settings.default_start_tab, 2026-07-22) -- the compose()-time
+# _tab_label() calls carry these same strings as literals since they also
+# need per-tab Alt-number badges, so this is a second source of the same
+# names rather than a shared constant; keep both in sync if a tab is renamed.
+TAB_TITLES: dict[str, str] = {
+    "tab-dashboard": "Dashboard", "tab-mail": "Mail", "tab-calendar": "Calendar",
+    "tab-drive": "Drive", "tab-browser": "Browser", "tab-news": "News",
+    "tab-navigation": "Navigation", "tab-contacts": "Contacts", "tab-settings": "Settings",
+}
+_STARTUP_TAB_CHOICES = [(TAB_TITLES[t], t) for t in TAB_ORDER]
 
 # Narrow-terminal responsive layout (P2, 2026-07-15). Textual 8.2.8 has no
 # CSS media-query/container-query feature scoped to an arbitrary container,
@@ -2286,7 +2297,12 @@ class GoogleTUI(App):
     # ---- compose ----
     def compose(self) -> ComposeResult:
         yield GtHeader()
-        with TabbedContent(id="main-tabs", initial="tab-mail"):
+        # Falls back to "tab-dashboard" for a stale/unknown saved value (e.g.
+        # a since-removed tab id) rather than raising -- TabbedContent's
+        # `initial` has no such fallback of its own.
+        start_tab = (self.settings.default_start_tab
+                     if self.settings.default_start_tab in TAB_ORDER else "tab-dashboard")
+        with TabbedContent(id="main-tabs", initial=start_tab):
             # The real Google-native Dashboard (`2026-07-17`, ROADMAP P4): a
             # card grid of TODAY (today's events) / TASKS (grouped) / MAIL
             # (unread count + top unread) / NEWS (top headlines) / WEATHER /
@@ -2431,6 +2447,16 @@ class GoogleTUI(App):
                     with TabbedContent(id="settings-tabs"):
                         with TabPane("General", id="settings-tab-general"):
                             with VerticalScroll(id="settings-general-scroll"):
+                                yield Label("Startup", classes="pane-title-text")
+                                with Horizontal(classes="settings-row"):
+                                    yield Label("Start on tab")
+                                    yield Select(
+                                        _STARTUP_TAB_CHOICES,
+                                        value=(self.settings.default_start_tab
+                                               if self.settings.default_start_tab in TAB_ORDER
+                                               else "tab-dashboard"),
+                                        allow_blank=False, id="settings-default-tab",
+                                    )
                                 yield Label("Google account", classes="pane-title-text")
                                 yield Button("Re-authorize Google account", id="settings-reauth-google")
                                 yield Static(
@@ -3335,6 +3361,12 @@ class GoogleTUI(App):
             if event.value == self.settings.browser_start_page:
                 return
             self.settings.browser_start_page = event.value
+            save_settings(self.settings)
+            return
+        if event.select.id == "settings-default-tab":
+            if event.value == self.settings.default_start_tab:
+                return
+            self.settings.default_start_tab = event.value
             save_settings(self.settings)
             return
         if event.select.id == "drive-source-select":

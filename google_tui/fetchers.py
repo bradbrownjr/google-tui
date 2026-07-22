@@ -19,10 +19,8 @@ gopher/gemini use only the stdlib (``socket``/``ssl``/``hashlib``).
 from __future__ import annotations
 
 import calendar
-import csv
 import datetime as dt
 import hashlib
-import io
 import re
 import socket
 import ssl
@@ -514,41 +512,46 @@ def fetch_geoip_location(timeout: int = 10) -> str:
 
 
 def fetch_stocks(symbols: list[str], timeout: int = 15) -> list[dict]:
-    """Latest quotes for a list of ticker symbols via Stooq's free CSV quote
-    endpoint (no API key). A bare symbol (no ``.``) is assumed to be a
-    US-listed ticker — Stooq requires an exchange suffix (``aapl.us``);
-    anything already carrying one (a non-US symbol) passes through as-is.
-    Returns a list of ``{"symbol", "price", "change", "change_pct"}``, in
-    Stooq's response order; a symbol Stooq doesn't recognize is just absent
-    from the result rather than raising, so one bad symbol among several
-    doesn't blank the whole card.
+    """Latest quotes for a list of ticker symbols via Yahoo Finance's public
+    chart endpoint (``query1.finance.yahoo.com/v8/finance/chart/<SYMBOL>``)
+    — no API key. Used to hit Stooq's CSV quote-list endpoint instead, but
+    that turned out to have been pulled entirely (a bare ``/q/l/`` request
+    now 404s straight from Stooq's own server, confirmed 2026-07-22); Yahoo's
+    *bulk* ``v7/finance/quote`` endpoint is the natural replacement but now
+    401s without an auth cookie/crumb this module doesn't carry, so this
+    fetches one symbol per request instead. Change/change_pct are computed
+    against the previous close (the standard "today's move" a ticker
+    display shows), not the old Stooq-based calc's today's-open baseline.
+    Returns a list of ``{"symbol", "price", "change", "change_pct"}`` — a
+    symbol Yahoo doesn't recognize (or a request that fails) is just skipped
+    rather than raising, so one bad symbol among several doesn't blank the
+    whole card.
     """
-    if not symbols:
-        return []
-    qs = ",".join(s.strip().lower() if "." in s.strip() else f"{s.strip().lower()}.us"
-                  for s in symbols if s.strip())
-    try:
-        resp = requests.get(
-            "https://stooq.com/q/l/",
-            params={"s": qs, "f": "sd2t2ohlcv", "e": "csv"},
-            timeout=timeout, headers={"User-Agent": DEFAULT_USER_AGENT})
-    except requests.RequestException as e:
-        raise BrowserFetchError(f"Stock quote fetch failed: {e}") from e
-    if resp.status_code >= 400:
-        raise BrowserFetchError(f"HTTP {resp.status_code} fetching stock quotes")
     out = []
-    for row in csv.DictReader(io.StringIO(resp.text)):
-        try:
-            close = float(row["Close"])
-            open_ = float(row["Open"])
-        except (KeyError, ValueError, TypeError):
+    for raw in symbols:
+        symbol = raw.strip().upper()
+        if not symbol:
             continue
-        change = close - open_
+        try:
+            resp = requests.get(
+                f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}",
+                timeout=timeout, headers={"User-Agent": DEFAULT_USER_AGENT})
+        except requests.RequestException:
+            continue
+        if resp.status_code >= 400:
+            continue
+        result = ((resp.json().get("chart") or {}).get("result") or [None])[0]
+        meta = (result or {}).get("meta") or {}
+        price = meta.get("regularMarketPrice")
+        prev_close = meta.get("chartPreviousClose", meta.get("previousClose"))
+        if price is None or not prev_close:
+            continue
+        change = price - prev_close
         out.append({
-            "symbol": (row.get("Symbol") or "").upper(),
-            "price": close,
+            "symbol": symbol,
+            "price": price,
             "change": change,
-            "change_pct": (change / open_ * 100) if open_ else 0.0,
+            "change_pct": change / prev_close * 100,
         })
     return out
 
