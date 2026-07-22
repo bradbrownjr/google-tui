@@ -2,9 +2,10 @@
 WORD OF THE DAY, PICTURE OF THE DAY -- ROADMAP P4, 2026-07-19) populate from
 their fetchers (mocked here, real ones live in fetchers.py) once enabled +
 configured, and the two link-bearing cards' Enter action opens the right URL
-in the Browser tab. All four cards start disabled by default (Settings.
-dashboard_panes_enabled), so this scenario explicitly opts them in --
-unlike every other pilot scenario, which never touches them at all.
+in the Browser tab. All four cards are enabled by default (Settings.
+dashboard_panes_enabled) as of 2026-07-22; this scenario still sets
+dashboard_panes_enabled/weather_location/stock_symbols explicitly so its
+assertions don't depend on Settings' current defaults.
 
 Usage: python -m tests.pilot.dashboard_external_cards
 """

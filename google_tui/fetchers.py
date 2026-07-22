@@ -454,6 +454,31 @@ def fetch_weather(location: str, timeout: int = 15) -> dict:
     }
 
 
+def fetch_geoip_location(timeout: int = 10) -> str:
+    """Best-effort "City, Region" guess from the caller's public IP, via
+    ipapi.co's free keyless endpoint. Used as the WEATHER card's default
+    location when Settings.weather_location is unset -- see GoogleTUI.
+    _resolve_weather_location, which falls back to a fixed default rather
+    than surfacing this as a user-facing error, since an IP geolocation miss
+    isn't actionable by the user.
+    """
+    try:
+        resp = requests.get("https://ipapi.co/json/", timeout=timeout,
+                             headers={"User-Agent": DEFAULT_USER_AGENT})
+    except requests.RequestException as e:
+        raise BrowserFetchError(f"GeoIP lookup failed: {e}") from e
+    if resp.status_code >= 400:
+        raise BrowserFetchError(f"HTTP {resp.status_code} from GeoIP lookup")
+    data = resp.json()
+    if data.get("error"):
+        raise BrowserFetchError(data.get("reason") or "GeoIP lookup failed")
+    city = data.get("city")
+    region = data.get("region_code") or data.get("region")
+    if not city:
+        raise BrowserFetchError("GeoIP lookup returned no city")
+    return f"{city}, {region}" if region else city
+
+
 def fetch_stocks(symbols: list[str], timeout: int = 15) -> list[dict]:
     """Latest quotes for a list of ticker symbols via Stooq's free CSV quote
     endpoint (no API key). A bare symbol (no ``.``) is assumed to be a

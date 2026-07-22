@@ -51,13 +51,14 @@ FAKE_CONTACTS: list[dict] = []
 
 FAKE_CALENDARS = [{"id": "primary", "backgroundColor": "#039BE5", "selected": True}]
 
-# Dashboard external cards (2026-07-19) -- these are only ever fetched when
-# their card is enabled AND (for weather/stocks) configured, which no default
-# Settings() is, so most scenarios never touch these; mocked here anyway on
-# base_patches()' own "zero live API calls, ever" principle, in case a future
-# scenario enables one without remembering to add its own patch.
+# Dashboard external cards (2026-07-19, all four enabled by default as of
+# 2026-07-22) -- fetched by every scenario's startup live refresh now, so
+# these (and the GeoIP lookup weather falls back to when a scenario doesn't
+# set weather_location) are always mocked, on base_patches()' own "zero live
+# API calls, ever" principle.
 FAKE_WEATHER = {"location": "Testville, TS", "temp_f": 72.0, "wind_mph": 5.0,
                 "condition": "Clear sky", "high_f": 78.0, "low_f": 60.0}
+FAKE_GEOIP_LOCATION = "Testville, TS"
 FAKE_STOCKS = [{"symbol": "AAPL", "price": 123.45, "change": 1.23, "change_pct": 1.01}]
 FAKE_WORD_OF_DAY = {"word": "quixotic", "definition": "Exceedingly idealistic; unrealistic.",
                      "link": "https://www.merriam-webster.com/word-of-the-day"}
@@ -108,6 +109,7 @@ def base_patches() -> list:
         patch.object(gauth, "mark_read", return_value=None),
         patch.object(gauth, "set_task_status", return_value=None),
         patch.object(fetchers, "fetch_weather", return_value=FAKE_WEATHER),
+        patch.object(fetchers, "fetch_geoip_location", return_value=FAKE_GEOIP_LOCATION),
         patch.object(fetchers, "fetch_stocks", return_value=FAKE_STOCKS),
         patch.object(fetchers, "fetch_word_of_day", return_value=FAKE_WORD_OF_DAY),
         patch.object(fetchers, "fetch_wiki_potd", return_value=FAKE_WIKI_POTD),

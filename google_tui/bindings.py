@@ -417,9 +417,9 @@ MAIL TAB
   Drafts instead. Both queue offline and replay on reconnect.
 
 DASHBOARD TAB (card grid + Hermes; Google-native cards 2026-07-17, external
-cards 2026-07-19. Settings → Dashboard lets you enable/disable any card and
-configure Weather/Stocks — that checklist is a "library" future cards can
-still grow into.)
+cards 2026-07-19. All cards are enabled by default; Settings → Dashboard
+lets you enable/disable any card and configure Weather/Stocks — that
+checklist is a "library" future cards can still grow into.)
   Today card:   today's events (all-day + timed); Enter/Space open detail,
                 n new event, / search (live filter over summary/description)
   Tasks card:   tasks grouped Overdue / Due today / Upcoming / No due date /
@@ -429,9 +429,11 @@ still grow into.)
   News card:    top headlines from your subscribed feeds, rotating; Enter/
                 Space opens the entry
   Weather card: current conditions (Open-Meteo, no API key) for the location
-                set in Settings → Dashboard; disabled until one is set
+                set in Settings → Dashboard, defaulting to one guessed from
+                your IP (or Portland, ME if that fails) when unset
   Stocks card:  latest quotes (Stooq, no API key) for the symbols set in
-                Settings → Dashboard; disabled until at least one is set
+                Settings → Dashboard, defaulting to GOOG/MSFT/AAPL; clear
+                the symbol list there to turn the card's fetch off
   Word of the day card:
                 today's word + definition (Merriam-Webster); Enter opens the
                 full dictionary entry in the Browser tab
@@ -538,8 +540,12 @@ SETTINGS TAB
                 SearXNG instance URL, then save (Search)
   Input+Button  Set/save the Routes API key used by the Navigation tab
                 (Navigation)
+  Input+Button  Set/save the Weather card's location (blank = auto-detect
+                via GeoIP, or Portland, ME) and the Stocks card's ticker
+                list (default GOOG/MSFT/AAPL; blank disables) (Dashboard)
   Checklist     Enable/disable Dashboard cards (Today/Tasks/Mail/News/
-                Hermes) — at least one stays enabled (Dashboard)
+                Weather/Stocks/Word of the Day/Picture of the Day/Hermes) —
+                all enabled by default, at least one stays enabled (Dashboard)
 
 CONTACTS TAB
   Type to search    Live fuzzy filter (name or email) over your fetched

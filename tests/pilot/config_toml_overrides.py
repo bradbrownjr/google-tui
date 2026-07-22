@@ -28,11 +28,10 @@ from tests.pilot.fakes import applied, base_patches  # noqa: E402
 
 async def run() -> None:
     app = GoogleTUI()
-    # Settings.dashboard_panes_enabled defaults to only 5 of the 9 cards
-    # (dash-weather/dash-stocks/dash-word/dash-potd start opt-in) -- enable
-    # everything so _dash_enabled_ids below isn't also filtering on top of
-    # the custom pane_order, which would make the assertion about ORDER
-    # ambiguous with the separate enable/disable feature.
+    # Settings.dashboard_panes_enabled defaults to every card as of
+    # 2026-07-22, but set it explicitly anyway so this assertion about ORDER
+    # doesn't depend on that default and stays unambiguous with the separate
+    # enable/disable feature (_dash_enabled_ids filtering on top of it).
     app.settings.dashboard_panes_enabled = list(DASH_PANE_IDS)
 
     # Loaded correctly off disk before the app even starts.

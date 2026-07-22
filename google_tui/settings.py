@@ -66,19 +66,28 @@ class Settings:
     quote_on_reply: bool = True  # prepend a "> "-quoted prior message to reply/reply-all compose bodies (Gmail's web client does this by default too)
     # Dashboard tab card library (2026-07-18, Settings -> Dashboard): which of
     # the Dashboard's cards are enabled. Default is every currently-shipped
-    # card (matches pre-toggle behavior). Ids match main.py's DASH_PANE_IDS --
-    # a stale id here (from a since-removed card) is filtered out defensively
-    # by GoogleTUI._apply_dashboard_panes_enabled, not here, since settings.py
-    # doesn't know about main.py's card registry.
+    # card, WEATHER/STOCKS/WORD OF THE DAY/PICTURE OF THE DAY included as of
+    # 2026-07-22 (they now have sensible zero-config defaults below, so an
+    # empty-state row on a fresh install would just be needless friction).
+    # Ids match main.py's DASH_PANE_IDS -- a stale id here (from a
+    # since-removed card) is filtered out defensively by GoogleTUI.
+    # _apply_dashboard_panes_enabled, not here, since settings.py doesn't
+    # know about main.py's card registry. Toggle any card off from
+    # Settings -> Dashboard.
     dashboard_panes_enabled: list[str] = field(
-        default_factory=lambda: ["events", "tasks", "dash-mail", "dash-news", "hermes"])
-    # Dashboard "external cards" config (ROADMAP P4, 2026-07-19). Both start
-    # unset/empty on purpose: dash-weather/dash-stocks are excluded from
-    # dashboard_panes_enabled's default above too, so a fresh install shows
-    # neither card until the user opts in from Settings -> Dashboard (an
-    # unconfigured weather/stocks card would just be an empty-state row).
-    weather_location: str | None = None  # free-text, e.g. "Seattle, WA" (Open-Meteo geocodes it)
-    stock_symbols: list[str] = field(default_factory=list)  # e.g. ["AAPL", "MSFT"]
+        default_factory=lambda: ["events", "tasks", "dash-mail", "dash-news",
+                                  "dash-weather", "dash-stocks", "dash-word", "dash-potd", "hermes"])
+    # Dashboard "external cards" config (ROADMAP P4, 2026-07-19). Left unset
+    # on purpose: an unset weather_location means "auto" -- GoogleTUI.
+    # _resolve_weather_location guesses a location from the caller's IP
+    # (GeoIP), falling back to "Portland, ME" if that lookup fails or is
+    # unavailable -- so the WEATHER card shows real conditions out of the
+    # box. Set a location below (Settings -> Dashboard) to override the
+    # guess. stock_symbols defaults to a well-known trio below rather than
+    # empty for the same "useful out of the box" reason; clear the Input
+    # there to turn the STOCKS card's fetch off entirely.
+    weather_location: str | None = None  # free-text, e.g. "Seattle, WA" (Open-Meteo geocodes it); None = auto (GeoIP or Portland, ME)
+    stock_symbols: list[str] = field(default_factory=lambda: ["GOOG", "MSFT", "AAPL"])  # e.g. ["AAPL", "MSFT"]; empty disables the card
     # Snoozed threads (ROADMAP P2): {thread_id: remind-at ISO datetime}. Gmail
     # has no native snooze, so the app removes INBOX now and re-adds it when
     # the time passes (checked each online refresh — see

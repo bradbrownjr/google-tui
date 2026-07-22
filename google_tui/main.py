@@ -199,6 +199,12 @@ _NEWS_SEARCH_DEBOUNCE = 0.15
 # _live_refresh_thread's own comment for how this plays out per-card.
 _DASH_EXTRA_UNCHANGED = object()
 
+# WEATHER card fallback when Settings.weather_location is unset AND a GeoIP
+# guess (GoogleTUI._resolve_weather_location) also fails/is unavailable --
+# picked as a real, working default rather than an empty string so the card
+# always has something to show out of the box.
+_DEFAULT_WEATHER_LOCATION = "Portland, ME"
+
 _PREVIEWABLE_PREFIXES = (
     "text/",
     "application/vnd.google-apps.document",
@@ -1741,6 +1747,11 @@ class GoogleTUI(App):
         # fetch_word_of_day / fetchers.fetch_wiki_potd.
         self._word_of_day: dict | None = None
         self._wiki_potd: dict | None = None
+        # WEATHER card's resolved default location, cached for the app's
+        # lifetime once looked up -- see _resolve_weather_location. None
+        # until the first refresh needs it (the caller's IP isn't going to
+        # move mid-session, so one GeoIP lookup per launch is enough).
+        self._geoip_location: str | None = None
         self._browser_history: list[BrowserHistoryEntry] = []
         self._browser_hist_pos: int = -1
         self._browser_tofu: fetchers.GeminiTofuStore | None = None
@@ -2621,7 +2632,7 @@ class GoogleTUI(App):
                                     yield Label("Weather location")
                                     yield Input(
                                         value=self.settings.weather_location or "",
-                                        placeholder="e.g. Seattle, WA",
+                                        placeholder="blank = auto-detect (GeoIP, or Portland, ME)",
                                         id="settings-weather-location",
                                     )
                                 with Horizontal(classes="settings-row"):
@@ -2634,9 +2645,13 @@ class GoogleTUI(App):
                                 yield Button("Save card settings", id="settings-save-dashboard-cards")
                                 yield Static(
                                     "Weather (Open-Meteo) and stock quotes (Stooq) need no API key "
-                                    "or account -- just a location/symbol list. Word of the day and "
-                                    "Wikipedia's picture of the day need no configuration at all; "
-                                    "enable them below like any other card.",
+                                    "or account. Weather defaults to a location guessed from your IP "
+                                    "(or Portland, ME if that fails) until you set one above; stocks "
+                                    "default to GOOG, MSFT, AAPL -- edit either field and Save to "
+                                    "change them, or clear the symbols field to turn STOCKS off. Word "
+                                    "of the day and Wikipedia's picture of the day need no "
+                                    "configuration at all. All cards are enabled by default; toggle "
+                                    "any off below.",
                                     id="settings-dashboard-config-note", classes="muted")
                                 yield Label("Dashboard cards", classes="pane-title-text")
                                 yield Static(
@@ -2852,19 +2867,41 @@ class GoogleTUI(App):
         self._cache.put_many("task", {f"{t['_list']}-{t['id']}": t for t in tasks})
         self._cache.put_many("tasklist", {tl["id"]: tl for tl in tasklists})
 
+    def _resolve_weather_location(self) -> str:
+        """WEATHER card's effective location when Settings.weather_location
+        is unset: a one-time GeoIP guess (fetchers.fetch_geoip_location),
+        cached in self._geoip_location for the rest of the app's lifetime,
+        falling back to _DEFAULT_WEATHER_LOCATION if the lookup fails (no
+        network, offline, upstream down, etc). Never raises -- the WEATHER
+        card being enabled by default shouldn't cost a startup error toast
+        just because GeoIP is unreachable.
+        """
+        if self._geoip_location is not None:
+            return self._geoip_location
+        try:
+            self._geoip_location = fetchers.fetch_geoip_location()
+        except Exception as e:
+            _logger.warning("GeoIP location lookup failed, defaulting to %s: %s",
+                             _DEFAULT_WEATHER_LOCATION, e)
+            self._geoip_location = _DEFAULT_WEATHER_LOCATION
+        return self._geoip_location
+
     def _live_refresh_thread(self) -> None:
         # WEATHER/STOCKS/WORD OF THE DAY/PICTURE OF THE DAY: none of these
         # touch Google at all, so they run before (and regardless of) the
         # auth_broken check below -- no reason a broken Google token should
         # blank cards that have nothing to do with it. Each is separately
         # gated on _dash_enabled_ids so a disabled card doesn't cost a
-        # network round trip every refresh; weather/stocks are additionally
-        # gated on having something to fetch (an unset location/no symbols
-        # would just 400).
+        # network round trip every refresh; stocks is additionally gated on
+        # having symbols to fetch (an empty list would just 400) -- weather
+        # always has a location now (Settings.weather_location, or
+        # _resolve_weather_location's GeoIP/Portland-ME fallback), so it has
+        # no such gate.
         weather = stocks = word_of_day = wiki_potd = _DASH_EXTRA_UNCHANGED
         try:
-            if "dash-weather" in self._dash_enabled_ids and self.settings.weather_location:
-                weather = fetchers.fetch_weather(self.settings.weather_location)
+            if "dash-weather" in self._dash_enabled_ids:
+                loc = self.settings.weather_location or self._resolve_weather_location()
+                weather = fetchers.fetch_weather(loc)
                 self._cache.put("weather", "current", weather)
         except Exception as e:
             self.call_from_thread(self.notify, f"Weather error: {e}", severity="error")
@@ -4838,9 +4875,8 @@ class GoogleTUI(App):
     def _fill_dash_weather(self, weather: dict | None) -> None:
         lst = self.query_one("#dash-weather-list")
         if not weather:
-            msg = ("Set a location in Settings → Dashboard to enable"
-                   if not self.settings.weather_location else "Not available yet")
-            lst.append(ListItem(Label(msg), id="dash-weather-empty"))
+            lst.append(ListItem(Label("Not available yet — check back after the next refresh"),
+                                 id="dash-weather-empty"))
             return
         wind = weather.get("wind_mph")
         wind_str = f"{wind:.0f} mph" if isinstance(wind, (int, float)) else "—"
