@@ -1319,6 +1319,24 @@ _PANE_SEARCH_BARS: dict[str, tuple[str, str | None]] = {
 class GoogleTUI(App):
     CSS = """
     Screen { layout: vertical; }
+    /* ModalScreen's own DEFAULT_CSS is "layout: vertical" with no alignment,
+       so a dialog box smaller than the screen (width/height < 100%, e.g.
+       #reauth-box, #onboarding-box, #snooze-box, ...) anchors top-left
+       instead of floating in the middle of the darkened backdrop. Full-panel
+       modals (bare `.pane`, no size override -- see the #hermes-popup-box
+       note below) are unaffected: Container defaults to width/height 1fr,
+       which still fills 100% of the ModalScreen regardless of align. */
+    ModalScreen { align: center middle; }
+    /* Same darkened backdrop (ModalScreen sets background: $background 60%)
+       swallows the resting `.pane` border color ($panel-darken-2 below) on
+       reduced-color terminals -- worse than dim, often invisible at 16
+       colors or none at all. Every dialog box is the one thing on screen
+       that's supposed to draw the eye, so give it the same $accent border
+       `.pane-active` uses for "this is the focused one" -- reusing that
+       existing visual language instead of inventing a new one. Scoped to
+       ModalScreen descendants so the main screen's dashboard grid (where
+       active/inactive panes are a real distinction) is untouched. */
+    ModalScreen .pane { border: round $accent; }
     #main-tabs { height: 1fr; }
     #main-tabs > ContentTabs { height: 1; background: $primary; }
     #main-tabs > ContentTabs Underline { display: none; }
@@ -1443,8 +1461,12 @@ class GoogleTUI(App):
        on a short terminal. The URL itself is ~400 chars and must wrap, not be
        clipped — a clipped URL is an unusable URL. */
     #reauth-box { width: 90%; height: auto; max-height: 90%; overflow-y: auto; }
+    #reauth-instructions-1 { margin-bottom: 1; }
     #reauth-url { width: 1fr; height: auto; color: $accent; margin: 1 0; }
     #reauth-copy-help { height: auto; margin-bottom: 1; }
+    #reauth-instructions-2 { margin-bottom: 1; }
+    #reauth-code-input { margin-bottom: 1; }
+    #reauth-status { margin-top: 1; }
     #onboarding-scroll { height: 1fr; }
     #unlock-error { height: 1; }
 
@@ -1457,6 +1479,12 @@ class GoogleTUI(App):
        between these two rules, for the same reason it does above). */
     .pane.ascii-border, .section.ascii-border { border: ascii $panel-darken-2; }
     .pane-active.ascii-border { border: ascii $accent; }
+    /* Dialog boxes keep the $accent "stand out" border in ASCII-safe mode
+       too (just swapping round-corner box-drawing for plain +/-/| chars,
+       same as every other .ascii-border rule here) -- this is the mode the
+       "stand out" fix matters most for, so it can't regress back to
+       $panel-darken-2 the moment ascii-border is toggled on. */
+    ModalScreen .pane.ascii-border { border: ascii $accent; }
     #hermes-log.ascii-border { border: ascii $panel-darken-1; }
     #drive-list-col.ascii-border { border: ascii $panel-darken-1; }
     #drive-preview-col.ascii-border { border: ascii $panel-darken-1; }
