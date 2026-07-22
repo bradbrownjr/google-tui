@@ -96,12 +96,31 @@ class Settings:
     snoozed: dict = field(default_factory=dict)
 
 
+# Pre-2026-07-22 defaults for the two fields load_settings migrates below.
+# save_settings always writes every field (asdict), so an existing install's
+# settings.json already has these two keys pinned at their OLD default --
+# the new dataclass defaults above never take effect for it, only for a
+# settings.json that doesn't exist yet. See load_settings' migration.
+_LEGACY_DASHBOARD_PANES_DEFAULT = ["events", "tasks", "dash-mail", "dash-news", "hermes"]
+
+
 def load_settings() -> Settings:
     try:
         data = json.loads(SETTINGS_PATH.read_text())
     except (FileNotFoundError, json.JSONDecodeError):
         return Settings()
-    return Settings(**{k: v for k, v in data.items() if k in Settings.__dataclass_fields__})
+    settings = Settings(**{k: v for k, v in data.items() if k in Settings.__dataclass_fields__})
+    # One-time migration (2026-07-22): move installs still sitting on the old
+    # "external Dashboard cards are opt-in, stock_symbols always starts
+    # empty" defaults onto the new "everything enabled, useful out of the
+    # box" ones -- only when the saved value still matches the OLD default
+    # exactly, so any deliberate customization (a trimmed pane list, a
+    # symbol list cleared on purpose) is left untouched.
+    if data.get("dashboard_panes_enabled") == _LEGACY_DASHBOARD_PANES_DEFAULT:
+        settings.dashboard_panes_enabled = Settings.__dataclass_fields__["dashboard_panes_enabled"].default_factory()
+    if data.get("stock_symbols") == []:
+        settings.stock_symbols = Settings.__dataclass_fields__["stock_symbols"].default_factory()
+    return settings
 
 
 def save_settings(settings: Settings) -> None:

@@ -406,17 +406,48 @@ _WMO_WEATHER_CODES = {
 }
 
 
+# US state abbreviation -> full name, as Open-Meteo's geocoder returns
+# admin1 spelled out ("Maine", never "ME"). Used by fetch_weather to pick the
+# right same-named town out of a "City, ST" query -- see its docstring.
+_US_STATE_ABBREV = {
+    "AL": "Alabama", "AK": "Alaska", "AZ": "Arizona", "AR": "Arkansas", "CA": "California",
+    "CO": "Colorado", "CT": "Connecticut", "DE": "Delaware", "FL": "Florida", "GA": "Georgia",
+    "HI": "Hawaii", "ID": "Idaho", "IL": "Illinois", "IN": "Indiana", "IA": "Iowa",
+    "KS": "Kansas", "KY": "Kentucky", "LA": "Louisiana", "ME": "Maine", "MD": "Maryland",
+    "MA": "Massachusetts", "MI": "Michigan", "MN": "Minnesota", "MS": "Mississippi", "MO": "Missouri",
+    "MT": "Montana", "NE": "Nebraska", "NV": "Nevada", "NH": "New Hampshire", "NJ": "New Jersey",
+    "NM": "New Mexico", "NY": "New York", "NC": "North Carolina", "ND": "North Dakota", "OH": "Ohio",
+    "OK": "Oklahoma", "OR": "Oregon", "PA": "Pennsylvania", "RI": "Rhode Island", "SC": "South Carolina",
+    "SD": "South Dakota", "TN": "Tennessee", "TX": "Texas", "UT": "Utah", "VT": "Vermont",
+    "VA": "Virginia", "WA": "Washington", "WV": "West Virginia", "WI": "Wisconsin", "WY": "Wyoming",
+    "DC": "District of Columbia",
+}
+
+
 def fetch_weather(location: str, timeout: int = 15) -> dict:
     """Current conditions for a free-text location (e.g. "Seattle, WA") via
     Open-Meteo — geocoding + forecast, both free and keyless. Returns
     ``{"location", "temp_f", "wind_mph", "condition", "high_f", "low_f"}``.
     Raises ``BrowserFetchError`` if the location can't be resolved or either
     call fails, same convention as this module's other fetchers.
+
+    Open-Meteo's geocoder matches ``name`` as a single token against its
+    place-name index -- passing the whole "City, ST" string through (the
+    original approach here) returns zero results for plenty of real towns
+    (confirmed for "Buxton, ME": query as typed gives nothing, but "Buxton"
+    alone finds it, ranked below several same-named towns in other states).
+    So the city and region are split on the first comma; region (if given)
+    is resolved through ``_US_STATE_ABBREV`` and matched against each
+    candidate's ``admin1`` to pick the right one out of several
+    same-named hits, falling back to the top-ranked result if none matches.
     """
+    city, _, region = location.partition(",")
+    city = city.strip() or location
+    region = region.strip()
     try:
         geo_resp = requests.get(
             "https://geocoding-api.open-meteo.com/v1/search",
-            params={"name": location, "count": 1}, timeout=timeout,
+            params={"name": city, "count": 10 if region else 1}, timeout=timeout,
             headers={"User-Agent": DEFAULT_USER_AGENT})
     except requests.RequestException as e:
         raise BrowserFetchError(f"Weather geocoding failed: {e}") from e
@@ -426,6 +457,9 @@ def fetch_weather(location: str, timeout: int = 15) -> dict:
     if not results:
         raise BrowserFetchError(f"No location found for {location!r}")
     hit = results[0]
+    if region:
+        wanted = _US_STATE_ABBREV.get(region.upper(), region).lower()
+        hit = next((r for r in results if wanted in (r.get("admin1") or "").lower()), hit)
     resolved = ", ".join(p for p in (hit.get("name"), hit.get("admin1"), hit.get("country")) if p)
     try:
         resp = requests.get(
