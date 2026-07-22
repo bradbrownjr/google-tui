@@ -15,7 +15,7 @@ from tests.isolate import isolate
 
 isolate(prefix="google-tui-pilot-feed-picker-")
 
-from textual.widgets import ListView, SelectionList, TabbedContent  # noqa: E402
+from textual.widgets import SelectionList, TabbedContent  # noqa: E402
 
 from google_tui.main import GoogleTUI, POPULAR_FEEDS  # noqa: E402
 from tests.pilot.fakes import applied, base_patches  # noqa: E402
@@ -43,9 +43,9 @@ async def run() -> None:
             await pilot.pause()
 
             # ESPN shows up in the plain feed list already (pre-subscribed).
-            feed_list = app.query_one("#settings-feed-list", ListView)
-            assert any(getattr(i, "feed_url", None) == _ESPN_URL for i in feed_list.children), \
-                [getattr(i, "feed_url", None) for i in feed_list.children]
+            # #settings-feed-list is a DataTable now (ROADMAP P3); its row-key
+            # -> url map is _feeds_by_cid.
+            assert _ESPN_URL in app._feeds_by_cid.values(), app._feeds_by_cid
 
             await pilot.click("#settings-browse-feeds")
             await pilot.pause()
@@ -82,8 +82,7 @@ async def run() -> None:
 
             assert _ARS_URL in app.settings.feed_urls, app.settings.feed_urls
             assert _ESPN_URL not in app.settings.feed_urls, app.settings.feed_urls
-            feed_list = app.query_one("#settings-feed-list", ListView)
-            urls_shown = {getattr(i, "feed_url", None) for i in feed_list.children}
+            urls_shown = set(app._feeds_by_cid.values())
             assert _ARS_URL in urls_shown, urls_shown
             assert _ESPN_URL not in urls_shown, urls_shown
 

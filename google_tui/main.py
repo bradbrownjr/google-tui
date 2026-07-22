@@ -483,31 +483,6 @@ def _pending_mutation_summary(mutation: dict) -> str:
     return label
 
 
-def _feed_list_item(url: str) -> ListItem:
-    """Build one row for Settings' feed-subscription ListView.
-
-    Feed URLs are full of ``:``/``/`` characters that ``_mk_id`` sanitizes
-    away, so the widget id alone can't be reversed back to the original URL
-    (unlike, say, a Google Calendar event id). The raw URL is stashed as a
-    plain attribute on the ``ListItem`` instead — Textual widgets are regular
-    objects, so this is just attribute assignment, not a special API — and
-    read back by ``_remove_selected_feed``.
-    """
-    # markup=False: Label parses its string as Textual/Rich console markup by
-    # default (see AGENTS.md's TabPane-title NOTE for the flip side of this),
-    # and a feed URL is arbitrary external input that could legitimately
-    # contain "[" — left as markup, Textual's Content.from_markup() treats
-    # "[anything]" as a style-tag span and silently drops the brackets
-    # instead of displaying them literally. Confirmed `rich.markup.escape()`
-    # doesn't reliably fix this (it didn't even touch "[Feed One]" — its
-    # tag-detection regex doesn't consider a space tag-like — and
-    # Content.from_markup() ate it anyway); markup=False sidesteps the
-    # question entirely.
-    item = ListItem(Label(url, markup=False), id=_mk_id("sf", url))
-    item.feed_url = url
-    return item
-
-
 def _fuzzy_filter_contacts(contacts: list[dict], query: str, limit: int | None = None,
                            threshold: int = 60) -> list[dict]:
     """Shared client-side fuzzy filter used by both the Contacts tab's live
@@ -1797,7 +1772,6 @@ class GoogleTUI(App):
         self._status_base: str = ""
         self._loading_modal: LoadingModal | None = None
         self._mail_apply_gen = 0
-        self._news_apply_gen = 0
         self._news_by_cid: dict[str, dict] = {}
         # Full combined-feed entry list from the last _apply_news_data call —
         # backs the News tab's search filter (Input#news-search) the same
@@ -1839,7 +1813,6 @@ class GoogleTUI(App):
         # to fetch. Reset to the root list whenever "B" is pressed.
         self._bookmark_current_list: list[dict] = self.settings.browser_bookmarks
         self._bookmark_parent_stack: list[list[dict]] = []
-        self._bookmark_render_gen: int = 0
         # See _ESCAPE_ALT_ARROW_ACTIONS above / on_key below: timestamp of the
         # most recent bare "escape" Key event, used to detect the terminals
         # that encode Alt+Arrow as a double-ESC sequence Textual's parser
@@ -1888,6 +1861,9 @@ class GoogleTUI(App):
         # To-field autocomplete reads self._contacts_cache directly.
         self._contacts_cache: list[dict] = []
         self._contacts_by_cid: dict[str, dict] = {}
+        # Settings-tab list row-key -> value maps (DataTable rows, ROADMAP P3).
+        self._feeds_by_cid: dict[str, str] = {}
+        self._remote_hosts_by_cid: dict[str, tuple] = {}
         self._contacts_fetch_started = False
         self._contacts_search_timer = None
         self._email_search_timer = None
@@ -2414,10 +2390,10 @@ class GoogleTUI(App):
                         yield DataTable(id="task-list", cursor_type="row", zebra_stripes=True)
                     with Container(id="dash-mail", classes="pane"):
                         yield self._pane_title_row("MAIL  (unread, enter=open)", 0)
-                        yield ListView(id="dash-mail-list")
+                        yield DataTable(id="dash-mail-list", cursor_type="row", zebra_stripes=True)
                     with Container(id="dash-news", classes="pane"):
                         yield self._pane_title_row("NEWS  (top headlines)", 0)
-                        yield ListView(id="dash-news-list")
+                        yield DataTable(id="dash-news-list", cursor_type="row", zebra_stripes=True)
                     with Container(id="dash-weather", classes="pane"):
                         yield self._pane_title_row("WEATHER", 0)
                         yield ListView(id="dash-weather-list")
@@ -2496,7 +2472,7 @@ class GoogleTUI(App):
                         yield TabCyclingInput(placeholder="URL, or type to search…", id="browser-url")
                         yield Button("Go", id="browser-go")
                         yield Static("", id="browser-status")
-                    yield ListView(id="browser-bookmarks")
+                    yield DataTable(id="browser-bookmarks", cursor_type="row", zebra_stripes=True)
                     yield DocumentView(id="browser-doc")
             with TabPane(_tab_label("News", 6, self.settings.ascii_mode), id="tab-news"):
                 with Container(id="news-section", classes="section"):
@@ -2596,7 +2572,8 @@ class GoogleTUI(App):
                                     "source picker, \"+ Add remote host…\"):",
                                     classes="muted",
                                 )
-                                yield ListView(id="settings-remote-hosts-list")
+                                yield DataTable(id="settings-remote-hosts-list",
+                                                cursor_type="row", zebra_stripes=True)
                                 with Horizontal(classes="btnrow"):
                                     yield Button("Remove selected host", id="settings-remove-remote-host")
                                 with Horizontal(classes="settings-row"):
@@ -2660,10 +2637,10 @@ class GoogleTUI(App):
                         with TabPane("News Feeds", id="settings-tab-feeds"):
                             with VerticalScroll(id="settings-feeds-scroll"):
                                 yield Label("News feeds (RSS/Atom)", classes="pane-title-text")
-                                yield ListView(
-                                    *[_feed_list_item(u) for u in self.settings.feed_urls],
-                                    id="settings-feed-list",
-                                )
+                                # Populated by _refresh_feed_list (on_mount +
+                                # after every subscribe/unsubscribe).
+                                yield DataTable(id="settings-feed-list",
+                                                cursor_type="row", zebra_stripes=True)
                                 with Horizontal(classes="settings-row"):
                                     yield Input(placeholder="https://example.com/feed.xml", id="settings-feed-url")
                                     yield Button("Add feed", id="settings-add-feed")
@@ -3569,12 +3546,11 @@ class GoogleTUI(App):
 
     async def _apply_mail_data_async(self, gen, threads, events, tasks, tasklists, inbox_threads=None) -> None:
         await self.query_one("#email-list").clear()
-        await self.query_one("#dash-mail-list").clear()
         if gen != self._mail_apply_gen:
             return  # superseded by a newer _apply_mail_data call
-        # #event-list and #task-list are DataTables now (rebuilt synchronously
-        # below via _fill_today_events / _append_task_items); only the still-
-        # ListView #email-list and #dash-mail-list need the awaited clear.
+        # #event-list, #task-list and #dash-mail-list are DataTables now (rebuilt
+        # synchronously below); only the still-ListView #email-list needs the
+        # awaited clear (Phase 4 empties this worker entirely).
 
         self._threads_cache = {t["threadId"]: t for t in threads}
         self._email_selected &= set(self._threads_cache)
@@ -3710,6 +3686,7 @@ class GoogleTUI(App):
         elif tab_id == "tab-settings":
             self._update_settings_cache_info()
             self._refresh_remote_hosts_list()
+            self._refresh_feed_list()
             self.query_one("#settings-encrypt-switch").focus()
         elif tab_id == "tab-contacts":
             self.query_one("#contacts-search").focus()
@@ -3826,7 +3803,7 @@ class GoogleTUI(App):
         self._bookmark_current_list = self.settings.browser_bookmarks
         self._bookmarks_render()
         try:
-            lv = self.query_one("#browser-bookmarks", ListView)
+            lv = self.query_one("#browser-bookmarks", DataTable)
             lv.remove_class("hidden")
             lv.focus()
         except Exception:
@@ -4839,17 +4816,20 @@ class GoogleTUI(App):
         on_list_view_selected's dm- branch. markup=False on the subject rows
         for the same reason the News list uses it — subjects are arbitrary
         external text that Textual's markup parser would otherwise choke on."""
-        lst = self.query_one("#dash-mail-list")
         unread = [t for t in threads if t.get("unread")]
-        items = [ListItem(Label(f"📬 {len(unread)} unread"), id="dm-open",
-                          classes="dash-group-header-item")]
+        # A bold "unread count" header row (dm-open, Enter jumps to Mail) then
+        # up to six unread threads. Single flex column; From/Subject/Date are
+        # measured/aligned by DataTable, so no _cell_col padding.
+        rows: list[tuple[str, list]] = [("dm-open", [Text(f"📬 {len(unread)} unread", style="bold")])]
+        seen: set = {"dm-open"}
         for t in unread[:6]:
+            cid = _unique_id(_mk_id("dm", t["threadId"]), seen)
             frm = _format_sender(t.get("from", ""), False)
             subj = t.get("subject") or "(no subject)"
             date_str = _fmt_email_date(t.get("date", ""))
-            items.append(ListItem(Label(f"{_cell_col(frm, 18)} {_cell_col(subj, 30)} {date_str}", markup=False),
-                                  id=_mk_id("dm", t["threadId"])))
-        lst.extend(items)
+            rows.append((cid, [f"{frm}   {subj}   {date_str}"]))
+        list_tables.rebuild_flat_table(self.query_one("#dash-mail-list", DataTable),
+                                       [("Mail", None)], rows, flex_min=20)
 
     def _apply_dashboard_extras(self, weather=_DASH_EXTRA_UNCHANGED, stocks=_DASH_EXTRA_UNCHANGED,
                                  word_of_day=_DASH_EXTRA_UNCHANGED, wiki_potd=_DASH_EXTRA_UNCHANGED) -> None:
@@ -4943,6 +4923,22 @@ class GoogleTUI(App):
         cid = list_tables.current_row_key(self.query_one("#event-list", DataTable)) or ""
         return cid[2:] if cid.startswith("e-") else None
 
+    def _open_dash_list_row(self, cid: str) -> None:
+        """Enter/Space on a Dashboard MAIL or NEWS mini-card row (both
+        DataTables). dm-open jumps to the Mail tab; dm-<threadId> opens the
+        thread; dn-<cid> opens the news entry — the same actions the old
+        on_list_view_selected dm-/dn- branches performed."""
+        if cid == "dm-open":
+            self._goto_tab("tab-mail")
+        elif cid.startswith("dm-"):
+            tid = cid[3:]
+            self.push_screen(ThreadModal(self.svc, tid, thread_ids=[tid], index=0),
+                              self._on_thread_modal_result)
+        elif cid.startswith("dn-"):
+            entry = self._dash_news_by_cid.get(cid)
+            if entry:
+                self.push_screen(NewsEntryModal(entry))
+
     def _open_event_by_id(self, eid: str) -> None:
         # Reconciled so an offline-created (temp-id) event can be opened too.
         for e in self._reconcile_events(getattr(self, "_events_cache", [])):
@@ -4980,17 +4976,13 @@ class GoogleTUI(App):
                 self._open_event_by_id(eid)
         elif pane in ("dash-mail", "dash-news"):
             # Space mirrors Enter on these cards (open the highlighted item) —
-            # neither has a toggle/expand action of its own, so reuse the
-            # on_list_view_selected dispatch for whatever row is highlighted.
+            # neither has a toggle/expand action of its own, so reuse the same
+            # dispatch the DataTable RowSelected handler uses, keyed by the row
+            # under the cursor.
             lst_id = "#dash-mail-list" if pane == "dash-mail" else "#dash-news-list"
-            lst = self.query_one(lst_id)
-            item = lst.highlighted_child
-            if item is not None:
-                # ListView.Selected's 3rd positional arg (index) is required,
-                # not optional -- omitting it (as this call used to) raises
-                # TypeError the moment Space is pressed here, a latent crash
-                # this dashboard-cards session found and fixed in passing.
-                self.on_list_view_selected(ListView.Selected(lst, item, lst.index))
+            cid = list_tables.current_row_key(self.query_one(lst_id, DataTable))
+            if cid:
+                self._open_dash_list_row(cid)
 
     # ---- list selections (Enter) ----
     def on_list_view_selected(self, event: ListView.Selected) -> None:
@@ -5006,23 +4998,6 @@ class GoogleTUI(App):
                 order, index = [tid], 0
             self.push_screen(ThreadModal(self.svc, tid, thread_ids=order, index=index),
                               self._on_thread_modal_result)
-        elif cid.startswith("bm-") or cid == "bm-up":
-            self._bookmark_open_selected()
-        elif cid == "dm-open":
-            # Dashboard MAIL card header row — jump to the full Mail tab.
-            self._goto_tab("tab-mail")
-        elif cid.startswith("dm-"):
-            # Dashboard MAIL card unread row — open that thread directly, the
-            # same ThreadModal the Mail tab's Enter opens.
-            tid = cid[3:]
-            self.push_screen(ThreadModal(self.svc, tid, thread_ids=[tid], index=0),
-                              self._on_thread_modal_result)
-        elif cid.startswith("dn-"):
-            # Dashboard NEWS card row — open the entry (NewsEntryModal), same
-            # as the News tab, via the dn- lookup (distinct from n- ids).
-            entry = self._dash_news_by_cid.get(cid)
-            if entry:
-                self.push_screen(NewsEntryModal(entry))
         elif cid == "dw-open":
             # Dashboard WORD OF THE DAY card — no in-terminal detail view
             # (it's a single short definition already), so Enter opens the
@@ -5223,47 +5198,33 @@ class GoogleTUI(App):
     # ---- browser tab (M2: Web / Gopher / Gemini / Search) ----
 
     def _bookmarks_render(self) -> None:
-        """(Re)populate #browser-bookmarks from self._bookmark_current_list —
-        called on entering/leaving a folder and whenever "B" resets to root.
-        Fire-and-forget: schedules _bookmarks_render_async as a worker (see
-        its docstring for why a bare ListView.clear() can't be used here).
-        """
-        self._bookmark_render_gen += 1
-        gen = self._bookmark_render_gen
-        self.run_worker(self._bookmarks_render_async(gen), exclusive=True, group="bookmarks-apply")
-
-    async def _bookmarks_render_async(self, gen: int) -> None:
-        # ListView.clear() returns an AwaitRemove -- removal isn't synchronous
-        # (AGENTS.md §2's ListView.clear() NOTE, same trap _apply_news_data /
-        # _apply_drive_files_async hit: a fire-and-forget clear() followed by
-        # an immediate re-populate using the same "bm-<idx>" ids intermittently
-        # raises DuplicateIds because the old items haven't finished being
-        # removed yet). Awaiting it here, plus the generation-counter guard
-        # below, is that same established fix.
+        """(Re)populate #browser-bookmarks (a DataTable) from
+        self._bookmark_current_list — called on entering/leaving a folder and
+        whenever "B" resets to root. Synchronous: DataTable.clear() is
+        immediate, so the old awaited-worker + generation-counter (needed only
+        for ListView.clear()'s AwaitRemove and the reused bm-<idx> keys) is
+        gone. Single column; folder/protocol icon + label as a styled Text."""
         try:
-            lv = self.query_one("#browser-bookmarks", ListView)
+            table = self.query_one("#browser-bookmarks", DataTable)
         except Exception:
             return
-        await lv.clear()
-        if gen != self._bookmark_render_gen:
-            return  # superseded by a newer _bookmarks_render call
-        items = []
+        rows: list[tuple[str, list]] = []
         if self._bookmark_parent_stack:
-            items.append(ListItem(Label("📂 .. (up)"), id="bm-up"))
+            rows.append(("bm-up", [Text("📂 .. (up)")]))
         for i, entry in enumerate(self._bookmark_current_list):
             if entry.get("type") == "folder":
-                items.append(ListItem(Label(f"📂 {entry.get('label') or '(folder)'}"), id=f"bm-{i}"))
+                cell = Text(f"📂 {entry.get('label') or '(folder)'}")
             else:
                 icon, color = _bookmark_scheme_style(entry.get("url", ""))
                 label = entry.get("label") or entry.get("url", "")
-                items.append(ListItem(Label(f"[{color}]{icon} {label}[/{color}]"), id=f"bm-{i}"))
-        lv.extend(items)
+                cell = Text(f"{icon} {label}", style=color)
+            rows.append((f"bm-{i}", [cell]))
+        list_tables.rebuild_flat_table(table, [("Bookmarks", None)], rows, flex_min=20)
 
     def _bookmark_open_selected(self) -> None:
-        lst = self.query_one("#browser-bookmarks", ListView)
-        if lst.highlighted_child is None:
+        cid = list_tables.current_row_key(self.query_one("#browser-bookmarks", DataTable)) or ""
+        if not cid:
             return
-        cid = lst.highlighted_child.id or ""
         if cid == "bm-up":
             if self._bookmark_parent_stack:
                 self._bookmark_current_list = self._bookmark_parent_stack.pop()
@@ -5814,6 +5775,10 @@ class GoogleTUI(App):
                         TaskModal(self.svc, t,
                                   self._reconcile_tasks(getattr(self, "_tasks_cache", []))),
                         self._on_task_modal_result)
+        elif table_id in ("dash-mail-list", "dash-news-list"):
+            self._open_dash_list_row(cid)
+        elif table_id == "browser-bookmarks":
+            self._bookmark_open_selected()
         elif table_id == "drive-list":
             if cid == LOAD_MORE_DRIVE_ID:
                 self.action_load_more_drive()
@@ -6497,24 +6462,13 @@ class GoogleTUI(App):
             self._cache.put_many("feed_entry", {e["id"]: e for e in entries})
 
     def _apply_news_data(self, entries: list[dict]) -> None:
-        # Same ListView.clear()-is-async trap as _apply_mail_data_async /
-        # _apply_drive_files_async (AGENTS.md §2): this can run more than
-        # once per session (cache load, live refresh, and again whenever a
-        # feed is added/removed in Settings), so clear+repopulate is a
-        # properly-awaited worker with a generation counter, not a bare
-        # clear() + call_after_refresh.
-        self._news_apply_gen += 1
-        gen = self._news_apply_gen
-        self.run_worker(self._apply_news_data_async(gen, entries), exclusive=True, group="news-apply")
-
-    async def _apply_news_data_async(self, gen: int, entries: list[dict]) -> None:
-        if gen != self._news_apply_gen:
-            return  # superseded by a newer _apply_news_data call
-        # Backs the News tab's search filter (Input#news-search) — same role
-        # as self._threads_cache/self._tasks_cache for Email/Tasks search,
-        # see the module-level NOTE by its declaration in __init__. Deduped by
-        # entry id so a story syndicated across feeds (or a feed listed twice)
-        # neither doubles a headline nor collides two rows' widget ids.
+        # Both #news-list and the Dashboard #dash-news-list are DataTables now,
+        # rebuilt synchronously (clear is immediate), so the old awaited-worker
+        # + generation-counter (needed only for ListView.clear()'s AwaitRemove)
+        # is gone — this runs inline on the main thread even though it can fire
+        # more than once per session (cache load, live refresh, feed add/remove).
+        # Entries are deduped by id so a story syndicated across feeds (or a
+        # feed listed twice) neither doubles a headline nor collides two keys.
         self._news_entries_cache = _dedup_by_key(entries)
         try:
             query = self.query_one("#news-search", Input).value
@@ -6523,7 +6477,6 @@ class GoogleTUI(App):
         visible = _fuzzy_filter_news_entries(entries, query) if query.strip() else entries
         self._populate_news_list(visible)
         self._dash_news_offset = 0
-        await self.query_one("#dash-news-list").clear()
         self._populate_dash_news()
 
     # Dashboard NEWS card: number of headlines shown at once, and how often the
@@ -6535,41 +6488,41 @@ class GoogleTUI(App):
         """Fill the Dashboard NEWS card with a window of the newest feed
         entries (self._news_entries_cache, newest-first), starting at
         self._dash_news_offset so _rotate_dash_news can cycle through more than
-        the _DASH_NEWS_WINDOW visible at once. Row ids are `dn-<cid>` (distinct
+        the _DASH_NEWS_WINDOW visible at once. Row keys are `dn-<cid>` (distinct
         from the News tab's `n-` ids) mapped via self._dash_news_by_cid; Enter
-        opens NewsEntryModal. markup=False for the same external-text reason as
-        _populate_news_list. Does NOT clear the list itself — every caller must
-        `await ...clear()` first (ListView.clear is async and the reused dn-
-        ids would otherwise race into DuplicateIds, per AGENTS.md §2)."""
+        opens NewsEntryModal. DataTable (Feed/Headline columns) — rebuilds in
+        place via list_tables (synchronous clear), so callers no longer need to
+        pre-clear it the way the old reused-dn-id ListView did."""
         try:
-            lst = self.query_one("#dash-news-list")
+            table = self.query_one("#dash-news-list", DataTable)
         except Exception:
             return
         entries = sorted(self._news_entries_cache,
                          key=lambda e: e.get("published") or "", reverse=True)
         self._dash_news_by_cid = {}
+        cols = [("Feed", 16), ("Headline", None)]
         if not entries:
-            lst.append(ListItem(Label("No news yet — add feeds in Settings → News Feeds"),
-                                id="dash-empty-news"))
+            list_tables.rebuild_flat_table(
+                table, cols,
+                [("dash-empty-news", ["", "No news yet — add feeds in Settings → News Feeds"])],
+                flex_min=20)
             return
         window = entries[self._dash_news_offset:self._dash_news_offset + self._DASH_NEWS_WINDOW]
-        items = []
         seen: set = set()
+        rows: list[tuple[str, list]] = []
         for e in window:
             cid = _unique_id(_mk_id("dn", e["id"]), seen)
             self._dash_news_by_cid[cid] = e
-            feed_title = _cell_col(e.get("feed_title") or "", 16)
-            title = _truncate(e.get("title") or "(untitled)", 40)
-            items.append(ListItem(Label(f"[{feed_title}] {title}", markup=False), id=cid))
-        lst.extend(items)
+            rows.append((cid, [e.get("feed_title") or "", e.get("title") or "(untitled)"]))
+        list_tables.rebuild_flat_table(table, cols, rows, flex_min=20)
 
-    async def _rotate_dash_news(self) -> None:
+    def _rotate_dash_news(self) -> None:
         """Advance the NEWS card window by _DASH_NEWS_WINDOW, wrapping at the
         end. Skipped while the card is focused (so a rotation never yanks the
         selection out from under an Enter) or when there's nothing to rotate
-        (<= one window of entries). Async so it can `await ...clear()` before
-        repopulating (same reused-id race as above). Driven by a set_interval
-        started in on_mount."""
+        (<= one window of entries). Synchronous now — _populate_dash_news
+        rebuilds the DataTable in place. Driven by a set_interval started in
+        on_mount."""
         entries = self._news_entries_cache
         if len(entries) <= self._DASH_NEWS_WINDOW or "dash-news" not in self._dash_enabled_ids:
             return
@@ -6579,10 +6532,6 @@ class GoogleTUI(App):
         self._dash_news_offset += self._DASH_NEWS_WINDOW
         if self._dash_news_offset >= len(entries):
             self._dash_news_offset = 0
-        try:
-            await self.query_one("#dash-news-list").clear()
-        except Exception:
-            return
         self._populate_dash_news()
 
     def _populate_news_list(self, entries: list[dict]) -> None:
@@ -6638,6 +6587,26 @@ class GoogleTUI(App):
             all_entries = new_entries
         self.call_from_thread(self._apply_news_data, all_entries)
 
+    def _refresh_feed_list(self) -> None:
+        """(Re)populate the Settings → News Feeds DataTable from
+        Settings.feed_urls. Row key -> url is kept in _feeds_by_cid for the
+        remove button (was a `.feed_url` attribute on the ListItem). Feed URLs
+        are arbitrary external text, fed as plain Rich Text — no markup parse,
+        so a "[" in a URL renders literally (the reason the old row used
+        markup=False)."""
+        try:
+            table = self.query_one("#settings-feed-list", DataTable)
+        except Exception:
+            return
+        self._feeds_by_cid = {}
+        seen: set = set()
+        rows: list[tuple[str, list]] = []
+        for url in self.settings.feed_urls:
+            cid = _unique_id(_mk_id("sf", url), seen)
+            self._feeds_by_cid[cid] = url
+            rows.append((cid, [url]))
+        list_tables.rebuild_flat_table(table, [("Feed URL", None)], rows, flex_min=20)
+
     def _subscribe_feed(self, url: str) -> None:
         """Add `url` to `Settings.feed_urls`, refresh the Settings-tab list,
         and kick a background merge fetch. Shared by the manual add-by-URL
@@ -6647,7 +6616,7 @@ class GoogleTUI(App):
             return
         self.settings.feed_urls.append(url)
         save_settings(self.settings)
-        self.query_one("#settings-feed-list", ListView).append(_feed_list_item(url))
+        self._refresh_feed_list()
         self.run_worker(
             lambda: self._fetch_and_merge_one_feed(url),
             thread=True, exclusive=False, group="news-fetch-one",
@@ -6661,10 +6630,7 @@ class GoogleTUI(App):
             return
         self.settings.feed_urls.remove(url)
         save_settings(self.settings)
-        try:
-            self.query_one(f"#{_mk_id('sf', url)}", ListItem).remove()
-        except Exception:
-            pass
+        self._refresh_feed_list()
         if self._cache:
             remaining = [e for e in self._cache.get_all("feed_entry").values() if e.get("feed_url") != url]
             self._apply_news_data(remaining)
@@ -6682,13 +6648,12 @@ class GoogleTUI(App):
         self.notify(f"Added feed: {url}")
 
     def _remove_selected_feed(self) -> None:
-        lst = self.query_one("#settings-feed-list", ListView)
-        item = lst.highlighted_child
-        if item is None:
+        cid = list_tables.current_row_key(self.query_one("#settings-feed-list", DataTable))
+        url = self._feeds_by_cid.get(cid or "")
+        if url is None:
             self.notify("Select a feed to remove first", severity="warning")
             return
-        url = getattr(item, "feed_url", None)
-        if url is None or url not in self.settings.feed_urls:
+        if url not in self.settings.feed_urls:
             return
         self._unsubscribe_feed(url)
         self.notify(f"Removed feed: {url}")
@@ -6907,23 +6872,26 @@ class GoogleTUI(App):
 
     def _refresh_remote_hosts_list(self) -> None:
         try:
-            lv = self.query_one("#settings-remote-hosts-list", ListView)
+            table = self.query_one("#settings-remote-hosts-list", DataTable)
         except Exception:
             return
-        lv.clear()
+        # Row key -> (protocol, host, port), read back by the remove button
+        # (was a `.remote_host` attribute stashed on the ListItem): a hostname
+        # isn't reversible from a slugified key either (dots aren't valid).
+        self._remote_hosts_by_cid = {}
         hosts = remote_creds.list_hosts(self._encrypt_key)
         if not hosts:
-            lv.append(ListItem(Label("(no saved remote hosts)")))
+            list_tables.rebuild_flat_table(table, [("Saved hosts", None)],
+                                           [("rh-empty", ["(no saved remote hosts)"])], flex_min=20)
             return
+        seen: set = set()
+        rows: list[tuple[str, list]] = []
         for protocol, host, port in hosts:
             display = f"{protocol}://{host}:{port}"
-            # Same "_mk_id for a sanitized widget id, raw value stashed as a
-            # plain attribute" pattern _feed_list_item uses -- a hostname
-            # isn't reversible from a Textual widget id either (dots aren't
-            # a valid id character).
-            item = ListItem(Label(display, markup=False), id=_mk_id("remotehost", display))
-            item.remote_host = (protocol, host, port)
-            lv.append(item)
+            cid = _unique_id(_mk_id("remotehost", display), seen)
+            self._remote_hosts_by_cid[cid] = (protocol, host, port)
+            rows.append((cid, [display]))
+        list_tables.rebuild_flat_table(table, [("Saved hosts", None)], rows, flex_min=20)
 
     def _update_settings_cache_info(self) -> None:
         """Disk usage readout under the cache buttons: total on disk, then the
@@ -7203,9 +7171,9 @@ class GoogleTUI(App):
         elif event.button.id == "settings-browse-feeds":
             self._open_feed_picker()
         elif event.button.id == "settings-remove-remote-host":
-            lst = self.query_one("#settings-remote-hosts-list", ListView)
-            item = lst.highlighted_child
-            triple = getattr(item, "remote_host", None) if item is not None else None
+            cid = list_tables.current_row_key(
+                self.query_one("#settings-remote-hosts-list", DataTable))
+            triple = self._remote_hosts_by_cid.get(cid or "")
             if triple is None:
                 self.notify("Select a saved remote host to remove first", severity="warning")
                 return

@@ -12,7 +12,8 @@ from tests.isolate import isolate
 
 isolate(prefix="google-tui-pilot-dashlists-")
 
-from google_tui.main import GoogleTUI, EventModal, TaskModal  # noqa: E402
+from google_tui.main import (  # noqa: E402
+    GoogleTUI, EventModal, TaskModal, ThreadModal, NewsEntryModal)
 from tests.pilot.fakes import applied, base_patches  # noqa: E402
 from textual.widgets import DataTable  # noqa: E402
 
@@ -72,6 +73,36 @@ async def run() -> None:
             await pilot.press("enter")
             await pilot.pause()
             assert isinstance(app.screen, EventModal), type(app.screen).__name__
+            app.pop_screen()
+            await pilot.pause()
+
+            # MAIL mini-card: bold unread-count header + a thread row; Enter on
+            # the thread row opens ThreadModal.
+            dmail = app.query_one("#dash-mail-list", DataTable)
+            assert "dm-open" in _keys(dmail) and "dm-th1" in _keys(dmail), _keys(dmail)
+            dmail.focus()
+            dmail.move_cursor(row=dmail.get_row_index("dm-th1"))
+            await pilot.pause()
+            await pilot.press("enter")
+            await pilot.pause()
+            assert isinstance(app.screen, ThreadModal), type(app.screen).__name__
+            app.pop_screen()
+            await pilot.pause()
+
+            # NEWS mini-card: inject an entry, Enter opens NewsEntryModal.
+            app._apply_news_data([{
+                "id": "dn1", "title": "Headline one", "link": "http://x/dn1",
+                "summary": "s", "published": "2026-07-21T10:00:00Z", "feed_title": "Feed"}])
+            await pilot.pause()
+            dnews = app.query_one("#dash-news-list", DataTable)
+            dn_keys = [k for k in _keys(dnews) if k.startswith("dn-")]
+            assert dn_keys, _keys(dnews)
+            dnews.focus()
+            dnews.move_cursor(row=dnews.get_row_index(dn_keys[0]))
+            await pilot.pause()
+            await pilot.press("enter")
+            await pilot.pause()
+            assert isinstance(app.screen, NewsEntryModal), type(app.screen).__name__
             app.pop_screen()
             await pilot.pause()
 

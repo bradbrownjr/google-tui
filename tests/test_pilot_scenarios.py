@@ -34,6 +34,7 @@ SCENARIOS = [
     "tests.pilot.drive_datatable_nav",
     "tests.pilot.news_datatable",
     "tests.pilot.dashboard_lists_datatable",
+    "tests.pilot.bookmarks_datatable",
     "tests.pilot.toast_dedup_reauth",
 ]
 
