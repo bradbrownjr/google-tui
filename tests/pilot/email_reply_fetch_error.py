@@ -19,6 +19,7 @@ from textual.screen import ModalScreen  # noqa: E402
 
 from google_tui import gauth  # noqa: E402
 from google_tui.main import GoogleTUI  # noqa: E402
+from textual.widgets import DataTable  # noqa: E402
 from tests.pilot.fakes import base_patches, applied  # noqa: E402
 
 
@@ -51,10 +52,8 @@ async def run() -> None:
             await asyncio.sleep(2)
             app.action_goto_tab_mail()
             await pilot.pause()
-            lst = app.query_one("#email-list")
-            assert lst.children, "email list is empty, nothing to select"
-            await pilot.press("down")
-            await pilot.pause()
+            assert app.query_one("#email-list", DataTable).row_count, \
+                "email list is empty, nothing to select"
             await pilot.press("enter")
             await asyncio.sleep(0.5)
             await pilot.pause()

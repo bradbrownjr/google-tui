@@ -13,6 +13,7 @@ isolate(prefix="google-tui-pilot-multisel-")
 from google_tui import gauth  # noqa: E402
 from google_tui.main import BulkActionModal, GoogleTUI  # noqa: E402
 from tests.pilot.fakes import applied, base_patches  # noqa: E402
+from textual.widgets import DataTable  # noqa: E402
 
 FAKE_THREADS = [
     {"threadId": f"th{i}", "subject": f"Subject {i}", "from": f"p{i}@example.com",
@@ -34,10 +35,10 @@ async def run() -> None:
             await asyncio.sleep(2)
             app.action_goto_tab_mail()
             await pilot.pause()
-            assert len(app.query_one("#email-list").children) >= 3, "need >=3 threads"
+            assert app.query_one("#email-list", DataTable).row_count >= 3, "need >=3 threads"
 
-            await pilot.press("down")           # highlight row 1
-            await pilot.pause()
+            # DataTable's row cursor starts on row 0 (th1) — no initial "down"
+            # needed the way the old ListView highlight did.
             await pilot.press("x")               # check th1, cursor -> row 2
             await pilot.pause()
             await pilot.press("x")               # check th2, cursor -> row 3

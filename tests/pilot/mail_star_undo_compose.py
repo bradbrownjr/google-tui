@@ -18,6 +18,7 @@ from textual.screen import ModalScreen  # noqa: E402
 
 from google_tui import gauth  # noqa: E402
 from google_tui.main import GoogleTUI  # noqa: E402
+from textual.widgets import DataTable  # noqa: E402
 from tests.pilot.fakes import applied, base_patches  # noqa: E402
 
 # A single inbox thread carrying labelIds so the ★ column has state to toggle.
@@ -74,9 +75,7 @@ async def run() -> None:
             await asyncio.sleep(2)
             app.action_goto_tab_mail()
             await pilot.pause()
-            lst = app.query_one("#email-list")
-            assert lst.children, "email list is empty"
-            await pilot.press("down")
+            assert app.query_one("#email-list", DataTable).row_count, "email list is empty"
             await pilot.pause()
 
             # --- Compose reply-all: Cc/Bcc fields + Save Draft ---

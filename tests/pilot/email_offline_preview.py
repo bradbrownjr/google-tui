@@ -16,6 +16,7 @@ from tests.isolate import isolate
 isolate(prefix="google-tui-pilot-email-offline-")
 
 from google_tui.main import GoogleTUI  # noqa: E402
+from textual.widgets import DataTable  # noqa: E402
 from google_tui.render import DocumentView  # noqa: E402
 from tests.pilot.fakes import applied, base_patches, FAKE_THREADS  # noqa: E402
 
@@ -53,9 +54,10 @@ async def run() -> None:
             if not app._email_preview_visible:
                 await pilot.press("p")
                 await pilot.pause()
-            lst = app.query_one("#email-list")
-            assert lst.children, "email list is empty, nothing to select"
-            await pilot.press("down")
+            assert app.query_one("#email-list", DataTable).row_count, \
+                "email list is empty, nothing to select"
+            # Enabling the preview ('p') already previews the row-0 thread; the
+            # DataTable cursor starts there (no "down" needed).
             await asyncio.sleep(0.6)  # debounce (0.25s) + worker thread round trip
             await pilot.pause()
 

@@ -35,6 +35,7 @@ SCENARIOS = [
     "tests.pilot.news_datatable",
     "tests.pilot.dashboard_lists_datatable",
     "tests.pilot.bookmarks_datatable",
+    "tests.pilot.mail_datatable_expand",
     "tests.pilot.toast_dedup_reauth",
 ]
 

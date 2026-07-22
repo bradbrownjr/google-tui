@@ -39,6 +39,7 @@ from textual import events
 from textual.actions import SkipAction
 from textual.app import App, ComposeResult
 from textual.containers import Container, Grid, Horizontal, Vertical, VerticalScroll
+from textual.coordinate import Coordinate
 from textual.screen import ModalScreen
 from textual.widgets import (
     Button, DataTable, Header, Input, Label, ListItem, ListView,
@@ -819,56 +820,18 @@ def _cell_col(text: str, width: int) -> str:
     return set_cell_size(text, width - 1) + "…"
 
 
-def _email_collapsed_line(th: dict, show_sender_address: bool = False,
-                          labels_by_id: dict | None = None,
-                          width: int = _EMAIL_ROW_DEFAULT_W) -> str:
-    mark = "•" if th["unread"] else " "
-    star = "★" if "STARRED" in (th.get("labelIds") or []) else " "
-    subj = th["subject"] or "(no subject)"
-    frm = _format_sender(th["from"], show_sender_address)
-    count_note = f"  ({th['count']})" if th["count"] > 1 else ""
-    chips = _thread_label_chips(th, labels_by_id)
-    date_str = _fmt_email_date(th.get("date", ""))
-    subj_w = max(width - _EMAIL_ROW_FIXED_W, _EMAIL_SUBJ_MIN_W)
-    sender_field = _cell_col(frm, _EMAIL_SENDER_W)
-    subj_field = _cell_col(f"{subj}{count_note}", subj_w)
-    chips_field = _cell_col(chips, _EMAIL_CHIPS_W)
-    line = f"{mark}{star} {sender_field} {subj_field} {chips_field}"
-    return f"{line} {date_str:>{_EMAIL_DATE_W}}" if date_str else line
+# Email-list DataTable columns (ROADMAP P3): the mark/From/Labels/Date columns
+# are fixed width; Subject is the single flexible column (list_tables sizes it).
+_EMAIL_TABLE_COLS = [("", 2), ("From", _EMAIL_SENDER_W), ("Subject", None),
+                     ("Labels", _EMAIL_CHIPS_W), ("Date", _EMAIL_DATE_W)]
 
 
-def _thread_expanded_text(th: dict, msgs: list[dict], show_sender_address: bool = False,
-                          labels_by_id: dict | None = None,
-                          width: int = _EMAIL_ROW_DEFAULT_W) -> str:
-    """Space-expand preview for a multi-message thread: one line per message
-    (From + a short body snippet), so a "(N)" thread actually shows all N
-    messages inline instead of just the latest one's snippet."""
-    lines = [_email_collapsed_line(th, show_sender_address, labels_by_id, width)]
-    for m in msgs:
-        frm = _format_sender((m.get("from") or "").strip(), show_sender_address)
-        snippet = (m.get("body") or "").strip().replace("\n", " ")
-        if cell_len(snippet) > 80:
-            snippet = set_cell_size(snippet, 80).rstrip() + "…"
-        lines.append(f"    {_cell_col(frm, 36)} {snippet}")
-    return "\n".join(lines)
-
-
-def _append_email_items(email_list, threads, show_sender_address: bool = False,
-                        labels_by_id: dict | None = None,
-                        width: int = _EMAIL_ROW_DEFAULT_W,
-                        selected_ids: set | None = None) -> None:
-    # extend(), not append()-in-a-loop: ListView.append mounts ONE widget per
-    # call (a mount + layout + repaint each), so an 80-thread inbox paid for 80
-    # separate mount cycles. extend() batches the whole list into a single one.
-    # Same reason every other list in this file builds its items first and
-    # extends once.
-    sel = selected_ids or set()
-    email_list.extend(
-        ListItem(Label(_email_collapsed_line(th, show_sender_address, labels_by_id, width)),
-                 id=_mk_id("t", th["threadId"]),
-                 classes="email-selected" if th["threadId"] in sel else "")
-        for th in threads
-    )
+def _email_marks(th: dict) -> str:
+    """The 2-cell leading marker column for an email summary row: an unread
+    bullet (ROADMAP) followed by a ★ when the thread is starred (ROADMAP P2
+    'star from the list'). A blank in either slot keeps the two columns aligned."""
+    return (("•" if th.get("unread") else " ")
+            + ("★" if "STARRED" in (th.get("labelIds") or []) else " "))
 
 
 # Sentinel ids (not _mk_id — no underlying thread/event/file) that
@@ -1467,10 +1430,9 @@ class GoogleTUI(App):
     #email-label-select { height: 3; }
     #email-search, #tasks-search, #events-search { width: 1fr; }
     #email-list { height: 1fr; }
-    /* Multi-select (ROADMAP P2): a checked-for-bulk-action row. The accent
-       left-bar + tint reads as "checked" without needing a glyph column that
-       would disturb the responsive row arithmetic. */
-    #email-list > ListItem.email-selected { background: $accent 25%; border-left: thick $accent; }
+    /* Multi-select (ROADMAP P2/P3): a checked-for-bulk-action row is tinted by
+       re-styling its cells (see _email_summary_cells / _email_sel_style) —
+       DataTable has no per-row CSS class the way the old ListView row did. */
     #bulk-box { height: auto; }
     #bulk-box Button { width: 1fr; margin-top: 1; }
     #snooze-box { height: auto; }
@@ -1771,7 +1733,6 @@ class GoogleTUI(App):
         # only place that should assign self.sub_title directly from here on.
         self._status_base: str = ""
         self._loading_modal: LoadingModal | None = None
-        self._mail_apply_gen = 0
         self._news_by_cid: dict[str, dict] = {}
         # Full combined-feed entry list from the last _apply_news_data call —
         # backs the News tab's search filter (Input#news-search) the same
@@ -2228,32 +2189,11 @@ class GoogleTUI(App):
         if getattr(self, "_events_cache", None) is not None:
             self._refresh_event_list()
 
-    def _email_list_width(self) -> int:
-        """Usable character width for one Email-list row: the #email-list
-        content region, which already excludes its border/padding and the
-        2-col vertical scrollbar. Falls back to the fixed legacy width before
-        the list has been laid out (content_size is 0 until the first layout
-        pass, e.g. when rows are built during startup)."""
-        try:
-            w = self.query_one("#email-list").content_size.width
-        except Exception:
-            w = 0
-        return w if w > 0 else _EMAIL_ROW_DEFAULT_W
-
     def _reflow_email_rows(self) -> None:
-        """Re-render collapsed Email rows at the current list width. Expanded
-        rows are left as-is -- they re-flow the next time they're toggled or
-        the mail data refreshes; resizing while a thread is expanded is rare
-        and their extra lines aren't date-aligned anyway."""
-        if not getattr(self, "_threads_cache", None):
-            return
-        width = self._email_list_width()
-        show_addr = self.settings.show_sender_address
-        labels = self._labels_by_id()
-        for tid, th in self._threads_cache.items():
-            if tid in self._expanded_thread_ids:
-                continue
-            self._set_thread_label(tid, _email_collapsed_line(th, show_addr, labels, width))
+        # DataTable: rebuild to re-flow the Subject column at the new width
+        # (recomputed by list_tables), rather than editing Labels in place.
+        if getattr(self, "_threads_cache", None):
+            self._rebuild_email_table()
 
     def _adjacent(self, direction: str) -> None:
         # Mail tab has nothing to move to now -- Email is its only pane.
@@ -2425,7 +2365,7 @@ class GoogleTUI(App):
                             with Horizontal(id="email-bar", classes="btnrow hidden"):
                                 yield Input(placeholder="Search email (subject/from/snippet)… (/)",
                                             id="email-search")
-                            yield ListView(id="email-list")
+                            yield DataTable(id="email-list", cursor_type="row", zebra_stripes=True)
                     # Preview pane ("p" toggles, action_toggle_preview) -- hidden
                     # by default (Settings.email_preview_default_visible),
                     # live-updates as the highlight moves while visible. See
@@ -3503,68 +3443,26 @@ class GoogleTUI(App):
         return {l["id"]: l for l in self._labels_cache}
 
     def _apply_email_list(self, threads) -> None:
-        self._mail_apply_gen += 1
-        gen = self._mail_apply_gen
-        self.run_worker(self._apply_email_list_async(gen, threads), exclusive=True, group="mail-apply")
-
-    async def _apply_email_list_async(self, gen, threads) -> None:
-        await self.query_one("#email-list").clear()
-        if gen != self._mail_apply_gen:
-            return  # superseded by a newer apply call
+        """Set the thread cache from `threads` and repaint #email-list. Now a
+        synchronous DataTable rebuild (clear is immediate) — the old awaited
+        worker + generation counter existed only for ListView.clear()'s
+        AwaitRemove and DuplicateIds-on-reinsert; DataTable row keys can't
+        collide the same way. Every caller runs on the main thread."""
         self._threads_cache = {t["threadId"]: t for t in threads}
         # Drop any selection ids no longer among the loaded threads so a bulk
         # action can't target a thread that's since left the list.
         self._email_selected &= set(self._threads_cache)
-        try:
-            query = self.query_one("#email-search", Input).value
-        except Exception:
-            query = ""
-        visible = _fuzzy_filter_threads(threads, query) if query.strip() else threads
-        email_list = self.query_one("#email-list")
-        _append_email_items(email_list, visible, self.settings.show_sender_address,
-                            self._labels_by_id(), self._email_list_width(),
-                            self._email_selected)
-        _append_load_more_row(email_list, bool(self._email_next_page_token) and not query.strip(),
-                              LOAD_MORE_EMAIL_ID, "↓ Load more messages…")
+        self._rebuild_email_table()
 
     def _apply_mail_data(self, threads, events, tasks, tasklists, inbox_threads=None) -> None:
+        """Full mail-data apply (email + TODAY + TASKS + Dashboard MAIL) — all
+        four are DataTables now, so this is fully synchronous (the last await
+        that kept it a worker was #email-list.clear()). Runs on the main
+        thread via call_from_thread from the fetch workers."""
         self._tasklists = tasklists
-        # ListView.clear() returns an AwaitRemove that can take LONGER than a
-        # single call_after_refresh cycle to actually finish removing widgets
-        # (confirmed empirically: a bulk removal of 80 items was still
-        # in-flight one refresh later). Mail data can now be applied twice
-        # per session (cache, then live refresh) with the SAME thread IDs, so
-        # re-inserting before the prior removal truly completes raises
-        # DuplicateIds. Run clear+repopulate as a properly-awaited worker
-        # instead of a fire-and-forget deferred call; the generation counter
-        # is a second safety net in case a superseded call still slips through.
-        self._mail_apply_gen += 1
-        gen = self._mail_apply_gen
-        self.run_worker(
-            self._apply_mail_data_async(gen, threads, events, tasks, tasklists, inbox_threads),
-            exclusive=True, group="mail-apply")
-
-    async def _apply_mail_data_async(self, gen, threads, events, tasks, tasklists, inbox_threads=None) -> None:
-        await self.query_one("#email-list").clear()
-        if gen != self._mail_apply_gen:
-            return  # superseded by a newer _apply_mail_data call
-        # #event-list, #task-list and #dash-mail-list are DataTables now (rebuilt
-        # synchronously below); only the still-ListView #email-list needs the
-        # awaited clear (Phase 4 empties this worker entirely).
-
         self._threads_cache = {t["threadId"]: t for t in threads}
         self._email_selected &= set(self._threads_cache)
-        try:
-            email_query = self.query_one("#email-search", Input).value
-        except Exception:
-            email_query = ""
-        visible_threads = _fuzzy_filter_threads(threads, email_query) if email_query.strip() else threads
-        email_list = self.query_one("#email-list")
-        _append_email_items(email_list, visible_threads, self.settings.show_sender_address,
-                            self._labels_by_id(), self._email_list_width(),
-                            self._email_selected)
-        _append_load_more_row(email_list, bool(self._email_next_page_token) and not email_query.strip(),
-                              LOAD_MORE_EMAIL_ID, "↓ Load more messages…")
+        self._rebuild_email_table()
 
         # Caches stay RAW (server/cache data only); the offline queue is
         # overlaid at render time so a not-yet-synced create/delete shows
@@ -3585,6 +3483,130 @@ class GoogleTUI(App):
                            by_cid=self._tasks_by_cid)
 
         self._populate_dash_mail(inbox_threads if inbox_threads is not None else threads)
+
+    # ---- email list as a DataTable (ROADMAP P3) ----
+    def _email_sel_style(self) -> str:
+        """Rich style string for a multi-select-checked row's cells. Derived
+        from the active theme (accent background, background-colored text) so
+        it adapts to light/dark; falls back to reverse video if the theme API
+        isn't available."""
+        try:
+            t = self.current_theme
+            return f"{t.background} on {t.accent} bold"
+        except Exception:
+            return "reverse bold"
+
+    def _email_summary_cells(self, th: dict, selected: bool, show_addr: bool,
+                             labels: dict, sel_style: str) -> list:
+        style = sel_style if selected else ""
+        mark = _email_marks(th)
+        frm = _format_sender(th["from"], show_addr)
+        count = f"  ({th['count']})" if th["count"] > 1 else ""
+        subj = (th["subject"] or "(no subject)") + count
+        chips = _thread_label_chips(th, labels)
+        date = _fmt_email_date(th.get("date", ""))
+        return [Text(mark, style=style), Text(frm, style=style), Text(subj, style=style),
+                Text(chips, style=style), Text(date, style=style)]
+
+    def _email_message_cells(self, m: dict, show_addr: bool) -> list:
+        frm = _format_sender((m.get("from") or "").strip(), show_addr)
+        snippet = (m.get("body") or "").strip().replace("\n", " ")
+        dim = "dim italic"
+        return [Text("", style=dim), Text("↳ " + frm, style=dim),
+                Text(snippet, style=dim), Text("", style=dim), Text("", style=dim)]
+
+    def _expanded_message_rows(self, th: dict, show_addr: bool) -> list:
+        """Rows revealed under an expanded thread: one per message. A single-
+        message thread synthesizes one row from its snippet (no fetch); a
+        multi-message thread uses the fetched full bodies once cached, else a
+        transient 'Loading…' row (see _toggle_thread_expand / _fetch_thread_preview)."""
+        tid = th["threadId"]
+        if th.get("count", 1) <= 1:
+            msgs = [{"from": th.get("from", ""), "body": (th.get("snippet") or "").strip()}]
+        else:
+            cached = self._thread_full_cache.get(tid)
+            if cached is None:
+                return [(f"t-{tid}::loading",
+                         [Text(""), Text(""), Text("Loading messages…", style="dim italic"),
+                          Text(""), Text("")])]
+            msgs = cached
+        return [(f"t-{tid}::m{i}", self._email_message_cells(m, show_addr))
+                for i, m in enumerate(msgs)]
+
+    def _email_visible_threads(self) -> list[dict]:
+        threads = list(self._threads_cache.values())
+        try:
+            query = self.query_one("#email-search", Input).value
+        except Exception:
+            query = ""
+        return _fuzzy_filter_threads(threads, query) if query.strip() else threads
+
+    def _rebuild_email_table(self) -> None:
+        """Repaint #email-list from _threads_cache through the current search
+        filter, honoring _expanded_thread_ids (reveal message rows) and
+        _email_selected (tint), plus the 'Load more' sentinel. Preserves the
+        row cursor across the rebuild where the same key still exists."""
+        try:
+            table = self.query_one("#email-list", DataTable)
+        except Exception:
+            return
+        prev = list_tables.current_row_key(table)
+        show_addr = self.settings.show_sender_address
+        labels = self._labels_by_id()
+        sel_style = self._email_sel_style()
+        try:
+            query = self.query_one("#email-search", Input).value
+        except Exception:
+            query = ""
+        rows: list[tuple[str, list]] = []
+        for th in self._email_visible_threads():
+            tid = th["threadId"]
+            rows.append((f"t-{tid}",
+                         self._email_summary_cells(th, tid in self._email_selected,
+                                                   show_addr, labels, sel_style)))
+            if tid in self._expanded_thread_ids:
+                rows.extend(self._expanded_message_rows(th, show_addr))
+        if self._email_next_page_token and not query.strip():
+            rows.append((LOAD_MORE_EMAIL_ID,
+                         [Text(""), Text(""), Text("↓ Load more messages…", style="dim"),
+                          Text(""), Text("")]))
+        list_tables.rebuild_flat_table(table, _EMAIL_TABLE_COLS, rows,
+                                       flex_min=_EMAIL_SUBJ_MIN_W, fallback_width=_EMAIL_ROW_DEFAULT_W)
+        if prev:
+            try:
+                table.move_cursor(row=table.get_row_index(prev))
+            except Exception:
+                pass
+
+    def _thread_id_from_key(self, key: str | None) -> str | None:
+        """Thread id behind an #email-list row key — a summary row `t-<tid>` or
+        a revealed message/loading row `t-<tid>::…`. None for the load-more
+        sentinel or an empty table."""
+        if not key or not key.startswith("t-"):
+            return None
+        tid = key[2:].split("::", 1)[0]
+        return tid or None
+
+    def _restyle_email_row(self, tid: str) -> None:
+        """Re-render just one thread's summary row cells to reflect its current
+        multi-select state — cheaper than a full rebuild, and keeps the cursor
+        put (DataTable has no per-row CSS class, so this is how the tint moves)."""
+        try:
+            table = self.query_one("#email-list", DataTable)
+            row = table.get_row_index(f"t-{tid}")
+        except Exception:
+            return
+        th = self._threads_cache.get(tid)
+        if not th:
+            return
+        cells = self._email_summary_cells(th, tid in self._email_selected,
+                                          self.settings.show_sender_address,
+                                          self._labels_by_id(), self._email_sel_style())
+        for col, val in enumerate(cells):
+            try:
+                table.update_cell_at(Coordinate(row, col), val)
+            except Exception:
+                pass
 
     def _refresh_all_thread(self) -> None:
         """Post-write refresh (task toggled, mail sent) — MUST run with
@@ -3976,23 +3998,21 @@ class GoogleTUI(App):
 
     # ---- email reply/forward from lightbar ----
     def _selected_thread(self) -> str | None:
-        el = self.query_one("#email-list")
-        if el.highlighted_child is None:
-            return None
-        cid = el.highlighted_child.id or ""
-        return cid[2:] if cid.startswith("t-") else None
+        return self._thread_id_from_key(
+            list_tables.current_row_key(self.query_one("#email-list", DataTable)))
 
     def _email_thread_order(self) -> list[str]:
         """The thread ids currently shown in #email-list, in display order.
         Backs ThreadModal's Left/Right prev/next-message navigation so it can
         page through the same (possibly search-filtered) list the user is
-        looking at, without reopening the modal."""
+        looking at, without reopening the modal. Summary rows only — revealed
+        message rows (`t-<tid>::…`) and the load-more sentinel are skipped."""
         try:
-            el = self.query_one("#email-list")
+            table = self.query_one("#email-list", DataTable)
         except Exception:
             return []
-        return [c.id[2:] for c in el.children
-                if getattr(c, "id", "") and c.id.startswith("t-")]
+        return [rk.value[2:] for rk in table.rows
+                if (rk.value or "").startswith("t-") and "::" not in rk.value]
 
     def action_reply(self):
         # Not gated by _require_online(): composing (and, if needed,
@@ -4222,20 +4242,20 @@ class GoogleTUI(App):
         checking a run of threads is just repeated 'x'. Mail tab only."""
         if self._main_tabs().active != "tab-mail":
             return
-        lst = self.query_one("#email-list", ListView)
-        item = lst.highlighted_child
+        table = self.query_one("#email-list", DataTable)
         tid = self._selected_thread()
-        if not item or not tid:
+        if not tid:
             return
         if tid in self._email_selected:
             self._email_selected.discard(tid)
-            item.remove_class("email-selected")
         else:
             self._email_selected.add(tid)
-            item.add_class("email-selected")
+        # Re-tint just this row (no rebuild → cursor stays put), then advance so
+        # checking a run of threads is repeated 'x'.
+        self._restyle_email_row(tid)
         n = len(self._email_selected)
         self.notify(f"{n} selected" if n else "Selection cleared")
-        lst.action_cursor_down()
+        table.action_cursor_down()
 
     def action_bulk_actions(self) -> None:
         """Open the bulk-action chooser ('X') for the current selection."""
@@ -4480,46 +4500,27 @@ class GoogleTUI(App):
         return True
 
     # ---- email: Space = lightweight inline expand (NOT the full thread-tree
-    # UI — see ROADMAP's separate P2 "Threading depth" item). Mutates just the
-    # one highlighted ListItem's Label text in place; deliberately does NOT
-    # call ListView.clear()/repopulate (see AGENTS.md's ListView.clear() NOTE
-    # for why that's a trap this sidesteps entirely by not going there).
-    # For a >1-message thread this fetches the full thread (same gauth call
-    # as ThreadModal/Enter) so the inline preview shows every message, not
-    # just the latest one's snippet — cached in self._thread_full_cache so
-    # repeated collapse/expand of the same thread doesn't re-fetch. ----
-    def _set_thread_label(self, thread_id: str, text: str) -> None:
-        try:
-            self.query_one(f"#{_mk_id('t', thread_id)} Label", Label).update(text)
-        except Exception:
-            pass
-
+    # UI — see ROADMAP's separate P2 "Threading depth" item). DataTable model
+    # (ROADMAP P3): expanding a thread reveals one real row per message against
+    # the full backing list (rebuild, since DataTable has no insert-at-index),
+    # replacing the old tall multi-line Label. For a >1-message thread the full
+    # thread is fetched (same gauth call as ThreadModal/Enter) and cached in
+    # self._thread_full_cache so repeated collapse/expand doesn't re-fetch. ----
     def _toggle_thread_expand(self, thread_id: str) -> None:
         th = self._threads_cache.get(thread_id)
         if not th:
             return
-        show_addr = self.settings.show_sender_address
-        labels = self._labels_by_id()
-        width = self._email_list_width()
         if thread_id in self._expanded_thread_ids:
             self._expanded_thread_ids.discard(thread_id)
-            self._set_thread_label(thread_id, _email_collapsed_line(th, show_addr, labels, width))
+            self._rebuild_email_table()
             return
         self._expanded_thread_ids.add(thread_id)
-        if th.get("count", 1) > 1:
-            cached = self._thread_full_cache.get(thread_id)
-            if cached is not None:
-                self._set_thread_label(thread_id, _thread_expanded_text(th, cached, show_addr, labels, width))
-            else:
-                self._set_thread_label(thread_id, _email_collapsed_line(th, show_addr, labels, width) + "\n    Loading messages…")
-                self.run_worker(lambda: self._fetch_thread_preview(thread_id),
-                                 thread=True, exclusive=False, group="thread-preview")
-            return
-        snippet = (th.get("snippet") or "").strip()
-        if len(snippet) > 100:
-            snippet = snippet[:100].rstrip() + "…"
-        text = _email_collapsed_line(th, show_addr, labels, width) + (("\n    " + snippet) if snippet else "")
-        self._set_thread_label(thread_id, text)
+        # >1-message thread with no cached bodies yet: rebuild now (shows a
+        # transient 'Loading…' row via _expanded_message_rows) and fetch.
+        if th.get("count", 1) > 1 and thread_id not in self._thread_full_cache:
+            self.run_worker(lambda: self._fetch_thread_preview(thread_id),
+                             thread=True, exclusive=False, group="thread-preview")
+        self._rebuild_email_table()
 
     def _fetch_thread_preview(self, thread_id: str) -> None:
         try:
@@ -4531,24 +4532,24 @@ class GoogleTUI(App):
 
     def _apply_thread_preview(self, thread_id: str, msgs: list[dict]) -> None:
         self._thread_full_cache[thread_id] = msgs
-        th = self._threads_cache.get(thread_id)
-        if not th or thread_id not in self._expanded_thread_ids:
-            return
-        self._set_thread_label(thread_id, _thread_expanded_text(
-            th, msgs, self.settings.show_sender_address, self._labels_by_id(),
-            self._email_list_width()))
+        # Rebuild so the transient 'Loading…' row becomes the real message rows
+        # (only if the thread is still expanded — the user may have collapsed it
+        # while the fetch was in flight).
+        if thread_id in self._expanded_thread_ids and thread_id in self._threads_cache:
+            self._rebuild_email_table()
 
     def _apply_thread_preview_error(self, thread_id: str) -> None:
         th = self._threads_cache.get(thread_id)
         if not th or thread_id not in self._expanded_thread_ids:
             return
+        # Fall back to a single synthesized row (the snippet + a hint to open
+        # the full thread) so the expansion doesn't sit on 'Loading…' forever.
         snippet = (th.get("snippet") or "").strip()
-        if len(snippet) > 100:
-            snippet = snippet[:100].rstrip() + "…"
-        extra = (f"\n    {snippet}  " if snippet else "\n    ") + f"({th['count']} messages — press Enter for full thread)"
-        self._set_thread_label(thread_id, _email_collapsed_line(
-            th, self.settings.show_sender_address, self._labels_by_id(),
-            self._email_list_width()) + extra)
+        self._thread_full_cache[thread_id] = [{
+            "from": th.get("from", ""),
+            "body": (f"{snippet}  " if snippet else "")
+                    + f"({th['count']} messages — press Enter for full thread)"}]
+        self._rebuild_email_table()
 
     # ---- email preview pane ("p" / action_toggle_preview) ----
     # Outlook-style: hidden by default (Settings.email_preview_default_visible
@@ -4576,17 +4577,17 @@ class GoogleTUI(App):
         preview_col.set_class(hidden, "email-preview-hidden")
         list_col.set_class(hidden, "email-list-full")
 
-    def _email_on_highlight(self, item: ListItem | None) -> None:
+    def _email_on_highlight(self, key: str) -> None:
         # Hidden pane costs nothing: no timer, no fetch, while the user
         # arrows through mail with the preview off (the common case, since
         # it's off by default) -- mirrors Drive's debounce exactly, just
-        # gated on visibility first.
-        if not self._email_preview_visible or item is None:
+        # gated on visibility first. A revealed message row (t-<tid>::…)
+        # previews its parent thread, same as its summary row.
+        if not self._email_preview_visible:
             return
-        cid = item.id or ""
-        if not cid.startswith("t-"):
+        thread_id = self._thread_id_from_key(key)
+        if not thread_id:
             return
-        thread_id = cid[2:]
         if self._email_preview_timer is not None:
             self._email_preview_timer.stop()
         self._email_preview_timer = self.set_timer(
@@ -4986,33 +4987,31 @@ class GoogleTUI(App):
 
     # ---- list selections (Enter) ----
     def on_list_view_selected(self, event: ListView.Selected) -> None:
+        # Only the single-item Dashboard info cards (WORD/PICTURE OF THE DAY)
+        # are still ListViews here; every other list is a DataTable (see
+        # on_data_table_row_selected).
         cid = event.item.id or ""
-        if cid == LOAD_MORE_EMAIL_ID:
-            self.action_load_more_email()
-        elif cid.startswith("t-"):
-            tid = cid[2:]
-            order = self._email_thread_order()
-            try:
-                index = order.index(tid)
-            except ValueError:
-                order, index = [tid], 0
-            self.push_screen(ThreadModal(self.svc, tid, thread_ids=order, index=index),
-                              self._on_thread_modal_result)
-        elif cid == "dw-open":
-            # Dashboard WORD OF THE DAY card — no in-terminal detail view
-            # (it's a single short definition already), so Enter opens the
-            # full Merriam-Webster entry in the Browser tab instead.
+        if cid == "dw-open":
+            # WORD OF THE DAY — no in-terminal detail view (it's a single short
+            # definition already), so Enter opens the full Merriam-Webster
+            # entry in the Browser tab instead.
             self._open_dashboard_link(self._word_of_day)
         elif cid == "dp-open":
-            # Dashboard PICTURE OF THE DAY card — same reasoning as dw-open;
-            # this app can't render the image itself yet (ROADMAP: Drive
-            # image preview needs the textual-image package), so Enter opens
-            # the Wikipedia file page.
+            # PICTURE OF THE DAY — same reasoning as dw-open; this app can't
+            # render the image itself yet (ROADMAP: Drive image preview needs
+            # textual-image), so Enter opens the Wikipedia file page.
             self._open_dashboard_link(self._wiki_potd)
 
-    def on_list_view_highlighted(self, event: ListView.Highlighted) -> None:
-        if event.list_view.id == "email-list":
-            self._email_on_highlight(event.item)
+    def _open_email_thread(self, tid: str) -> None:
+        """Open ThreadModal for `tid`, paged over the current display order so
+        the modal's Left/Right nav walks the same (filtered) list."""
+        order = self._email_thread_order()
+        try:
+            index = order.index(tid)
+        except ValueError:
+            order, index = [tid], 0
+        self.push_screen(ThreadModal(self.svc, tid, thread_ids=order, index=index),
+                          self._on_thread_modal_result)
 
     # ---- modal returns ----
     # NOTE: ModalScreen.Dismissed doesn't exist in the installed Textual
@@ -5775,6 +5774,14 @@ class GoogleTUI(App):
                         TaskModal(self.svc, t,
                                   self._reconcile_tasks(getattr(self, "_tasks_cache", []))),
                         self._on_task_modal_result)
+        elif table_id == "email-list":
+            if cid == LOAD_MORE_EMAIL_ID:
+                self.action_load_more_email()
+            else:
+                # Enter on a summary OR a revealed message row opens the thread.
+                tid = self._thread_id_from_key(cid)
+                if tid:
+                    self._open_email_thread(tid)
         elif table_id in ("dash-mail-list", "dash-news-list"):
             self._open_dash_list_row(cid)
         elif table_id == "browser-bookmarks":
@@ -5790,14 +5797,17 @@ class GoogleTUI(App):
         (was on_list_view_highlighted). Drive only for now; the Mail preview
         pane joins when the Mail list migrates (Phase 4).
 
-        Gated on the Drive tab being active so a rebuild that resets the cursor
-        (a resize reflow, or the startup cache paint of an unvisited tab) can't
-        kick off a wasted preview fetch — unlike the old in-place _reflow, a
-        DataTable rebuild re-emits RowHighlighted. Folder navigation always
-        happens with the tab active, so its preview still fires."""
-        if (event.data_table.id == "drive-list"
-                and self._main_tabs().active == "tab-drive"):
-            self._drive_on_highlight(event.row_key.value or "")
+        Gated on the owning tab being active so a rebuild that resets the cursor
+        (a resize reflow, an expand/collapse, or the startup cache paint of an
+        unvisited tab) can't kick off a wasted preview fetch — unlike the old
+        in-place _reflow, a DataTable rebuild re-emits RowHighlighted. Real
+        cursor movement always happens with the tab active, so previews fire."""
+        table_id = event.data_table.id
+        key = event.row_key.value or ""
+        if table_id == "drive-list" and self._main_tabs().active == "tab-drive":
+            self._drive_on_highlight(key)
+        elif table_id == "email-list" and self._main_tabs().active == "tab-mail":
+            self._email_on_highlight(key)
 
     def _cal_month_cell_selected(self, event: DataTable.CellSelected) -> None:
         first_line = str(event.value).split("\n")[0]

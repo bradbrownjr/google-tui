@@ -15,6 +15,7 @@ from textual.screen import ModalScreen  # noqa: E402
 
 from google_tui import gauth  # noqa: E402
 from google_tui.main import CreateEventModal, EmailToTaskModal, GoogleTUI  # noqa: E402
+from textual.widgets import DataTable  # noqa: E402
 from tests.pilot.fakes import applied, base_patches  # noqa: E402
 
 FAKE_THREADS = [
@@ -41,8 +42,7 @@ async def run() -> None:
             await asyncio.sleep(2)
             app.action_goto_tab_mail()
             await pilot.pause()
-            assert app.query_one("#email-list").children, "email list empty"
-            await pilot.press("down")
+            assert app.query_one("#email-list", DataTable).row_count, "email list empty"
             await pilot.pause()
 
             # --- Email → Task ('t') ---
