@@ -23,7 +23,8 @@ def _first_row_text(app, list_id: str) -> str | None:
         # cells. Skip the '.. (up)' / 'Load more' sentinel rows.
         for row_key in lst.rows:
             key = row_key.value or ""
-            if key in ("d-up",) or key.startswith("load-more"):
+            if (key in ("d-up",) or key.startswith("load-more")
+                    or key.startswith("hdr-") or key.startswith("dash-empty")):
                 continue
             cells = lst.get_row(row_key)
             return " ".join(c.plain if hasattr(c, "plain") else str(c) for c in cells)

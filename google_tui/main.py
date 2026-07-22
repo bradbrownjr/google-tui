@@ -1077,18 +1077,26 @@ def _append_task_items(task_list, tasks, width: int = _TASK_ROW_DEFAULT_W,
             groups["upcoming"].append(t)
     headers = [("overdue", "OVERDUE"), ("today", "DUE TODAY"),
                ("upcoming", "UPCOMING"), ("none", "NO DUE DATE"), ("done", "DONE")]
-    items = []
+    seen: set = set()
+    rows: list[tuple[str, list]] = []
     for key, header in headers:
-        rows = groups[key]
-        if not rows:
+        grp = groups[key]
+        if not grp:
             continue
-        items.append(ListItem(Label(header), classes="dash-group-header-item"))
-        for t in rows:
-            cid = _mk_id("k", f"{t['_list']}-{t['id']}")
-            items.append(ListItem(Label(_task_line(t, width)), id=cid))
+        # Group header as a bold full-width row. Its key carries no "k-"
+        # prefix, so a cursor that lands on it is a harmless no-op in every
+        # task handler (_selected_task returns None) — same contract the old
+        # id-less header ListItem had.
+        rows.append((f"hdr-{key}", [Text(header, style="bold")]))
+        for t in grp:
+            cid = _unique_id(_mk_id("k", f"{t['_list']}-{t['id']}"), seen)
+            box = "[x]" if t.get("status") == "completed" else "[ ]"
+            pend = _PENDING_MARK if t.get("_pending") else ""
+            rows.append((cid, [f"{pend}{box} {t.get('title', '')}"]))
             if by_cid is not None:
                 by_cid[cid] = t
-    task_list.extend(items)
+    list_tables.rebuild_flat_table(task_list, [("Tasks", None)], rows,
+                                   flex_min=20, fallback_width=_TASK_ROW_DEFAULT_W)
 
 
 def _todays_events(events: list[dict], tz: dt.tzinfo | None = None) -> list[dict]:
@@ -1125,21 +1133,6 @@ def _todays_events(events: list[dict], tz: dt.tzinfo | None = None) -> list[dict
         s = e.get("start", {})
         return (0, "") if s.get("date") else (1, s.get("dateTime", ""))
     return sorted(out, key=_key)
-
-
-def _append_today_event_items(event_list, events, width: int = _EVENT_ROW_DEFAULT_W,
-                              by_cid: dict | None = None) -> None:
-    """TODAY-card row formatter: an all-day event shows "all day", a timed one
-    shows just its local start time (the date is redundant — every row is
-    today). Keeps the `e-<id>` widget id so Enter still opens EventModal via
-    _open_event_by_id. Same extend()-once rationale as the other lists."""
-    items = []
-    for e in events:
-        cid = _mk_id("e", e["id"])
-        items.append(ListItem(Label(_event_line(e, width)), id=cid))
-        if by_cid is not None:
-            by_cid[cid] = e
-    event_list.extend(items)
 
 
 def _event_day(e: dict) -> int | None:
@@ -1899,9 +1892,7 @@ class GoogleTUI(App):
         self._contacts_search_timer = None
         self._email_search_timer = None
         self._tasks_search_timer = None
-        self._tasks_apply_gen = 0
         self._events_search_timer = None
-        self._events_apply_gen = 0
         self._drive_search_timer = None
         self._news_search_timer = None
         # F12 hands the mouse back to the terminal so its native click-drag
@@ -2254,10 +2245,12 @@ class GoogleTUI(App):
             self._rebuild_drive_table()
 
     def _reflow_task_rows(self) -> None:
-        self._reflow_list_rows("task-list", getattr(self, "_tasks_by_cid", {}), _task_line)
+        if getattr(self, "_tasks_cache", None) is not None:
+            self._refresh_task_list()
 
     def _reflow_event_rows(self) -> None:
-        self._reflow_list_rows("event-list", getattr(self, "_events_by_cid", {}), _event_line)
+        if getattr(self, "_events_cache", None) is not None:
+            self._refresh_event_list()
 
     def _email_list_width(self) -> int:
         """Usable character width for one Email-list row: the #email-list
@@ -2413,12 +2406,12 @@ class GoogleTUI(App):
                         with Horizontal(id="events-bar", classes="btnrow hidden"):
                             yield Input(placeholder="Search events (summary/description)… (/)",
                                         id="events-search")
-                        yield ListView(id="event-list")
+                        yield DataTable(id="event-list", cursor_type="row", zebra_stripes=True)
                     with Container(id="tasks", classes="pane"):
                         yield self._pane_title_row("TASKS  (space=done, enter=detail)", 3)
                         with Horizontal(id="tasks-bar", classes="btnrow hidden"):
                             yield Input(placeholder="Search tasks (title/notes)… (/)", id="tasks-search")
-                        yield ListView(id="task-list")
+                        yield DataTable(id="task-list", cursor_type="row", zebra_stripes=True)
                     with Container(id="dash-mail", classes="pane"):
                         yield self._pane_title_row("MAIL  (unread, enter=open)", 0)
                         yield ListView(id="dash-mail-list")
@@ -3576,11 +3569,12 @@ class GoogleTUI(App):
 
     async def _apply_mail_data_async(self, gen, threads, events, tasks, tasklists, inbox_threads=None) -> None:
         await self.query_one("#email-list").clear()
-        await self.query_one("#event-list").clear()
-        await self.query_one("#task-list").clear()
         await self.query_one("#dash-mail-list").clear()
         if gen != self._mail_apply_gen:
             return  # superseded by a newer _apply_mail_data call
+        # #event-list and #task-list are DataTables now (rebuilt synchronously
+        # below via _fill_today_events / _append_task_items); only the still-
+        # ListView #email-list and #dash-mail-list need the awaited clear.
 
         self._threads_cache = {t["threadId"]: t for t in threads}
         self._email_selected &= set(self._threads_cache)
@@ -3601,7 +3595,7 @@ class GoogleTUI(App):
         # immediately and disappears the instant it replays — see the
         # _merge_pending_* module docs.
         self._events_cache = events
-        self._fill_today_events(self.query_one("#event-list"), events)
+        self._fill_today_events(events)
 
         self._tasks_cache = tasks
         disp_tasks = self._reconcile_tasks(tasks)
@@ -3610,10 +3604,9 @@ class GoogleTUI(App):
         except Exception:
             tasks_query = ""
         visible_tasks = _fuzzy_filter_tasks(disp_tasks, tasks_query) if tasks_query.strip() else disp_tasks
-        self._tasks_by_cid.clear()
-        _append_task_items(self.query_one("#task-list"), visible_tasks,
-                           self._content_width("task-list", _TASK_ROW_DEFAULT_W),
-                           self._tasks_by_cid)
+        self._tasks_by_cid = {}
+        _append_task_items(self.query_one("#task-list", DataTable), visible_tasks,
+                           by_cid=self._tasks_by_cid)
 
         self._populate_dash_mail(inbox_threads if inbox_threads is not None else threads)
 
@@ -4730,10 +4723,7 @@ class GoogleTUI(App):
 
     # ---- tasks ----
     def _selected_task(self) -> dict | None:
-        tl = self.query_one("#task-list")
-        if tl.highlighted_child is None:
-            return None
-        cid = tl.highlighted_child.id or ""
+        cid = list_tables.current_row_key(self.query_one("#task-list", DataTable)) or ""
         if not cid.startswith("k-"):
             return None
         raw = cid[2:]  # "<list>-<id>"
@@ -4748,34 +4738,21 @@ class GoogleTUI(App):
 
     def _refresh_task_list(self) -> None:
         # Debounced keystroke path for #tasks-search — re-renders from the
-        # already-fetched self._tasks_cache, no Google Tasks call per
-        # keystroke. Deliberately its OWN exclusive group, not "mail-apply":
-        # _apply_mail_data_async is a single coroutine that (re)builds
-        # email+event+task lists together, clearing #task-list before it
-        # re-populates it. If this ran in the same group, a keystroke here
-        # could cancel an in-flight _apply_mail_data_async worker AFTER its
-        # clear() but before its email/event repopulate, leaving those
-        # panes blank. Own group + own generation counter keeps this path
-        # from ever superseding that one.
-        self._tasks_apply_gen += 1
-        gen = self._tasks_apply_gen
-        self.run_worker(self._apply_task_list_async(gen, self._tasks_cache),
-                        exclusive=True, group="task-search-apply")
-
-    async def _apply_task_list_async(self, gen: int, tasks: list[dict]) -> None:
-        await self.query_one("#task-list").clear()
-        if gen != self._tasks_apply_gen:
-            return  # superseded by a newer apply call
-        tasks = self._reconcile_tasks(tasks)  # overlay offline creates/deletes
+        # already-fetched self._tasks_cache, no Google Tasks call per keystroke.
+        # Synchronous now: #task-list is a DataTable (clear is immediate), so
+        # the old separate-group/generation-counter guard that kept a keystroke
+        # from cancelling an in-flight _apply_mail_data_async mid-rebuild is no
+        # longer needed — the task rebuild here doesn't touch the still-async
+        # email/dash-mail clears in that worker.
+        tasks = self._reconcile_tasks(self._tasks_cache)  # overlay offline creates/deletes
         try:
             query = self.query_one("#tasks-search", Input).value
         except Exception:
             query = ""
         visible = _fuzzy_filter_tasks(tasks, query) if query.strip() else tasks
-        self._tasks_by_cid.clear()
-        _append_task_items(self.query_one("#task-list"), visible,
-                           self._content_width("task-list", _TASK_ROW_DEFAULT_W),
-                           self._tasks_by_cid)
+        self._tasks_by_cid = {}
+        _append_task_items(self.query_one("#task-list", DataTable), visible,
+                           by_cid=self._tasks_by_cid)
 
     def action_toggle_task(self):
         t = self._selected_task()
@@ -4815,42 +4792,45 @@ class GoogleTUI(App):
 
     # ---- events ----
     def _refresh_event_list(self) -> None:
-        # Debounced keystroke path for #events-search — near-copy of
-        # _refresh_task_list above (own exclusive group + own generation
-        # counter, same reason: _apply_mail_data_async rebuilds email+event+
-        # task together, and sharing its group would let a keystroke here
-        # cancel an in-flight full apply mid-rebuild).
-        self._events_apply_gen += 1
-        gen = self._events_apply_gen
-        self.run_worker(self._apply_event_list_async(gen, getattr(self, "_events_cache", [])),
-                        exclusive=True, group="event-search-apply")
+        # Debounced keystroke path for #events-search — synchronous rebuild of
+        # the TODAY card DataTable (see _refresh_task_list for why the old
+        # separate-group/generation-counter guard is gone).
+        self._fill_today_events(getattr(self, "_events_cache", []))
 
-    async def _apply_event_list_async(self, gen: int, events: list[dict]) -> None:
-        await self.query_one("#event-list").clear()
-        if gen != self._events_apply_gen:
-            return  # superseded by a newer apply call
-        self._fill_today_events(self.query_one("#event-list"), events)
+    _EVENT_COLS = [("When", 10), ("Summary", None)]
 
-    def _fill_today_events(self, event_list, events) -> None:
+    def _fill_today_events(self, events) -> None:
         """Shared TODAY-card populate (used by the full mail-data apply and the
         #events-search debounce path). Filters to today, overlays offline
         creates, applies any "/" search filter, and shows a friendly empty
         state when there's nothing today (but not when a search simply had no
         matches — that would misread as "no events today"). No "Load more" row:
-        the card is today-scoped, so there's nothing to paginate into."""
+        the card is today-scoped, so there's nothing to paginate into.
+
+        DataTable now: When + Summary columns. Each row keeps its `e-<id>` key
+        so Enter still opens EventModal via _open_event_by_id."""
+        table = self.query_one("#event-list", DataTable)
         disp = _todays_events(self._reconcile_events(events), tz=self.app_config.tzinfo)
         try:
             query = self.query_one("#events-search", Input).value
         except Exception:
             query = ""
         visible = _fuzzy_filter_events(disp, query) if query.strip() else disp
-        self._events_by_cid.clear()
+        self._events_by_cid = {}
         if visible:
-            _append_today_event_items(event_list, visible,
-                                      self._content_width("event-list", _EVENT_ROW_DEFAULT_W),
-                                      self._events_by_cid)
+            seen: set = set()
+            rows: list[tuple[str, list]] = []
+            for e in visible:
+                cid = _unique_id(_mk_id("e", e["id"]), seen)
+                self._events_by_cid[cid] = e
+                pend = _PENDING_MARK if e.get("_pending") else ""
+                rows.append((cid, [f"{pend}{_event_when(e)}", e.get("summary", "")]))
         elif not query.strip():
-            event_list.append(ListItem(Label("No events today 🎉"), id="dash-empty-events"))
+            rows = [("dash-empty-events", ["", "No events today 🎉"])]
+        else:
+            rows = []  # search with no matches: empty grid, not "no events"
+        list_tables.rebuild_flat_table(table, self._EVENT_COLS, rows,
+                                       flex_min=10, fallback_width=_EVENT_ROW_DEFAULT_W)
 
     def _populate_dash_mail(self, threads) -> None:
         """Dashboard MAIL card: an unread count header (Enter jumps to the Mail
@@ -4960,10 +4940,7 @@ class GoogleTUI(App):
             Label(f"{wiki_potd.get('title', '')}\n{description}", markup=False), id="dp-open"))
 
     def _highlighted_event_id(self) -> str | None:
-        el = self.query_one("#event-list")
-        if el.highlighted_child is None:
-            return None
-        cid = el.highlighted_child.id or ""
+        cid = list_tables.current_row_key(self.query_one("#event-list", DataTable)) or ""
         return cid[2:] if cid.startswith("e-") else None
 
     def _open_event_by_id(self, eid: str) -> None:
@@ -5020,8 +4997,6 @@ class GoogleTUI(App):
         cid = event.item.id or ""
         if cid == LOAD_MORE_EMAIL_ID:
             self.action_load_more_email()
-        elif cid == LOAD_MORE_EVENTS_ID:
-            self.action_load_more_events()
         elif cid.startswith("t-"):
             tid = cid[2:]
             order = self._email_thread_order()
@@ -5031,17 +5006,6 @@ class GoogleTUI(App):
                 order, index = [tid], 0
             self.push_screen(ThreadModal(self.svc, tid, thread_ids=order, index=index),
                               self._on_thread_modal_result)
-        elif cid.startswith("e-"):
-            self._open_event_by_id(cid[2:])
-        elif cid.startswith("k-"):
-            t = self._selected_task()
-            if t:
-                # Reconciled task list so a pending offline subtask create
-                # shows up as a child inside the modal (and a pending delete
-                # is already filtered out).
-                self.push_screen(
-                    TaskModal(self.svc, t, self._reconcile_tasks(getattr(self, "_tasks_cache", []))),
-                    self._on_task_modal_result)
         elif cid.startswith("bm-") or cid == "bm-up":
             self._bookmark_open_selected()
         elif cid == "dm-open":
@@ -5836,6 +5800,20 @@ class GoogleTUI(App):
             entry = self._news_by_cid.get(cid)
             if entry:
                 self.push_screen(NewsEntryModal(entry))
+        elif table_id == "event-list":
+            if cid.startswith("e-"):
+                self._open_event_by_id(cid[2:])
+        elif table_id == "task-list":
+            if cid.startswith("k-"):
+                t = self._selected_task()
+                if t:
+                    # Reconciled task list so a pending offline subtask create
+                    # shows up as a child inside the modal (and a pending delete
+                    # is already filtered out).
+                    self.push_screen(
+                        TaskModal(self.svc, t,
+                                  self._reconcile_tasks(getattr(self, "_tasks_cache", []))),
+                        self._on_task_modal_result)
         elif table_id == "drive-list":
             if cid == LOAD_MORE_DRIVE_ID:
                 self.action_load_more_drive()
