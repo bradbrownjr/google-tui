@@ -1142,30 +1142,6 @@ def _append_today_event_items(event_list, events, width: int = _EVENT_ROW_DEFAUL
     event_list.extend(items)
 
 
-def _append_drive_items(drive_list, files, path: str, items_by_cid: dict,
-                        width: int = _DRIVE_ROW_DEFAULT_W) -> None:
-    # Same extend()-once rationale as _append_email_items/_append_task_items/
-    # _append_today_event_items above. The "up" row is NOT part of the filterable
-    # file list — it's chrome, always present (except at "/") regardless of
-    # what #drive-search's current query is, same as it always was before
-    # search existed.
-    #
-    # items_by_cid is populated here (caller clears it first) rather than
-    # reversing _mk_id's sanitized widget id back into a real id via string
-    # slicing: _mk_id collapses every non-alnum/-/_ character to "-", which
-    # is lossy for FTP/SSH ids (full remote paths -- "/a/b.txt" and
-    # "/a-b.txt" sanitize to the same id). Looking the real item up by cid
-    # through this dict instead is correct for every source.
-    items = []
-    if path != "/":
-        items.append(ListItem(Label("📂 .. (up)"), id="d-up"))
-    for f in files:
-        cid = _mk_id("d", f["id"])
-        items.append(ListItem(Label(_drive_line(f, width)), id=cid))
-        items_by_cid[cid] = f
-    drive_list.extend(items)
-
-
 def _event_day(e: dict) -> int | None:
     s = e.get("start", {}).get("dateTime") or e.get("start", {}).get("date", "")
     try:
@@ -1598,6 +1574,7 @@ class GoogleTUI(App):
     #settings-routes-key { width: 40; margin-right: 2; }
     #contacts-search { width: 1fr; margin-right: 1; }
     #contacts-list { height: 1fr; }
+    #drive-list { height: 1fr; }
     #c-to-suggestions { height: auto; max-height: 6; border: round $panel-darken-1; }
     #ett-notes { height: 8; border: round $panel-darken-1; margin-top: 1; }
     #ett-list { width: 1fr; margin-bottom: 1; }
@@ -1774,8 +1751,8 @@ class GoogleTUI(App):
         # folder listing, or None if there isn't one — set by
         # _fetch_drive_files (always reflects whichever folder was fetched
         # most recently), read by action_load_more_drive and the "Load
-        # more" row _apply_drive_files_async/_apply_drive_search_async
-        # append when it's not None. Same shape as _email_next_page_token.
+        # more" row _rebuild_drive_table appends when it's not None. Same
+        # shape as _email_next_page_token.
         self._drive_next_page_token: str | None = None
         # Drive preview is debounced (see _drive_on_highlight) and memoised for
         # the session: highlighting a row costs a metadata round-trip + a file
@@ -1791,7 +1768,7 @@ class GoogleTUI(App):
         # self.svc itself becomes available.
         self._drive_backend: "drive_sources.DriveBackend | None" = None
         # cid -> normalized item dict for the CURRENTLY RENDERED #drive-list
-        # rows, rebuilt every _append_drive_items call. Needed because
+        # rows, rebuilt every _rebuild_drive_table call. Needed because
         # _mk_id's sanitizing (non-alnum/-/_ -> "-") is lossy for FTP/SSH ids
         # (full remote paths, e.g. "/a/b.txt" and "/a-b.txt" collide) -- a
         # plain cid[2:] reversal, safe enough for Google's near-alnum opaque
@@ -1827,7 +1804,6 @@ class GoogleTUI(App):
         self._status_base: str = ""
         self._loading_modal: LoadingModal | None = None
         self._mail_apply_gen = 0
-        self._drive_apply_gen = 0
         self._news_apply_gen = 0
         self._news_by_cid: dict[str, dict] = {}
         # Full combined-feed entry list from the last _apply_news_data call —
@@ -1927,7 +1903,6 @@ class GoogleTUI(App):
         self._events_search_timer = None
         self._events_apply_gen = 0
         self._drive_search_timer = None
-        self._drive_search_apply_gen = 0
         self._news_search_timer = None
         self._news_search_apply_gen = 0
         # F12 hands the mouse back to the terminal so its native click-drag
@@ -2270,7 +2245,11 @@ class GoogleTUI(App):
             self._refresh_contacts_list()
 
     def _reflow_drive_rows(self) -> None:
-        self._reflow_list_rows("drive-list", getattr(self, "_drive_items_by_cid", {}), _drive_line)
+        # DataTable: rebuild at the new width (recomputes the flex Name column)
+        # rather than editing Labels in place. Guarded so a resize before the
+        # first Drive load doesn't rebuild an empty listing over nothing.
+        if getattr(self, "_drive_files", None) is not None:
+            self._rebuild_drive_table()
 
     def _reflow_task_rows(self) -> None:
         self._reflow_list_rows("task-list", getattr(self, "_tasks_by_cid", {}), _task_line)
@@ -2510,7 +2489,7 @@ class GoogleTUI(App):
                         yield Input(placeholder="Search this folder (name)… (/)", id="drive-search")
                     with Horizontal(id="drive-body"):
                         with Vertical(id="drive-list-col"):
-                            yield ListView(id="drive-list")
+                            yield DataTable(id="drive-list", cursor_type="row", zebra_stripes=True)
                         with VerticalScroll(id="drive-preview-col"):
                             yield Static(id="drive-preview-meta")
                             yield RichLog(id="drive-preview-text", markup=False, wrap=True)
@@ -3709,6 +3688,13 @@ class GoogleTUI(App):
         elif tab_id == "tab-drive":
             self.query_one("#drive-list").focus()
             self._apply_drive_preview_visibility()
+            # Preview the already-highlighted row on entry. The old ListView
+            # fired this at startup (no tab guard); on_data_table_row_highlighted
+            # now suppresses off-tab highlights (resize rebuilds re-emit them),
+            # so kick the preview here instead when the tab actually opens.
+            cid = list_tables.current_row_key(self.query_one("#drive-list", DataTable))
+            if cid:
+                self._drive_on_highlight(cid)
         elif tab_id == "tab-browser":
             self.query_one("#browser-url").focus()
             if not self._browser_started:
@@ -5035,8 +5021,6 @@ class GoogleTUI(App):
             self.action_load_more_email()
         elif cid == LOAD_MORE_EVENTS_ID:
             self.action_load_more_events()
-        elif cid == LOAD_MORE_DRIVE_ID:
-            self.action_load_more_drive()
         elif cid.startswith("t-"):
             tid = cid[2:]
             order = self._email_thread_order()
@@ -5057,8 +5041,6 @@ class GoogleTUI(App):
                 self.push_screen(
                     TaskModal(self.svc, t, self._reconcile_tasks(getattr(self, "_tasks_cache", []))),
                     self._on_task_modal_result)
-        elif cid.startswith("d-") or cid == "d-up":
-            self._drive_open_selected()
         elif cid.startswith("bm-") or cid == "bm-up":
             self._bookmark_open_selected()
         elif cid.startswith("n-"):
@@ -5093,9 +5075,7 @@ class GoogleTUI(App):
             self._open_dashboard_link(self._wiki_potd)
 
     def on_list_view_highlighted(self, event: ListView.Highlighted) -> None:
-        if event.list_view.id == "drive-list":
-            self._drive_on_highlight(event.item)
-        elif event.list_view.id == "email-list":
+        if event.list_view.id == "email-list":
             self._email_on_highlight(event.item)
 
     # ---- modal returns ----
@@ -5855,6 +5835,25 @@ class GoogleTUI(App):
         if table_id == "contacts-list":
             if cid.startswith("ct-"):
                 self._open_contact_detail(cid)
+        elif table_id == "drive-list":
+            if cid == LOAD_MORE_DRIVE_ID:
+                self.action_load_more_drive()
+            else:
+                self._drive_open_selected(cid)
+
+    def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
+        """Row-cursor moved on a migrated list — the preview-on-highlight path
+        (was on_list_view_highlighted). Drive only for now; the Mail preview
+        pane joins when the Mail list migrates (Phase 4).
+
+        Gated on the Drive tab being active so a rebuild that resets the cursor
+        (a resize reflow, or the startup cache paint of an unvisited tab) can't
+        kick off a wasted preview fetch — unlike the old in-place _reflow, a
+        DataTable rebuild re-emits RowHighlighted. Folder navigation always
+        happens with the tab active, so its preview still fires."""
+        if (event.data_table.id == "drive-list"
+                and self._main_tabs().active == "tab-drive"):
+            self._drive_on_highlight(event.row_key.value or "")
 
     def _cal_month_cell_selected(self, event: DataTable.CellSelected) -> None:
         first_line = str(event.value).split("\n")[0]
@@ -6081,9 +6080,7 @@ class GoogleTUI(App):
         """
         if self._main_tabs().active != "tab-drive":
             return
-        lst = self.query_one("#drive-list")
-        item = lst.highlighted_child
-        cid = item.id or "" if item is not None else ""
+        cid = list_tables.current_row_key(self.query_one("#drive-list", DataTable)) or ""
         if not cid.startswith("d-") or cid == "d-up":
             return
         f = self._drive_items_by_cid.get(cid)
@@ -6200,30 +6197,40 @@ class GoogleTUI(App):
         files = [_with_is_folder(f) for f in files]
         self._drive_files = files
         self.query_one("#drive-path").update(path)
-        # See the NOTE in _apply_mail_data_async: ListView.clear() must
-        # actually be awaited (a fire-and-forget clear + deferred populate
-        # isn't reliably finished within one refresh cycle for a bulk
-        # removal), since this can be called twice per session (cache, then
-        # live refresh) with the same file IDs.
-        self._drive_apply_gen += 1
-        gen = self._drive_apply_gen
-        self.run_worker(self._apply_drive_files_async(gen, files, path), exclusive=True, group="drive-apply")
+        # DataTable.clear() is synchronous, so the old awaited-worker +
+        # generation-counter dance (needed only because ListView.clear()
+        # returned an AwaitRemove) is gone: rebuild inline. Both callers of
+        # this (folder nav on the main thread, load-more via call_from_thread)
+        # already run on the main thread, so a straight rebuild can't overlap.
+        self._rebuild_drive_table()
 
-    async def _apply_drive_files_async(self, gen: int, files: list[dict], path: str) -> None:
-        await self.query_one("#drive-list").clear()
-        if gen != self._drive_apply_gen:
-            return  # superseded by a newer _apply_drive_files call
+    def _rebuild_drive_table(self) -> None:
+        """(Re)paint #drive-list from self._drive_files through the current
+        #drive-search filter, plus the '.. (up)' chrome row and the 'Load
+        more' sentinel. Shared by folder nav and the debounced search."""
         try:
             query = self.query_one("#drive-search", Input).value
         except Exception:
             query = ""
-        visible = _fuzzy_filter_drive_files(files, query) if query.strip() else files
-        drive_list = self.query_one("#drive-list")
-        self._drive_items_by_cid.clear()
-        _append_drive_items(drive_list, visible, path, self._drive_items_by_cid,
-                            self._content_width("drive-list", _DRIVE_ROW_DEFAULT_W))
-        _append_load_more_row(drive_list, bool(self._drive_next_page_token) and not query.strip(),
-                              LOAD_MORE_DRIVE_ID, "↓ Load more files…")
+        visible = (_fuzzy_filter_drive_files(self._drive_files, query)
+                   if query.strip() else self._drive_files)
+        self._drive_items_by_cid = {}
+        # Seed the dedup set with the two chrome keys so a file whose slugified
+        # id happens to collide with them still gets a unique row key.
+        seen: set[str] = {"d-up", LOAD_MORE_DRIVE_ID}
+        rows: list[tuple[str, list]] = []
+        if self._drive_path != "/":
+            rows.append(("d-up", ["📂 .. (up)"]))
+        for f in visible:
+            cid = _unique_id(_mk_id("d", f["id"]), seen)
+            self._drive_items_by_cid[cid] = f
+            icon = "📁" if f["is_folder"] else "📄"
+            rows.append((cid, [f"{icon} {f.get('name', '')}"]))
+        if self._drive_next_page_token and not query.strip():
+            rows.append((LOAD_MORE_DRIVE_ID, ["↓ Load more files…"]))
+        list_tables.rebuild_flat_table(
+            self.query_one("#drive-list", DataTable), [("Name", None)], rows,
+            flex_min=10, fallback_width=_DRIVE_ROW_DEFAULT_W)
 
     def _drive_load(self, folder_id: str = "root", path: str = "/") -> None:
         try:
@@ -6271,38 +6278,13 @@ class GoogleTUI(App):
     def _refresh_drive_list(self) -> None:
         # Debounced keystroke path for #drive-search — filters
         # self._drive_files, the CURRENT folder's listing only (never the
-        # whole Drive tree, never a fresh Drive call per keystroke). Own
-        # exclusive group + own generation counter, same reason as
-        # _refresh_task_list/_refresh_event_list above: sharing "drive-apply"
-        # would let a keystroke here cancel an in-flight folder navigation
-        # (_apply_drive_files_async) mid-rebuild.
-        self._drive_search_apply_gen += 1
-        gen = self._drive_search_apply_gen
-        self.run_worker(
-            self._apply_drive_search_async(gen, self._drive_files, self._drive_path),
-            exclusive=True, group="drive-search-apply")
+        # whole Drive tree, never a fresh Drive call per keystroke). A straight
+        # synchronous rebuild now (DataTable.clear() is immediate); it and the
+        # folder-nav rebuild both run on the main thread, so no exclusive-group
+        # / generation-counter guard is needed anymore.
+        self._rebuild_drive_table()
 
-    async def _apply_drive_search_async(self, gen: int, files: list[dict], path: str) -> None:
-        await self.query_one("#drive-list").clear()
-        if gen != self._drive_search_apply_gen:
-            return  # superseded by a newer apply call
-        try:
-            query = self.query_one("#drive-search", Input).value
-        except Exception:
-            query = ""
-        visible = _fuzzy_filter_drive_files(files, query) if query.strip() else files
-        drive_list = self.query_one("#drive-list")
-        self._drive_items_by_cid.clear()
-        _append_drive_items(drive_list, visible, path, self._drive_items_by_cid,
-                            self._content_width("drive-list", _DRIVE_ROW_DEFAULT_W))
-        _append_load_more_row(drive_list, bool(self._drive_next_page_token) and not query.strip(),
-                              LOAD_MORE_DRIVE_ID, "↓ Load more files…")
-
-    def _drive_open_selected(self) -> None:
-        lst = self.query_one("#drive-list")
-        if lst.highlighted_child is None:
-            return
-        cid = lst.highlighted_child.id or ""
+    def _drive_open_selected(self, cid: str) -> None:
         if cid == "d-up":
             if self._drive_folder_stack:
                 parent_id, parent_path = self._drive_folder_stack.pop()
@@ -6317,10 +6299,9 @@ class GoogleTUI(App):
             self._drive_folder_stack.append((self._drive_folder_id, self._drive_path))
             self._drive_load(f["id"], self._drive_path + f["name"] + "/")
 
-    def _drive_on_highlight(self, item: ListItem | None) -> None:
-        if item is None:
+    def _drive_on_highlight(self, cid: str) -> None:
+        if not cid:
             return
-        cid = item.id or ""
         if cid == "d-up":
             self._drive_cancel_pending_preview()
             self.query_one("#drive-preview-meta").update("(parent folder)")

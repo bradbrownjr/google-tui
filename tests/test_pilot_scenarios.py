@@ -31,6 +31,7 @@ SCENARIOS = [
     "tests.pilot.browser_sftp_redirect",
     "tests.pilot.responsive_rows",
     "tests.pilot.contacts_datatable",
+    "tests.pilot.drive_datatable_nav",
     "tests.pilot.toast_dedup_reauth",
 ]
 

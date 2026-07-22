@@ -11,13 +11,23 @@ from tests.isolate import isolate
 
 isolate(prefix="google-tui-pilot-responsive-")
 
-from textual.widgets import Label  # noqa: E402
+from textual.widgets import DataTable, Label  # noqa: E402
 from google_tui.main import GoogleTUI  # noqa: E402
 from tests.pilot.fakes import applied, base_patches  # noqa: E402
 
 
 def _first_row_text(app, list_id: str) -> str | None:
     lst = app.query_one(f"#{list_id}")
+    if isinstance(lst, DataTable):
+        # Migrated lists (ROADMAP P3): read the first non-chrome data row's
+        # cells. Skip the '.. (up)' / 'Load more' sentinel rows.
+        for row_key in lst.rows:
+            key = row_key.value or ""
+            if key in ("d-up",) or key.startswith("load-more"):
+                continue
+            cells = lst.get_row(row_key)
+            return " ".join(c.plain if hasattr(c, "plain") else str(c) for c in cells)
+        return None
     for item in lst.children:
         if getattr(item, "id", None) and "empty" not in item.id:
             return str(item.query_one(Label).render())
