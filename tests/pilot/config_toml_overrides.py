@@ -15,7 +15,7 @@ from tests.isolate import isolate
 _HOME = isolate(prefix="google-tui-pilot-config-")
 
 _CONFIG_TOML = """
-pane_order = ["dash-weather", "dash-potd", "events"]
+pane_order = ["dash-weather", "dash-potd", "dash-time"]
 refresh_interval_minutes = 7
 """
 _config_path = _HOME / "config" / "config.toml"
@@ -35,13 +35,13 @@ async def run() -> None:
     app.settings.dashboard_panes_enabled = list(DASH_PANE_IDS)
 
     # Loaded correctly off disk before the app even starts.
-    assert app.app_config.pane_order == ["dash-weather", "dash-potd", "events"]
+    assert app.app_config.pane_order == ["dash-weather", "dash-potd", "dash-time"]
     assert app.app_config.refresh_interval_minutes == 7
 
     # Cycle order: the three named ids come first in that order, followed by
     # every other DASH_PANE_IDS entry (unmentioned ids appended, in their
     # original relative order, so nothing becomes unreachable).
-    expected_prefix = ["dash-weather", "dash-potd", "events"]
+    expected_prefix = ["dash-weather", "dash-potd", "dash-time"]
     assert app._dash_cycle_ids[:3] == expected_prefix, app._dash_cycle_ids
     assert set(app._dash_cycle_ids) == set(DASH_PANE_IDS), app._dash_cycle_ids
     assert len(app._dash_cycle_ids) == len(DASH_PANE_IDS)

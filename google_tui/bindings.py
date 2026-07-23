@@ -84,6 +84,13 @@ GLOBAL_ACTIONS: list[ActionSpec] = [
     # reasoning already established for Ctrl+R/Ctrl+H/Ctrl+Q/Ctrl+P below),
     # unlike the Ctrl+<digit>/F9+/Alt+<digit> caveats noted elsewhere in this file.
     ActionSpec("hermes_popup", "ctrl+k", "Ask"),
+    # "g": jump from the focused Dashboard card to wherever its data actually
+    # comes from -- see GoogleTUI.action_dash_jump's docstring for the full
+    # per-card mapping (app tab for Mail/News/Time/Tasks, an external
+    # website for Weather/Stocks/Word/Picture, no-op for Hermes). Dashboard-
+    # tab-gated like the other bare-letter actions below, so "g" elsewhere
+    # (Mail/Drive/etc) is harmlessly inert.
+    ActionSpec("dash_jump", "g", "Jump"),
     ActionSpec("reply", "r", "Reply"),
     ActionSpec("reply_all", "a", "Reply All"),
     ActionSpec("forward", "f", "Forward"),
@@ -210,20 +217,22 @@ HELP_GLOBAL_TEXT = (
 # other tab (including tab-mail, which is Email-only -- see
 # GoogleTUI._context_help_scope). The Dashboard became the real Google-native
 # dashboard 2026-07-17 (a TODAY/TASKS/MAIL/NEWS card grid + Hermes) --
-# pane:events (now "TODAY") and pane:tasks keep their prior text since those
-# cards' interactions didn't change; pane:dash-mail/dash-news are from
-# 2026-07-17, pane:dash-weather/dash-stocks/dash-word/dash-potd from
-# 2026-07-19 (ROADMAP P4's external cards).
+# pane:dash-mail/dash-news are from 2026-07-17, pane:dash-weather/dash-stocks/
+# dash-word/dash-potd from 2026-07-19 (ROADMAP P4's external cards).
+# pane:events (was "TODAY") was retired 2026-07-23 and replaced by
+# pane:dash-time (clock + compact month calendar + the same today's-events
+# list, now titled "TIME"). Every card except Hermes also has a "G Jump" --
+# see GoogleTUI.action_dash_jump's docstring for what it does per card.
 CONTEXT_HELP: dict[str, str] = {
     "tab:tab-mail": "Enter Open   c Compose   r Reply   a Reply All   f Forward   u Unread   * Star   z Snooze   t Task   e Event   x Select   X Bulk   Space Expand   l Labels   / Search   p Toggle Preview   Ctrl+Z Undo",
-    "pane:events": "Enter/Space Detail   n New Event   / Search",
-    "pane:tasks": "Space Toggle Complete   Enter Detail   / Search",
-    "pane:dash-mail": "Enter/Space Open Thread (header: open Mail tab)",
-    "pane:dash-news": "Enter/Space Open Headline",
-    "pane:dash-weather": "Configure in Settings -> Dashboard",
-    "pane:dash-stocks": "Configure in Settings -> Dashboard",
-    "pane:dash-word": "Enter Open Full Entry",
-    "pane:dash-potd": "Enter Open Image Page",
+    "pane:dash-time": "Enter/Space Detail   n New Event   / Search   G Jump to Calendar",
+    "pane:tasks": "Space Toggle Complete   Enter Detail   / Search   G Jump to Calendar",
+    "pane:dash-mail": "Enter/Space Open Thread (header: open Mail tab)   G Jump to Mail",
+    "pane:dash-news": "Enter/Space Open Headline   G Jump to News",
+    "pane:dash-weather": "Configure in Settings -> Dashboard   G Jump to source",
+    "pane:dash-stocks": "Configure in Settings -> Dashboard   G Jump to source",
+    "pane:dash-word": "Enter Open Full Entry   G Jump to source",
+    "pane:dash-potd": "Enter Open Image Page   G Jump to source",
     "pane:hermes": "Enter Ask",
     "tab:tab-calendar": "[ / ] Prev/Next Month or Week   Enter Day Detail   n New Event",
     "tab:tab-drive": "Enter Open Folder / Reload Preview   / Search (this folder)   p Toggle Preview   d Download",
@@ -281,13 +290,33 @@ _CLICK_ACTIONS: dict[str, dict[str, str]] = {
         "l Labels": "focus_label_select",
         "/ Search": "focus_search",
     },
-    "pane:events": {
+    "pane:dash-time": {
         "n New Event": "new_event",
         "/ Search": "focus_search",
+        "G Jump to Calendar": "dash_jump",
     },
     "pane:tasks": {
         "Space Toggle Complete": "context_space",
         "/ Search": "focus_search",
+        "G Jump to Calendar": "dash_jump",
+    },
+    "pane:dash-mail": {
+        "G Jump to Mail": "dash_jump",
+    },
+    "pane:dash-news": {
+        "G Jump to News": "dash_jump",
+    },
+    "pane:dash-weather": {
+        "G Jump to source": "dash_jump",
+    },
+    "pane:dash-stocks": {
+        "G Jump to source": "dash_jump",
+    },
+    "pane:dash-word": {
+        "G Jump to source": "dash_jump",
+    },
+    "pane:dash-potd": {
+        "G Jump to source": "dash_jump",
     },
     "tab:tab-calendar": {
         "n New Event": "new_event",
@@ -420,41 +449,56 @@ MAIL TAB
   Save Draft. "Send" (5s undo countdown) or "Save Draft" to file it in Gmail
   Drafts instead. Both queue offline and replay on reconnect.
 
-DASHBOARD TAB (card grid + Hermes; Google-native cards 2026-07-17, external
-cards 2026-07-19. All cards are enabled by default; Settings → Dashboard
-lets you enable/disable any card and configure Weather/Stocks — that
-checklist is a "library" future cards can still grow into.)
-  Today card:   today's events (all-day + timed); Enter/Space open detail,
-                n new event, / search (live filter over summary/description)
+DASHBOARD TAB (two-column card layout + Hermes; Google-native cards
+2026-07-17, external cards 2026-07-19, two independently-sized columns
+2026-07-23 -- wide left for Mail/News/Word/Picture's prose, narrow right for
+Time/Tasks/Weather/Stocks' glanceable content. All cards are enabled by
+default; Settings → Dashboard lets you enable/disable any card and configure
+Weather/Stocks — that checklist is a "library" future cards can still grow
+into. Every card except Hermes also has a "g" shortcut that jumps to
+wherever its data actually comes from: the matching app tab for Mail/News/
+Time/Tasks, or the real external source (opened in the Browser tab) for
+Weather/Stocks/Word/Picture.)
+  Time card:    a clock (local time; Settings → Dashboard can add a second
+                UTC line), a compact read-only month calendar (today
+                highlighted), and today's events below (all-day + timed);
+                Enter/Space open event detail, n new event, / search (live
+                filter over summary/description), g jumps to the Calendar tab
   Tasks card:   tasks grouped Overdue / Due today / Upcoming / No due date /
-                Done; Space toggle complete, Enter open detail, / search
+                Done; Space toggle complete, Enter open detail, / search,
+                g jumps to the Calendar tab (Tasks has no tab of its own)
   Mail card:    unread count + most-recent unread threads; Enter/Space opens
-                the thread (or, on the count header, jumps to the Mail tab)
+                the thread (or, on the count header, jumps to the Mail tab),
+                g jumps to the Mail tab
   News card:    top headlines from your subscribed feeds, rotating; Enter/
-                Space opens the entry
+                Space opens the entry, g jumps to the News tab
   Weather card: current conditions (Open-Meteo, no API key) for the location
                 set in Settings → Dashboard, defaulting to one guessed from
-                your IP (or Portland, ME if that fails) when unset
-  Stocks card:  latest quotes (Stooq, no API key) for the symbols set in
-                Settings → Dashboard, defaulting to GOOG/MSFT/AAPL; clear
-                the symbol list there to turn the card's fetch off
+                your IP (or Portland, ME if that fails) when unset; g opens a
+                weather search for that location in the Browser tab
+  Stocks card:  latest quotes (Yahoo Finance, no API key) for the symbols set
+                in Settings → Dashboard, defaulting to GOOG/MSFT/AAPL; clear
+                the symbol list there to turn the card's fetch off. g opens
+                the highlighted symbol's Google Finance page in the
+                Browser tab
   Word of the day card:
-                today's word + definition (Merriam-Webster); Enter opens the
-                full dictionary entry in the Browser tab
+                today's word + definition (Merriam-Webster); Enter (or g)
+                opens the full dictionary entry in the Browser tab
   Picture of the day card:
                 today's featured Wikipedia image's caption (no in-terminal
-                image rendering yet); Enter opens the image page in the
-                Browser tab
+                image rendering yet); Enter (or g) opens the image page in
+                the Browser tab
   Hermes card:  type a question, Enter to ask. Its title always shows the
                 currently configured AI provider (Settings → AI Provider),
                 e.g. "ASK CLAUDE CODE". Also reachable as a Ctrl+K popup
-                from anywhere — see GLOBAL above.
+                from anywhere — see GLOBAL above. (No "g" -- nowhere to jump
+                to from the Dashboard's own Ask card.)
 
 CALENDAR TAB
   [ / ]         Previous / next month (or week, in Week view)
   Enter/click   Open a day's full event list (Month view)
                 Open an event, or a chooser if several share an hour (Week view)
-  n             New event (also works from the Dashboard tab's Events pane) —
+  n             New event (also works from the Dashboard tab's Time card) —
                 title + date + start/end time, or an all-day toggle
 
 DRIVE TAB
@@ -549,7 +593,9 @@ SETTINGS TAB
   Input+Button  Set/save the Weather card's location (blank = auto-detect
                 via GeoIP, or Portland, ME) and the Stocks card's ticker
                 list (default GOOG/MSFT/AAPL; blank disables) (Dashboard)
-  Checklist     Enable/disable Dashboard cards (Today/Tasks/Mail/News/
+  Switch        Show a second UTC line on the Time card's clock, under the
+                local time (Dashboard)
+  Checklist     Enable/disable Dashboard cards (Time/Tasks/Mail/News/
                 Weather/Stocks/Word of the Day/Picture of the Day/Hermes) —
                 all enabled by default, at least one stays enabled (Dashboard)
 

@@ -76,8 +76,8 @@ class Settings:
     # know about main.py's card registry. Toggle any card off from
     # Settings -> Dashboard.
     dashboard_panes_enabled: list[str] = field(
-        default_factory=lambda: ["events", "tasks", "dash-mail", "dash-news",
-                                  "dash-weather", "dash-stocks", "dash-word", "dash-potd", "hermes"])
+        default_factory=lambda: ["dash-mail", "dash-news", "dash-word", "dash-potd",
+                                  "dash-time", "tasks", "dash-weather", "dash-stocks", "hermes"])
     # Dashboard "external cards" config (ROADMAP P4, 2026-07-19). Left unset
     # on purpose: an unset weather_location means "auto" -- GoogleTUI.
     # _resolve_weather_location guesses a location from the caller's IP
@@ -89,6 +89,12 @@ class Settings:
     # there to turn the STOCKS card's fetch off entirely.
     weather_location: str | None = None  # free-text, e.g. "Seattle, WA" (Open-Meteo geocodes it); None = auto (GeoIP or Portland, ME)
     stock_symbols: list[str] = field(default_factory=lambda: ["GOOG", "MSFT", "AAPL"])  # e.g. ["AAPL", "MSFT"]; empty disables the card
+    # TIME card (2026-07-23, replaced the old standalone "events"/TODAY card):
+    # clock + compact month calendar + today's events. Local time is always
+    # shown; this adds a second UTC line underneath (the common ham-radio
+    # "local + Zulu" pattern) -- no timezone picker, since local-vs-UTC is the
+    # only distinction asked for.
+    clock_show_utc: bool = False
     # Snoozed threads (ROADMAP P2): {thread_id: remind-at ISO datetime}. Gmail
     # has no native snooze, so the app removes INBOX now and re-adds it when
     # the time passes (checked each online refresh — see
@@ -121,6 +127,14 @@ def load_settings() -> Settings:
         settings.dashboard_panes_enabled = Settings.__dataclass_fields__["dashboard_panes_enabled"].default_factory()
     if data.get("stock_symbols") == []:
         settings.stock_symbols = Settings.__dataclass_fields__["stock_symbols"].default_factory()
+    # One-time migration (2026-07-23): the standalone "events"/TODAY card was
+    # folded into the new "dash-time" card (clock + mini calendar + today's
+    # events) -- unlike the migration above, this always applies (a straight
+    # id rename, not a "restore some default" heuristic), so anyone who had
+    # "events" enabled/disabled keeps that same choice for its successor.
+    if "events" in settings.dashboard_panes_enabled and "dash-time" not in settings.dashboard_panes_enabled:
+        settings.dashboard_panes_enabled = [
+            "dash-time" if p == "events" else p for p in settings.dashboard_panes_enabled]
     return settings
 
 

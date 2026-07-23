@@ -4,14 +4,18 @@ Top-level layout is nine full-width TABS in the blue bar: Dashboard, Mail,
 Calendar, Drive, Browser, News, Navigation, Contacts, Settings (F1..F8, also
 Ctrl+1..8 -- Settings is the odd one out at Ctrl+9, no F-key alias, since
 F9+ isn't reliably delivered by every terminal). The Mail tab is Email-only
-(list + toggleable preview pane, "p"). The Dashboard tab (2026-07-17) is a
-2x2 card grid --- TODAY (today's events), TASKS (grouped), MAIL (unread),
-NEWS (rotating headlines) --- plus a full-width ASK HERMES card below; the
-external cards (weather/stocks/dictionary/Wikipedia -- ROADMAP P4) are still
-open. Dashboard cards are reached with Tab/Shift+Tab or Alt+arrows (no
-per-card digit shortcut -- Alt+<digit> pane jumps were removed 2026-07-23,
-confirmed unreachable over SSH through some terminals). See AGENTS.md for
-the full keybinding reference and the DASH_ADJACENCY rationale.
+(list + toggleable preview pane, "p"). The Dashboard tab (2026-07-17, grown
+2026-07-19 with weather/stocks/dictionary/Wikipedia, restructured 2026-07-23
+into two independent columns) is a wide-left/narrow-right card layout --
+MAIL (unread), NEWS (headlines), WORD OF THE DAY, PICTURE OF THE DAY on the
+wide side; TIME (clock + compact month calendar + today's events), TASKS
+(grouped), WEATHER, STOCKS on the narrow side -- plus a full-width ASK
+HERMES card below both. Dashboard cards are reached with Tab/Shift+Tab or
+Alt+arrows (no per-card digit shortcut -- Alt+<digit> pane jumps were
+removed 2026-07-23, confirmed unreachable over SSH through some terminals);
+"g" jumps from the focused card to whatever tab/website its data comes
+from. See AGENTS.md for the full keybinding reference and the
+DASH_ADJACENCY rationale.
 """
 from __future__ import annotations
 
@@ -75,16 +79,31 @@ from .app_config import AppConfig, load_config
 # below it. PANE_IDS now covers ONLY Email's own tab, which has nothing to
 # switch to; DASH_PANE_IDS/DASH_ADJACENCY (below) is the Dashboard's own group.
 PANE_IDS = ["email"]
-# Container ids of the Dashboard's nine cards, in Tab/Shift+Tab cycle order.
-# "events"/"tasks"/"hermes" keep their pre-2026-07-17 ids (so the
-# #event-list/#task-list populate paths are unchanged); dash-mail/dash-news/
-# dash-weather/dash-stocks/dash-word/dash-potd are all net-new (2026-07-17 and
-# 2026-07-19), reachable via Tab/Shift+Tab and Alt+arrows only.
-DASH_PANE_IDS = ["events", "tasks", "dash-mail", "dash-news",
-                  "dash-weather", "dash-stocks", "dash-word", "dash-potd", "hermes"]
+# Container ids of the Dashboard's nine cards. Order matches the two-column
+# layout (2026-07-23): the WIDE left column (cards that want more horizontal
+# room -- unread threads, headlines, prose) then the NARROW right column
+# (compact/glanceable cards), then Hermes (full width, below both). This is
+# also the Tab/Shift+Tab cycle order and the fallback "first enabled card"
+# order -- unrelated to DASH_ADJACENCY's spatial (up/down/left/right) map
+# below, which is what Alt+arrows actually walks.
+# "tasks"/"hermes" keep their pre-2026-07-17 ids (so the #task-list populate
+# path is unchanged); "events" (the old standalone TODAY card) was retired
+# 2026-07-23 -- its content (today's events) moved into the new "dash-time"
+# card (clock + compact month calendar + today's events), which keeps
+# #event-list/#events-search's ids so nothing downstream needed to change.
+_DASH_WIDE_IDS = ["dash-mail", "dash-news", "dash-word", "dash-potd"]
+_DASH_NARROW_IDS = ["dash-time", "tasks", "dash-weather", "dash-stocks"]
+DASH_PANE_IDS = _DASH_WIDE_IDS + _DASH_NARROW_IDS + ["hermes"]
+# pane id -> which #dash-cards column Container it lives in ("hermes" isn't
+# in either -- it's outside #dash-cards entirely, its own full-width slice).
+# Used by _apply_narrow_layout to hide the OTHER column when narrow (so the
+# active pane's column can take the full width instead of keeping its
+# non-narrow 65%/35% share).
+_DASH_COL_OF = {pid: "dash-col-wide" for pid in _DASH_WIDE_IDS}
+_DASH_COL_OF.update({pid: "dash-col-narrow" for pid in _DASH_NARROW_IDS})
 PANE_TITLES = {
     "email": "EMAIL",
-    "events": "TODAY",
+    "dash-time": "TIME",
     "tasks": "TASKS",
     "dash-mail": "MAIL",
     "dash-news": "NEWS",
@@ -95,23 +114,25 @@ PANE_TITLES = {
     "hermes": "ASK HERMES",
 }
 # The card grid + full-width Hermes below drives Alt+arrow adjacency as a
-# real 2-D map (see CHANGELOG 2026-07-16/2026-07-17/2026-07-19). Layout (2
-# columns x 4 card rows + Hermes spanning a 5th row):
-#   [ events     ][ tasks      ]
-#   [ dash-mail  ][ dash-news  ]
-#   [ dash-weather][ dash-stocks]
-#   [ dash-word  ][ dash-potd  ]
-#   [    hermes (full width)   ]
+# real 2-D map (see CHANGELOG 2026-07-16/2026-07-17/2026-07-19; restructured
+# 2026-07-23 into two independent columns, wide left / narrow right, instead
+# of paired same-width rows -- see _DASH_WIDE_IDS/_DASH_NARROW_IDS above for
+# why). Layout:
+#   [ dash-mail  ][ dash-time    ]
+#   [ dash-news  ][ tasks        ]
+#   [ dash-word  ][ dash-weather ]
+#   [ dash-potd  ][ dash-stocks  ]
+#   [      hermes (full width)      ]
 DASH_ADJACENCY = {
-    "events":       {"right": "tasks", "down": "dash-mail"},
-    "tasks":        {"left": "events", "down": "dash-news"},
-    "dash-mail":    {"up": "events", "right": "dash-news", "down": "dash-weather"},
-    "dash-news":    {"up": "tasks", "left": "dash-mail", "down": "dash-stocks"},
-    "dash-weather": {"up": "dash-mail", "right": "dash-stocks", "down": "dash-word"},
-    "dash-stocks":  {"up": "dash-news", "left": "dash-weather", "down": "dash-potd"},
-    "dash-word":    {"up": "dash-weather", "right": "dash-potd", "down": "hermes"},
-    "dash-potd":    {"up": "dash-stocks", "left": "dash-word", "down": "hermes"},
-    "hermes":       {"up": "dash-word"},
+    "dash-mail":    {"right": "dash-time", "down": "dash-news"},
+    "dash-news":    {"up": "dash-mail", "right": "tasks", "down": "dash-word"},
+    "dash-word":    {"up": "dash-news", "right": "dash-weather", "down": "dash-potd"},
+    "dash-potd":    {"up": "dash-word", "right": "dash-stocks", "down": "hermes"},
+    "dash-time":    {"left": "dash-mail", "down": "tasks"},
+    "tasks":        {"up": "dash-time", "left": "dash-news", "down": "dash-weather"},
+    "dash-weather": {"up": "tasks", "left": "dash-word", "down": "dash-stocks"},
+    "dash-stocks":  {"up": "dash-weather", "left": "dash-potd", "down": "hermes"},
+    "hermes":       {"up": "dash-potd"},
 }
 
 # Ctrl+R debounce (see action_refresh): a repeated manual refresh inside this
@@ -1423,15 +1444,19 @@ class GoogleTUI(App):
     #left { width: 65%; }
     #right { width: 1fr; border: round $panel-darken-1; padding: 0 1; }
     /* Dashboard card grid + full-width Hermes row (2026-07-17, grown
-       2026-07-19 with the weather/stocks/word-of-day/picture-of-day cards).
-       dashboard-body is a Vertical: the adaptive card grid (#dash-cards) over
-       a full-width HERMES. #dash-cards is a 2-column grid with `grid-rows:
-       1fr` (each row an equal share, however many rows the ENABLED cards
-       need) rather than a fixed 5-row grid -- so any Settings -> Dashboard
-       enable/disable combo tiles without leaving a blank trailing row. The
-       4fr/1fr split gives HERMES ~1/5 of the height, matching its old
-       single-grid-row size. Narrow-mode collapses the grid to one column and
-       lets whichever single pane is visible fill (below). */
+       2026-07-19 with the weather/stocks/word-of-day/picture-of-day cards;
+       restructured 2026-07-23 into two independently-sized columns). Nesting:
+       #dashboard-body (Vertical) > #dash-cards (Horizontal) > #dash-col-wide /
+       #dash-col-narrow (each a Vertical stack of cards), with #hermes as
+       #dashboard-body's second child, full width below both columns.
+       Mail/News/Word-of-the-day/Picture-of-the-day want more room for prose
+       (unread subjects, headlines, definitions) than Time/Tasks/Weather/
+       Stocks' glanceable content needs, hence the 65/35 split rather than
+       equal columns. Each column's cards are height:1fr among however many
+       are ENABLED in that column (Settings -> Dashboard) -- no fixed row
+       count, so any enable/disable combo tiles without a blank trailing gap
+       (the same bug a fixed 5-row single grid hit in the old layout,
+       2026-07-22). */
     #dashboard-body { height: 1fr; }
     /* #dash-cards takes all the vertical space HERMES doesn't. HERMES is
        height:auto so it's just its title + input bar (~a few rows) until the
@@ -1439,10 +1464,19 @@ class GoogleTUI(App):
        reveals it, at which point HERMES grows by the log's fixed height and the
        card grid gives that space back. Keeps an empty response box from
        squatting ~1/5 of the tab before it has anything to show. */
-    #dash-cards { height: 1fr; grid-size: 2; grid-rows: 1fr; grid-gutter: 0; }
+    #dash-cards { height: 1fr; }
+    #dash-col-wide { width: 65%; height: 1fr; }
+    #dash-col-narrow { width: 1fr; height: 1fr; }
     #hermes { height: auto; }
     #dash-mail-list, #dash-news-list, #dash-weather-list, #dash-stocks-list,
     #dash-word-list, #dash-potd-list { height: 1fr; }
+    /* TIME card: clock + a compact month calendar + today's events, stacked
+       inside a fixed-ish header area (clock/calendar) over the flexible
+       events list. #dash-time-cal's height is a rough cap (a 5-week month is
+       6 rows incl. the weekday header) -- shrinks to fewer rows for months
+       needing fewer, via row count set at build time, not CSS. */
+    #dash-time-clock { height: auto; text-align: center; }
+    #dash-time-cal { height: auto; max-height: 7; margin-bottom: 1; }
     /* Label defaults to `width: auto` (size-to-content, one unwrapped line) --
        with no width to wrap against, a long WORD OF THE DAY definition or
        empty-state message ("Not available yet...") just renders as one long
@@ -1632,13 +1666,15 @@ class GoogleTUI(App):
        the primary content dominant instead of squeezed. See
        GoogleTUI._apply_narrow_layout, which toggles this class. */
     .narrow-hidden { display: none; }
-    /* ...and collapse the card grid to a single column when narrow, so the
-       one still-visible card (the rest are .narrow-hidden'd) fills the tab
-       instead of sitting in a 2-column quadrant. When HERMES is the active
-       pane, _apply_narrow_layout .narrow-hidden's #dash-cards itself (all its
-       cards are hidden anyway) so HERMES -- normally the 1fr bottom slice --
-       gets the whole tab instead of an empty grid hogging 4/5 of it. */
-    Screen.-narrow #dash-cards { grid-size: 1; grid-rows: 1fr; }
+    /* ...and let whichever of #dash-col-wide/#dash-col-narrow holds the one
+       still-visible card (the rest are .narrow-hidden'd, including -- via
+       _apply_narrow_layout -- the OTHER column itself when it holds none of
+       the active pane) take the full tab width instead of its non-narrow
+       65%/35% share. When HERMES is the active pane, _apply_narrow_layout
+       .narrow-hidden's #dash-cards itself (both columns are irrelevant then)
+       so HERMES -- normally the auto-height bottom slice -- gets the whole
+       tab instead of an empty grid hogging most of it. */
+    Screen.-narrow #dash-col-wide, Screen.-narrow #dash-col-narrow { width: 1fr; }
 
     /* Settings -> Dashboard checklist (2026-07-18): a disabled card is
        hidden the same way (display: none) regardless of narrow/normal --
@@ -1680,7 +1716,7 @@ class GoogleTUI(App):
     def __init__(self):
         super().__init__()
         self.active = 0
-        self._dash_active = "events"  # which DASH_PANE_IDS card is focused on tab-dashboard
+        self._dash_active = "dash-time"  # which DASH_PANE_IDS card is focused on tab-dashboard
         self.app_config: AppConfig = load_config()
         # Tab/Shift+Tab cycle order for the Dashboard's cards -- DASH_PANE_IDS
         # unless config.toml's pane_order customizes it (see app_config.py).
@@ -2047,7 +2083,7 @@ class GoogleTUI(App):
             self.query_one(f"#{pane_id}").add_class("pane-active")
         except Exception:
             pass
-        targets = {"events": "#event-list", "tasks": "#task-list",
+        targets = {"dash-time": "#event-list", "tasks": "#task-list",
                    "dash-mail": "#dash-mail-list", "dash-news": "#dash-news-list",
                    "dash-weather": "#dash-weather-list", "dash-stocks": "#dash-stocks-list",
                    "dash-word": "#dash-word-list", "dash-potd": "#dash-potd-list",
@@ -2069,12 +2105,11 @@ class GoogleTUI(App):
     # (action_toggle_preview), not narrow state -- same CSS-only stacking
     # Drive's list+preview column already uses when narrow.
     def _apply_narrow_layout(self) -> None:
-        """When narrow, show only the active Dashboard pane (Events, Tasks,
-        or Hermes) full width/full height; when not narrow, restore the
-        normal always-stacked layout. Safe to call any time (pane switch,
-        resize, startup) — a no-op query failure (e.g. called before
-        compose() has mounted anything) is swallowed the same way
-        _apply_ascii_mode's widget lookups are.
+        """When narrow, show only the active Dashboard pane full width/full
+        height; when not narrow, restore the normal always-stacked layout.
+        Safe to call any time (pane switch, resize, startup) — a no-op query
+        failure (e.g. called before compose() has mounted anything) is
+        swallowed the same way _apply_ascii_mode's widget lookups are.
         """
         try:
             self.query_one("#dashboard-body")
@@ -2087,15 +2122,28 @@ class GoogleTUI(App):
                 self.query_one(f"#{pid}").set_class(narrow and pid != active_pane, "narrow-hidden")
             except Exception:
                 pass
-        # HERMES lives outside #dash-cards now (its own full-width slice), so
-        # when it's the active narrow pane every card in #dash-cards is hidden
-        # -- hide the (now empty) grid too, or its 4fr share would strand
-        # HERMES in the bottom 1fr with a blank band above. Non-narrow, or
-        # when a card is active, #dash-cards stays visible.
+        # HERMES lives outside #dash-cards entirely (its own full-width
+        # slice), so when it's the active narrow pane every card in
+        # #dash-cards is hidden -- hide #dash-cards itself too, or its share
+        # of the height would strand HERMES with a blank band above.
+        # Otherwise (a card is active, or not narrow), #dash-cards stays
+        # visible, and exactly ONE of its two columns does too: the one
+        # holding the active pane. The other column's cards are all already
+        # narrow-hidden individually (the loop above), but the COLUMN
+        # Container itself still claims its non-narrow 65%/35% share unless
+        # hidden too -- so the active pane's column gets the CSS override
+        # below (`width: 1fr` while narrow) to fill the space the other
+        # column just gave up.
         try:
             self.query_one("#dash-cards").set_class(narrow and active_pane == "hermes", "narrow-hidden")
         except Exception:
             pass
+        active_col = _DASH_COL_OF.get(active_pane) if active_pane else None
+        for col_id in ("dash-col-wide", "dash-col-narrow"):
+            try:
+                self.query_one(f"#{col_id}").set_class(narrow and col_id != active_col, "narrow-hidden")
+            except Exception:
+                pass
 
     def _resolve_dash_cycle_ids(self) -> list[str]:
         """config.toml's pane_order, filtered to real DASH_PANE_IDS entries
@@ -2354,62 +2402,67 @@ class GoogleTUI(App):
         start_tab = (self.settings.default_start_tab
                      if self.settings.default_start_tab in TAB_ORDER else "tab-dashboard")
         with TabbedContent(id="main-tabs", initial=start_tab):
-            # The real Google-native Dashboard (`2026-07-17`, ROADMAP P4): a
-            # card grid of TODAY (today's events) / TASKS (grouped) / MAIL
-            # (unread count + top unread) / NEWS (top headlines) / WEATHER /
-            # STOCKS / WORD OF THE DAY / PICTURE OF THE DAY (the four
-            # external cards, `2026-07-19`), with ASK HERMES full-width
-            # below. Reuses #event-list/#task-list in place (so their
+            # The real Google-native Dashboard (`2026-07-17`, ROADMAP P4),
+            # restructured 2026-07-23 into two independent columns (wide left
+            # / narrow right -- see _DASH_WIDE_IDS/_DASH_NARROW_IDS): a WIDE
+            # column for prose-heavy cards (MAIL unread threads, NEWS
+            # headlines, WORD OF THE DAY / PICTURE OF THE DAY), a NARROW
+            # column for glanceable ones (TIME -- clock + compact month
+            # calendar + today's events, replacing the old standalone TODAY
+            # card -- TASKS, WEATHER, STOCKS), with ASK HERMES full-width
+            # below both. Reuses #event-list/#task-list in place (so their
             # Space-toggle / Enter-detail handlers are unchanged); the
             # #events-search/#tasks-search bars stay in-DOM (hidden) so the "/"
             # filter path (action_focus_search -> _show_pane_search) still
             # works. No per-card digit badge/shortcut -- see _pane_title_row's
             # docstring and bindings.py's GLOBAL_ACTIONS comment for why.
             with TabPane(_tab_label("Dashboard", 1, self.settings.ascii_mode), id="tab-dashboard"):
-                # dashboard-body is a Vertical of two parts: the adaptive card
-                # grid (#dash-cards) on top, HERMES full-width below. HERMES
-                # used to be an in-grid cell with column-span:2 on a fixed
-                # 2x5 grid, which only tiled cleanly when ALL 8 non-Hermes
-                # cards were enabled (8 + a 2-wide Hermes == exactly 10 cells
-                # == 5 full rows). Disable any single card (Settings ->
-                # Dashboard) and the count goes odd: Textual auto-flow can't
-                # give the 2-wide Hermes its own row, so it got clamped to a
-                # half-width cell and a whole grid row was left empty -- a
-                # blank band at the bottom of the tab (2026-07-22 bug report).
-                # Splitting Hermes out of the grid makes the card grid free to
-                # use however many rows the enabled cards need, and keeps
-                # Hermes full width regardless of that count.
+                # dashboard-body is a Vertical of two parts: the two-column
+                # card area (#dash-cards) on top, HERMES full-width below.
+                # HERMES used to be an in-grid cell with column-span:2 on a
+                # fixed 2x5 grid, which only tiled cleanly when ALL 8
+                # non-Hermes cards were enabled -- disable any single one and
+                # a whole grid row was left empty (2026-07-22 bug report).
+                # Splitting Hermes out entirely (and, since then, splitting
+                # the remaining cards into two independent per-column stacks
+                # instead of one grid) means each column just uses however
+                # many rows its OWN enabled cards need, with Hermes always
+                # full width regardless of any of that.
                 with Vertical(id="dashboard-body"):
-                    with Grid(id="dash-cards"):
-                        with Container(id="events", classes="pane"):
-                            yield self._pane_title_row("TODAY  (events, enter=detail)")
-                            with Horizontal(id="events-bar", classes="btnrow hidden"):
-                                yield Input(placeholder="Search events (summary/description)… (/)",
-                                            id="events-search")
-                            yield DataTable(id="event-list", cursor_type="row", zebra_stripes=True)
-                        with Container(id="tasks", classes="pane"):
-                            yield self._pane_title_row("TASKS  (space=done, enter=detail)")
-                            with Horizontal(id="tasks-bar", classes="btnrow hidden"):
-                                yield Input(placeholder="Search tasks (title/notes)… (/)", id="tasks-search")
-                            yield DataTable(id="task-list", cursor_type="row", zebra_stripes=True)
-                        with Container(id="dash-mail", classes="pane"):
-                            yield self._pane_title_row("MAIL  (unread, enter=open)")
-                            yield DataTable(id="dash-mail-list", cursor_type="row", zebra_stripes=True)
-                        with Container(id="dash-news", classes="pane"):
-                            yield self._pane_title_row("NEWS  (top headlines)")
-                            yield DataTable(id="dash-news-list", cursor_type="row", zebra_stripes=True)
-                        with Container(id="dash-weather", classes="pane"):
-                            yield self._pane_title_row("WEATHER")
-                            yield ListView(id="dash-weather-list")
-                        with Container(id="dash-stocks", classes="pane"):
-                            yield self._pane_title_row("STOCKS")
-                            yield ListView(id="dash-stocks-list")
-                        with Container(id="dash-word", classes="pane"):
-                            yield self._pane_title_row("WORD OF THE DAY  (enter=open)")
-                            yield ListView(id="dash-word-list")
-                        with Container(id="dash-potd", classes="pane"):
-                            yield self._pane_title_row("PICTURE OF THE DAY  (enter=open)")
-                            yield ListView(id="dash-potd-list")
+                    with Horizontal(id="dash-cards"):
+                        with Vertical(id="dash-col-wide"):
+                            with Container(id="dash-mail", classes="pane"):
+                                yield self._pane_title_row("MAIL  (unread, enter=open)")
+                                yield DataTable(id="dash-mail-list", cursor_type="row", zebra_stripes=True)
+                            with Container(id="dash-news", classes="pane"):
+                                yield self._pane_title_row("NEWS  (top headlines)")
+                                yield DataTable(id="dash-news-list", cursor_type="row", zebra_stripes=True)
+                            with Container(id="dash-word", classes="pane"):
+                                yield self._pane_title_row("WORD OF THE DAY  (enter=open)")
+                                yield ListView(id="dash-word-list")
+                            with Container(id="dash-potd", classes="pane"):
+                                yield self._pane_title_row("PICTURE OF THE DAY  (enter=open)")
+                                yield ListView(id="dash-potd-list")
+                        with Vertical(id="dash-col-narrow"):
+                            with Container(id="dash-time", classes="pane"):
+                                yield self._pane_title_row("TIME  (enter=detail)")
+                                yield Static(id="dash-time-clock")
+                                yield DataTable(id="dash-time-cal", cursor_type="none", zebra_stripes=False)
+                                with Horizontal(id="events-bar", classes="btnrow hidden"):
+                                    yield Input(placeholder="Search events (summary/description)… (/)",
+                                                id="events-search")
+                                yield DataTable(id="event-list", cursor_type="row", zebra_stripes=True)
+                            with Container(id="tasks", classes="pane"):
+                                yield self._pane_title_row("TASKS  (space=done, enter=detail)")
+                                with Horizontal(id="tasks-bar", classes="btnrow hidden"):
+                                    yield Input(placeholder="Search tasks (title/notes)… (/)", id="tasks-search")
+                                yield DataTable(id="task-list", cursor_type="row", zebra_stripes=True)
+                            with Container(id="dash-weather", classes="pane"):
+                                yield self._pane_title_row("WEATHER")
+                                yield ListView(id="dash-weather-list")
+                            with Container(id="dash-stocks", classes="pane"):
+                                yield self._pane_title_row("STOCKS")
+                                yield ListView(id="dash-stocks-list")
                     with Container(id="hermes", classes="pane"):
                         yield self._pane_title_row(self._hermes_ask_title(), text_id="hermes-pane-title")
                         # Starts hidden; _hermes_submit reveals it on the first
@@ -2743,6 +2796,10 @@ class GoogleTUI(App):
                                     "configuration at all. All cards are enabled by default; toggle "
                                     "any off below.",
                                     id="settings-dashboard-config-note", classes="muted")
+                                with Horizontal(classes="settings-row"):
+                                    yield Label("Show UTC time in the TIME card")
+                                    yield Switch(value=self.settings.clock_show_utc,
+                                                 id="settings-clock-show-utc-switch")
                                 yield Label("Dashboard cards", classes="pane-title-text")
                                 yield Static(
                                     "Choose which cards appear on the Dashboard tab's card grid + "
@@ -2783,6 +2840,12 @@ class GoogleTUI(App):
         # (see _rotate_dash_news, which no-ops while the card is focused or
         # when there aren't enough entries to rotate).
         self.set_interval(self._DASH_NEWS_ROTATE_SECONDS, self._rotate_dash_news)
+        # TIME card's clock — ticks every second regardless of which pane is
+        # focused (unlike the NEWS rotation above, there's no reason to pause
+        # it just because the card is being looked at). Call once immediately
+        # so it isn't blank for the first second.
+        self._update_dash_clock()
+        self.set_interval(1.0, self._update_dash_clock)
         # Periodic auto-refresh (config.toml's refresh_interval_minutes, see
         # app_config.py) — off by default; no such loop existed before this.
         if self.app_config.refresh_interval_minutes:
@@ -4544,7 +4607,7 @@ class GoogleTUI(App):
             pane = self._dash_active
             if pane == "tasks":
                 self._show_pane_search("tasks-search")
-            elif pane == "events":
+            elif pane == "dash-time":
                 self._show_pane_search("events-search")
         elif tab == "tab-calendar":
             self._show_pane_search("cal-search")
@@ -5086,7 +5149,7 @@ class GoogleTUI(App):
         pane = self._dash_active
         if pane == "tasks":
             self.action_toggle_task()
-        elif pane == "events":
+        elif pane == "dash-time":
             eid = self._highlighted_event_id()
             if eid:
                 self._open_event_by_id(eid)
@@ -5099,6 +5162,46 @@ class GoogleTUI(App):
             cid = list_tables.current_row_key(self.query_one(lst_id, DataTable))
             if cid:
                 self._open_dash_list_row(cid)
+
+    def action_dash_jump(self) -> None:
+        """"g": jump from the focused Dashboard card to wherever its data
+        actually comes from -- Mail/News/Time/Tasks switch to the matching
+        app tab (Tasks has none of its own, so it goes to Calendar too, same
+        as Time); Weather/Stocks/Word/Picture have no app tab, so this opens
+        the real external source in the Browser tab instead (Word/Picture
+        reuse the exact link Enter already opens on those two). Hermes is
+        already the Dashboard's own card -- nothing to jump to, so a no-op,
+        same as every other Dashboard-tab-gated single-letter action when it
+        doesn't apply to the focused card."""
+        if self._main_tabs().active != "tab-dashboard":
+            return
+        pane = self._dash_active
+        if pane == "dash-mail":
+            self._goto_tab("tab-mail")
+        elif pane == "dash-news":
+            self._goto_tab("tab-news")
+        elif pane in ("dash-time", "tasks"):
+            self._goto_tab("tab-calendar")
+        elif pane == "dash-weather":
+            loc = self.settings.weather_location or self._resolve_weather_location()
+            self._open_dashboard_link({"link": "https://www.google.com/search?q="
+                                       f"weather+{urllib.parse.quote(loc)}"})
+        elif pane == "dash-stocks":
+            # ListView.highlighted_child stays None until the user actually
+            # presses an arrow key in it -- focus() alone doesn't select the
+            # first item -- so fall back to the first row if nothing's been
+            # explicitly highlighted yet, rather than silently no-op'ing.
+            lst = self.query_one("#dash-stocks-list", ListView)
+            item = lst.highlighted_child or next(iter(lst.children), None)
+            cid = item.id if item else None
+            if cid and cid.startswith("ds-"):
+                symbol = cid.removeprefix("ds-")
+                self._open_dashboard_link(
+                    {"link": f"https://www.google.com/finance/quote/{symbol}"})
+        elif pane == "dash-word":
+            self._open_dashboard_link(self._word_of_day)
+        elif pane == "dash-potd":
+            self._open_dashboard_link(self._wiki_potd)
 
     # ---- list selections (Enter) ----
     def on_list_view_selected(self, event: ListView.Selected) -> None:
@@ -5774,6 +5877,10 @@ class GoogleTUI(App):
             if d:
                 by_day.setdefault(d, []).append(e)
         self._cal_by_day = by_day
+        # TIME card's compact month calendar shows the SAME month/events --
+        # driven from this one call site (all four of its own callers already
+        # funnel through _apply_cal_month) rather than a separate fetch.
+        self._apply_dash_time_cal(by_day)
         first = dt.date(self._cal_year, self._cal_month, 1)
         offset = first.weekday()
         if self._cal_month == 12:
@@ -5814,6 +5921,73 @@ class GoogleTUI(App):
                                         max_events=max_events, line_width=line_width)
                    if d else "" for d in cells[i:i + 7]]
             grid.add_row(*row, height=row_height)
+
+    def _apply_dash_time_cal(self, by_day: dict[int, list[dict]]) -> None:
+        """Dashboard TIME card's compact month-view calendar: day numbers
+        only (no per-day event text -- there's no room for that in a narrow-
+        column card), a "•" marker after any day with 1+ events, and today's
+        cell bold+reverse (same "reverse swaps whatever fg/bg the theme
+        has" trick _day_cell_text uses, so it works under any theme). No
+        Enter/click handling -- purely a glance-at-it display; the events
+        list right below it (#event-list) is what's actually interactive."""
+        try:
+            grid = self.query_one("#dash-time-cal", DataTable)
+        except Exception:
+            return
+        grid.clear(columns=True)
+        first = dt.date(self._cal_year, self._cal_month, 1)
+        offset = first.weekday()
+        if self._cal_month == 12:
+            days_in_month = (dt.date(self._cal_year + 1, 1, 1) - first).days
+        else:
+            days_in_month = (dt.date(self._cal_year, self._cal_month + 1, 1) - first).days
+        cells: list[int | None] = [None] * offset
+        for d in range(1, days_in_month + 1):
+            cells.append(d)
+        while len(cells) % 7:
+            cells.append(None)
+        # Subtract DataTable's own per-column cell padding (both sides) before
+        # dividing by 7, same correction list_tables.flex_fill_width applies --
+        # without it, 7 declared column widths that exactly fill avail_width
+        # actually render wider once padding is added, clipping the last
+        # column or two off the edge of this already-narrow card (confirmed
+        # visually: "Su" and some day numbers cut off before this fix).
+        avail_width = grid.size.width
+        pad_overhead = grid.cell_padding * 2 * 7
+        col_width = max(3, (avail_width - pad_overhead) // 7) if avail_width > 0 else 4
+        for label in ("Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"):
+            grid.add_column(label, width=col_width)
+        today = dt.date.today()
+        this_month_is_current = (self._cal_year, self._cal_month) == (today.year, today.month)
+        for i in range(0, len(cells), 7):
+            row = []
+            for d in cells[i:i + 7]:
+                if d is None:
+                    row.append("")
+                    continue
+                cell = Text(f"{d}{'•' if by_day.get(d) else ''}")
+                if this_month_is_current and d == today.day:
+                    cell.stylize("bold reverse")
+                row.append(cell)
+            grid.add_row(*row)
+
+    def _update_dash_clock(self) -> None:
+        """TIME card's clock, ticked once a second (on_mount's set_interval).
+        Local time is always shown; Settings.clock_show_utc adds a second
+        line -- the common ham-radio "local + Zulu" pattern -- rather than a
+        timezone picker, since local-vs-UTC is the only distinction this
+        needed. `.astimezone()` with no args attaches the system's local
+        timezone (name + offset) to the naive `now()` result."""
+        try:
+            widget = self.query_one("#dash-time-clock", Static)
+        except Exception:
+            return
+        local = dt.datetime.now().astimezone()
+        lines = [local.strftime("%I:%M:%S %p %Z").strip()]
+        if self.settings.clock_show_utc:
+            utc = dt.datetime.now(dt.timezone.utc)
+            lines.append(utc.strftime("%b %d  %H:%M:%S UTC"))
+        widget.update("\n".join(lines))
 
     def _fetch_cal_week(self, calendars: list[dict] | None = None) -> list[dict]:
         start = dt.datetime.combine(self._cal_week_start, dt.time.min).replace(tzinfo=dt.timezone.utc)
@@ -6091,7 +6265,7 @@ class GoogleTUI(App):
         tab = self._main_tabs().active
         if tab == "tab-calendar":
             default_date = self._cal_default_day()
-        elif tab == "tab-dashboard" and self._dash_active == "events":
+        elif tab == "tab-dashboard" and self._dash_active == "dash-time":
             default_date = dt.date.today()
         else:
             return
@@ -7183,6 +7357,11 @@ class GoogleTUI(App):
         if event.switch.id == "settings-update-check-switch":
             self.settings.check_for_updates = event.value
             save_settings(self.settings)
+            return
+        if event.switch.id == "settings-clock-show-utc-switch":
+            self.settings.clock_show_utc = event.value
+            save_settings(self.settings)
+            self._update_dash_clock()  # live, not next-tick -- same as ascii-mode below
             return
         if event.switch.id == "settings-ascii-mode-switch":
             # Live, not restart-required — same precedent as

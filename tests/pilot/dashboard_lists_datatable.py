@@ -1,6 +1,8 @@
-"""Pilot scenario (ROADMAP P3): the Dashboard TODAY (events) and TASKS cards
-render as DataTables — Tasks keeps its bold group-header rows, and selection
-by row key still opens EventModal / TaskModal and resolves _selected_task.
+"""Pilot scenario (ROADMAP P3): the Dashboard TIME card's #event-list (today's
+events, folded into TIME from the old standalone TODAY card 2026-07-23) and
+TASKS card render as DataTables — Tasks keeps its bold group-header rows, and
+selection by row key still opens EventModal / TaskModal and resolves
+_selected_task.
 
 Runs as its own process — see tests/isolate.py / AGENTS.md §6.
 
@@ -34,7 +36,7 @@ async def run() -> None:
             events = app.query_one("#event-list", DataTable)
             tasks = app.query_one("#task-list", DataTable)
 
-            # TODAY card: one event row, When+Summary columns.
+            # TIME card's events list: one event row, When+Summary columns.
             assert "e-ev1" in _keys(events), _keys(events)
             summary = " ".join(c.plain if hasattr(c, "plain") else str(c)
                                for c in events.get_row("e-ev1"))
