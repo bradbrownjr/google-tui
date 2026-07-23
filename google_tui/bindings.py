@@ -219,13 +219,19 @@ HELP_GLOBAL_TEXT = (
 # dashboard 2026-07-17 (a TODAY/TASKS/MAIL/NEWS card grid + Hermes) --
 # pane:dash-mail/dash-news are from 2026-07-17, pane:dash-weather/dash-stocks/
 # dash-word/dash-potd from 2026-07-19 (ROADMAP P4's external cards).
-# pane:events (was "TODAY") was retired 2026-07-23 and replaced by
-# pane:dash-time (clock + compact month calendar + the same today's-events
-# list, now titled "TIME"). Every card except Hermes also has a "G Jump" --
-# see GoogleTUI.action_dash_jump's docstring for what it does per card.
+# pane:events (was "TODAY") was retired 2026-07-23, briefly replaced the same
+# day by a single combined pane:dash-time (clock + mini calendar + today's
+# events), then immediately split into three: pane:dash-clock (big-digit
+# local time + configured timezones -- no interaction, so no help row of its
+# own; not in CONTEXT_HELP at all), pane:dash-calendar (a real navigable
+# month view, sharing state with tab:tab-calendar), pane:dash-today (today's
+# events, same as the original TODAY card). Every card except Hermes and
+# CLOCK also has a "G Jump" -- see GoogleTUI.action_dash_jump's docstring for
+# what it does per card.
 CONTEXT_HELP: dict[str, str] = {
     "tab:tab-mail": "Enter Open   c Compose   r Reply   a Reply All   f Forward   u Unread   * Star   z Snooze   t Task   e Event   x Select   X Bulk   Space Expand   l Labels   / Search   p Toggle Preview   Ctrl+Z Undo",
-    "pane:dash-time": "Enter/Space Detail   n New Event   / Search   G Jump to Calendar",
+    "pane:dash-calendar": "[ / ] Prev/Next Month   Enter/Space Detail   G Jump to Calendar",
+    "pane:dash-today": "Enter/Space Detail   n New Event   / Search   G Jump to Calendar",
     "pane:tasks": "Space Toggle Complete   Enter Detail   / Search   G Jump to Calendar",
     "pane:dash-mail": "Enter/Space Open Thread (header: open Mail tab)   G Jump to Mail",
     "pane:dash-news": "Enter/Space Open Headline   G Jump to News",
@@ -290,7 +296,10 @@ _CLICK_ACTIONS: dict[str, dict[str, str]] = {
         "l Labels": "focus_label_select",
         "/ Search": "focus_search",
     },
-    "pane:dash-time": {
+    "pane:dash-calendar": {
+        "G Jump to Calendar": "dash_jump",
+    },
+    "pane:dash-today": {
         "n New Event": "new_event",
         "/ Search": "focus_search",
         "G Jump to Calendar": "dash_jump",
@@ -452,18 +461,30 @@ MAIL TAB
 DASHBOARD TAB (two-column card layout + Hermes; Google-native cards
 2026-07-17, external cards 2026-07-19, two independently-sized columns
 2026-07-23 -- wide left for Mail/News/Word/Picture's prose, narrow right for
-Time/Tasks/Weather/Stocks' glanceable content. All cards are enabled by
+Clock/Calendar/Today/Tasks/Weather/Stocks' glanceable content (a single
+combined "Time" card was tried the same day and immediately split into
+Clock/Calendar/Today -- cramming a navigable calendar and today's events
+into one card made moving between dates awkward). All cards are enabled by
 default; Settings → Dashboard lets you enable/disable any card and configure
-Weather/Stocks — that checklist is a "library" future cards can still grow
-into. Every card except Hermes also has a "g" shortcut that jumps to
-wherever its data actually comes from: the matching app tab for Mail/News/
-Time/Tasks, or the real external source (opened in the Browser tab) for
-Weather/Stocks/Word/Picture.)
-  Time card:    a clock (local time; Settings → Dashboard can add a second
-                UTC line), a compact read-only month calendar (today
-                highlighted), and today's events below (all-day + timed);
-                Enter/Space open event detail, n new event, / search (live
-                filter over summary/description), g jumps to the Calendar tab
+Weather/Stocks/Clock timezones — that checklist is a "library" future cards
+can still grow into. Every card except Hermes and Clock also has a "g"
+shortcut that jumps to wherever its data actually comes from: the matching
+app tab for Mail/News/Calendar/Today/Tasks, or the real external source
+(opened in the Browser tab) for Weather/Stocks/Word/Picture.)
+  Clock card:   big block-digit local time, plus one line below it per
+                Settings → Dashboard timezone (default just UTC -- the
+                common ham-radio "local + Zulu" pairing; clear the list
+                there for local time only). Purely a display -- no keys,
+                no "g" (nowhere sensible to jump to)
+  Calendar card: a real navigable month view (today highlighted, a "•" on
+                days with events) sharing its month + event data with the
+                Calendar tab's own month view -- moving either one moves
+                both. Arrows move the highlighted day, [ / ] change month,
+                Enter/Space open that day's events, g jumps to the
+                Calendar tab
+  Today card:   today's events (all-day + timed); Enter/Space open detail,
+                n new event, / search (live filter over summary/description),
+                g jumps to the Calendar tab
   Tasks card:   tasks grouped Overdue / Due today / Upcoming / No due date /
                 Done; Space toggle complete, Enter open detail, / search,
                 g jumps to the Calendar tab (Tasks has no tab of its own)
@@ -495,10 +516,12 @@ Weather/Stocks/Word/Picture.)
                 to from the Dashboard's own Ask card.)
 
 CALENDAR TAB
-  [ / ]         Previous / next month (or week, in Week view)
-  Enter/click   Open a day's full event list (Month view)
+  [ / ]         Previous / next month (or week, in Week view; also works
+                from the Dashboard tab's Calendar card, month-only there)
+  Enter/click   Open a day's full event list (Month view; also works from
+                the Dashboard tab's Calendar card)
                 Open an event, or a chooser if several share an hour (Week view)
-  n             New event (also works from the Dashboard tab's Time card) —
+  n             New event (also works from the Dashboard tab's Today card) —
                 title + date + start/end time, or an all-day toggle
 
 DRIVE TAB
@@ -591,13 +614,14 @@ SETTINGS TAB
   Input+Button  Set/save the Routes API key used by the Navigation tab
                 (Navigation)
   Input+Button  Set/save the Weather card's location (blank = auto-detect
-                via GeoIP, or Portland, ME) and the Stocks card's ticker
-                list (default GOOG/MSFT/AAPL; blank disables) (Dashboard)
-  Switch        Show a second UTC line on the Time card's clock, under the
-                local time (Dashboard)
-  Checklist     Enable/disable Dashboard cards (Time/Tasks/Mail/News/
-                Weather/Stocks/Word of the Day/Picture of the Day/Hermes) —
-                all enabled by default, at least one stays enabled (Dashboard)
+                via GeoIP, or Portland, ME), the Stocks card's ticker list
+                (default GOOG/MSFT/AAPL; blank disables), and the Clock
+                card's timezone list shown under the big local time
+                (default just UTC; blank = local time only) (Dashboard)
+  Checklist     Enable/disable Dashboard cards (Clock/Calendar/Today/Tasks/
+                Mail/News/Weather/Stocks/Word of the Day/Picture of the
+                Day/Hermes) — all enabled by default, at least one stays
+                enabled (Dashboard)
 
 CONTACTS TAB
   Type to search    Live fuzzy filter (name or email) over your fetched

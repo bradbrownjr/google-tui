@@ -33,6 +33,7 @@ import uuid
 from dataclasses import dataclass
 from functools import cached_property
 from pathlib import Path
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import platformdirs
 from google.auth.exceptions import RefreshError
@@ -46,7 +47,7 @@ from textual.containers import Container, Grid, Horizontal, Vertical, VerticalSc
 from textual.coordinate import Coordinate
 from textual.screen import ModalScreen
 from textual.widgets import (
-    Button, DataTable, Header, Input, Label, ListItem, ListView,
+    Button, DataTable, Digits, Header, Input, Label, ListItem, ListView,
     RadioButton, RadioSet, RichLog, Select, SelectionList, Static, Switch,
     TabbedContent, TabPane, TextArea,
 )
@@ -79,20 +80,29 @@ from .app_config import AppConfig, load_config
 # below it. PANE_IDS now covers ONLY Email's own tab, which has nothing to
 # switch to; DASH_PANE_IDS/DASH_ADJACENCY (below) is the Dashboard's own group.
 PANE_IDS = ["email"]
-# Container ids of the Dashboard's nine cards. Order matches the two-column
+# Container ids of the Dashboard's eleven cards. Order matches the two-column
 # layout (2026-07-23): the WIDE left column (cards that want more horizontal
 # room -- unread threads, headlines, prose) then the NARROW right column
-# (compact/glanceable cards), then Hermes (full width, below both). This is
-# also the Tab/Shift+Tab cycle order and the fallback "first enabled card"
-# order -- unrelated to DASH_ADJACENCY's spatial (up/down/left/right) map
-# below, which is what Alt+arrows actually walks.
+# (compact/glanceable cards -- 6 of them now, vs the wide side's 4, so the
+# two columns are different lengths; see DASH_ADJACENCY below for how that's
+# handled), then Hermes (full width, below both). This is also the
+# Tab/Shift+Tab cycle order and the fallback "first enabled card" order --
+# unrelated to DASH_ADJACENCY's spatial (up/down/left/right) map below, which
+# is what Alt+arrows actually walks.
 # "tasks"/"hermes" keep their pre-2026-07-17 ids (so the #task-list populate
-# path is unchanged); "events" (the old standalone TODAY card) was retired
-# 2026-07-23 -- its content (today's events) moved into the new "dash-time"
-# card (clock + compact month calendar + today's events), which keeps
-# #event-list/#events-search's ids so nothing downstream needed to change.
+# path is unchanged). "events" (the old standalone TODAY card) was retired
+# 2026-07-23, briefly folded into a single combined "dash-time" card (clock +
+# mini calendar + today's events) the same day, then immediately split back
+# into three separate cards: "dash-clock" (big-digit local time + configured
+# timezones below), "dash-calendar" (a real navigable compact month view --
+# arrow keys move the cursor, Enter opens a day's events, "["/"]" change
+# month, all shared with the Calendar tab's own #cal-grid state), and
+# "dash-today" (today's events -- keeps #event-list/#events-search's ids, so
+# nothing downstream needed to change there). Combining calendar+today
+# navigation in one card made moving between dates awkward, hence the split.
 _DASH_WIDE_IDS = ["dash-mail", "dash-news", "dash-word", "dash-potd"]
-_DASH_NARROW_IDS = ["dash-time", "tasks", "dash-weather", "dash-stocks"]
+_DASH_NARROW_IDS = ["dash-clock", "dash-calendar", "dash-today", "tasks",
+                     "dash-weather", "dash-stocks"]
 DASH_PANE_IDS = _DASH_WIDE_IDS + _DASH_NARROW_IDS + ["hermes"]
 # pane id -> which #dash-cards column Container it lives in ("hermes" isn't
 # in either -- it's outside #dash-cards entirely, its own full-width slice).
@@ -103,7 +113,9 @@ _DASH_COL_OF = {pid: "dash-col-wide" for pid in _DASH_WIDE_IDS}
 _DASH_COL_OF.update({pid: "dash-col-narrow" for pid in _DASH_NARROW_IDS})
 PANE_TITLES = {
     "email": "EMAIL",
-    "dash-time": "TIME",
+    "dash-clock": "CLOCK",
+    "dash-calendar": "CALENDAR",
+    "dash-today": "TODAY",
     "tasks": "TASKS",
     "dash-mail": "MAIL",
     "dash-news": "NEWS",
@@ -117,22 +129,29 @@ PANE_TITLES = {
 # real 2-D map (see CHANGELOG 2026-07-16/2026-07-17/2026-07-19; restructured
 # 2026-07-23 into two independent columns, wide left / narrow right, instead
 # of paired same-width rows -- see _DASH_WIDE_IDS/_DASH_NARROW_IDS above for
-# why). Layout:
-#   [ dash-mail  ][ dash-time    ]
-#   [ dash-news  ][ tasks        ]
-#   [ dash-word  ][ dash-weather ]
-#   [ dash-potd  ][ dash-stocks  ]
+# why). The narrow column is now LONGER than the wide one (6 cards vs 4), so
+# rows 5/6 (WEATHER/STOCKS) simply have no "left" target -- Alt+Left there is
+# a harmless no-op (_adjacent's walk already tolerates a missing direction).
+# Layout:
+#   [ dash-mail  ][ dash-clock    ]
+#   [ dash-news  ][ dash-calendar ]
+#   [ dash-word  ][ dash-today    ]
+#   [ dash-potd  ][ tasks         ]
+#   [            ][ dash-weather  ]
+#   [            ][ dash-stocks   ]
 #   [      hermes (full width)      ]
 DASH_ADJACENCY = {
-    "dash-mail":    {"right": "dash-time", "down": "dash-news"},
-    "dash-news":    {"up": "dash-mail", "right": "tasks", "down": "dash-word"},
-    "dash-word":    {"up": "dash-news", "right": "dash-weather", "down": "dash-potd"},
-    "dash-potd":    {"up": "dash-word", "right": "dash-stocks", "down": "hermes"},
-    "dash-time":    {"left": "dash-mail", "down": "tasks"},
-    "tasks":        {"up": "dash-time", "left": "dash-news", "down": "dash-weather"},
-    "dash-weather": {"up": "tasks", "left": "dash-word", "down": "dash-stocks"},
-    "dash-stocks":  {"up": "dash-weather", "left": "dash-potd", "down": "hermes"},
-    "hermes":       {"up": "dash-potd"},
+    "dash-mail":      {"right": "dash-clock", "down": "dash-news"},
+    "dash-news":      {"up": "dash-mail", "right": "dash-calendar", "down": "dash-word"},
+    "dash-word":      {"up": "dash-news", "right": "dash-today", "down": "dash-potd"},
+    "dash-potd":      {"up": "dash-word", "right": "tasks", "down": "hermes"},
+    "dash-clock":     {"left": "dash-mail", "down": "dash-calendar"},
+    "dash-calendar":  {"up": "dash-clock", "left": "dash-news", "down": "dash-today"},
+    "dash-today":     {"up": "dash-calendar", "left": "dash-word", "down": "tasks"},
+    "tasks":          {"up": "dash-today", "left": "dash-potd", "down": "dash-weather"},
+    "dash-weather":   {"up": "tasks", "down": "dash-stocks"},
+    "dash-stocks":    {"up": "dash-weather", "down": "hermes"},
+    "hermes":         {"up": "dash-stocks"},
 }
 
 # Ctrl+R debounce (see action_refresh): a repeated manual refresh inside this
@@ -1470,13 +1489,19 @@ class GoogleTUI(App):
     #hermes { height: auto; }
     #dash-mail-list, #dash-news-list, #dash-weather-list, #dash-stocks-list,
     #dash-word-list, #dash-potd-list { height: 1fr; }
-    /* TIME card: clock + a compact month calendar + today's events, stacked
-       inside a fixed-ish header area (clock/calendar) over the flexible
-       events list. #dash-time-cal's height is a rough cap (a 5-week month is
-       6 rows incl. the weekday header) -- shrinks to fewer rows for months
-       needing fewer, via row count set at build time, not CSS. */
-    #dash-time-clock { height: auto; text-align: center; }
-    #dash-time-cal { height: auto; max-height: 7; margin-bottom: 1; }
+    /* CLOCK card: Textual's built-in Digits widget (big block-character
+       numbers, no external dependency) for local time, then one plain-text
+       line per Settings.clock_timezones entry underneath. Both auto-height --
+       the card itself is height:1fr among its narrow-column siblings same as
+       any other, it just won't use all of it (a clock has no reason to grow
+       to fill leftover space the way a list does). */
+    #dash-clock-digits { height: auto; }
+    #dash-clock-zones { height: auto; }
+    /* CALENDAR card: now its own dedicated, fully-interactive DataTable
+       (cursor_type="cell" -- arrow keys move the highlighted day, Enter opens
+       it, see _dash_cal_cell_selected), so it gets the same height:1fr
+       treatment as any other single-content card. */
+    #dash-calendar-grid { height: 1fr; }
     /* Label defaults to `width: auto` (size-to-content, one unwrapped line) --
        with no width to wrap against, a long WORD OF THE DAY definition or
        empty-state message ("Not available yet...") just renders as one long
@@ -1716,7 +1741,7 @@ class GoogleTUI(App):
     def __init__(self):
         super().__init__()
         self.active = 0
-        self._dash_active = "dash-time"  # which DASH_PANE_IDS card is focused on tab-dashboard
+        self._dash_active = "dash-today"  # which DASH_PANE_IDS card is focused on tab-dashboard
         self.app_config: AppConfig = load_config()
         # Tab/Shift+Tab cycle order for the Dashboard's cards -- DASH_PANE_IDS
         # unless config.toml's pane_order customizes it (see app_config.py).
@@ -2083,7 +2108,12 @@ class GoogleTUI(App):
             self.query_one(f"#{pane_id}").add_class("pane-active")
         except Exception:
             pass
-        targets = {"dash-time": "#event-list", "tasks": "#task-list",
+        # No entry for "dash-clock" -- it's a purely decorative display (a
+        # Digits widget + a Static of timezone lines), nothing meaningful to
+        # focus. A missing key here raises inside the try/except below, so
+        # it's silently a no-op (leaves focus wherever it already was).
+        targets = {"dash-today": "#event-list", "dash-calendar": "#dash-calendar-grid",
+                   "tasks": "#task-list",
                    "dash-mail": "#dash-mail-list", "dash-news": "#dash-news-list",
                    "dash-weather": "#dash-weather-list", "dash-stocks": "#dash-stocks-list",
                    "dash-word": "#dash-word-list", "dash-potd": "#dash-potd-list",
@@ -2407,15 +2437,18 @@ class GoogleTUI(App):
             # / narrow right -- see _DASH_WIDE_IDS/_DASH_NARROW_IDS): a WIDE
             # column for prose-heavy cards (MAIL unread threads, NEWS
             # headlines, WORD OF THE DAY / PICTURE OF THE DAY), a NARROW
-            # column for glanceable ones (TIME -- clock + compact month
-            # calendar + today's events, replacing the old standalone TODAY
-            # card -- TASKS, WEATHER, STOCKS), with ASK HERMES full-width
-            # below both. Reuses #event-list/#task-list in place (so their
-            # Space-toggle / Enter-detail handlers are unchanged); the
-            # #events-search/#tasks-search bars stay in-DOM (hidden) so the "/"
-            # filter path (action_focus_search -> _show_pane_search) still
-            # works. No per-card digit badge/shortcut -- see _pane_title_row's
-            # docstring and bindings.py's GLOBAL_ACTIONS comment for why.
+            # column for glanceable ones (CLOCK, CALENDAR, TODAY -- three
+            # separate cards, split the same day from one briefly-combined
+            # "TIME" card once it turned out cramming a navigable calendar
+            # and today's events into one card made moving between dates
+            # awkward -- plus TASKS, WEATHER, STOCKS), with ASK HERMES
+            # full-width below both. Reuses #event-list/#task-list in place
+            # (so their Space-toggle / Enter-detail handlers are unchanged);
+            # the #events-search/#tasks-search bars stay in-DOM (hidden) so
+            # the "/" filter path (action_focus_search -> _show_pane_search)
+            # still works. No per-card digit badge/shortcut -- see
+            # _pane_title_row's docstring and bindings.py's GLOBAL_ACTIONS
+            # comment for why.
             with TabPane(_tab_label("Dashboard", 1, self.settings.ascii_mode), id="tab-dashboard"):
                 # dashboard-body is a Vertical of two parts: the two-column
                 # card area (#dash-cards) on top, HERMES full-width below.
@@ -2444,10 +2477,23 @@ class GoogleTUI(App):
                                 yield self._pane_title_row("PICTURE OF THE DAY  (enter=open)")
                                 yield ListView(id="dash-potd-list")
                         with Vertical(id="dash-col-narrow"):
-                            with Container(id="dash-time", classes="pane"):
-                                yield self._pane_title_row("TIME  (enter=detail)")
-                                yield Static(id="dash-time-clock")
-                                yield DataTable(id="dash-time-cal", cursor_type="none", zebra_stripes=False)
+                            with Container(id="dash-clock", classes="pane"):
+                                yield self._pane_title_row("CLOCK")
+                                yield Digits(id="dash-clock-digits")
+                                yield Static(id="dash-clock-zones")
+                            with Container(id="dash-calendar", classes="pane"):
+                                # NOT "([/] month, ...)" -- Rich markup parses
+                                # a literal "[/]" as an (invalid, unmatched)
+                                # closing tag and raises MarkupError; Label
+                                # defaults to markup=True and this text has
+                                # no actual styling to lose, so just avoid the
+                                # bracket-slash-bracket sequence entirely.
+                                yield self._pane_title_row(
+                                    "CALENDAR  (prev/next month, enter=detail)")
+                                yield DataTable(id="dash-calendar-grid", cursor_type="cell",
+                                                zebra_stripes=False)
+                            with Container(id="dash-today", classes="pane"):
+                                yield self._pane_title_row("TODAY  (events, enter=detail)")
                                 with Horizontal(id="events-bar", classes="btnrow hidden"):
                                     yield Input(placeholder="Search events (summary/description)… (/)",
                                                 id="events-search")
@@ -2787,19 +2833,22 @@ class GoogleTUI(App):
                                     )
                                 yield Button("Save card settings", id="settings-save-dashboard-cards")
                                 yield Static(
-                                    "Weather (Open-Meteo) and stock quotes (Stooq) need no API key "
-                                    "or account. Weather defaults to a location guessed from your IP "
-                                    "(or Portland, ME if that fails) until you set one above; stocks "
-                                    "default to GOOG, MSFT, AAPL -- edit either field and Save to "
-                                    "change them, or clear the symbols field to turn STOCKS off. Word "
-                                    "of the day and Wikipedia's picture of the day need no "
+                                    "Weather (Open-Meteo) and stock quotes (Yahoo Finance) need no "
+                                    "API key or account. Weather defaults to a location guessed from "
+                                    "your IP (or Portland, ME if that fails) until you set one above; "
+                                    "stocks default to GOOG, MSFT, AAPL -- edit either field and Save "
+                                    "to change them, or clear the symbols field to turn STOCKS off. "
+                                    "Word of the day and Wikipedia's picture of the day need no "
                                     "configuration at all. All cards are enabled by default; toggle "
                                     "any off below.",
                                     id="settings-dashboard-config-note", classes="muted")
                                 with Horizontal(classes="settings-row"):
-                                    yield Label("Show UTC time in the TIME card")
-                                    yield Switch(value=self.settings.clock_show_utc,
-                                                 id="settings-clock-show-utc-switch")
+                                    yield Label("Clock timezones (below the big local time)")
+                                    yield Input(
+                                        value=", ".join(self.settings.clock_timezones),
+                                        placeholder="e.g. UTC, America/Denver",
+                                        id="settings-clock-timezones",
+                                    )
                                 yield Label("Dashboard cards", classes="pane-title-text")
                                 yield Static(
                                     "Choose which cards appear on the Dashboard tab's card grid + "
@@ -2840,7 +2889,7 @@ class GoogleTUI(App):
         # (see _rotate_dash_news, which no-ops while the card is focused or
         # when there aren't enough entries to rotate).
         self.set_interval(self._DASH_NEWS_ROTATE_SECONDS, self._rotate_dash_news)
-        # TIME card's clock — ticks every second regardless of which pane is
+        # CLOCK card — ticks every second regardless of which pane is
         # focused (unlike the NEWS rotation above, there's no reason to pause
         # it just because the card is being looked at). Call once immediately
         # so it isn't blank for the first second.
@@ -4607,7 +4656,7 @@ class GoogleTUI(App):
             pane = self._dash_active
             if pane == "tasks":
                 self._show_pane_search("tasks-search")
-            elif pane == "dash-time":
+            elif pane == "dash-today":
                 self._show_pane_search("events-search")
         elif tab == "tab-calendar":
             self._show_pane_search("cal-search")
@@ -5149,10 +5198,16 @@ class GoogleTUI(App):
         pane = self._dash_active
         if pane == "tasks":
             self.action_toggle_task()
-        elif pane == "dash-time":
+        elif pane == "dash-today":
             eid = self._highlighted_event_id()
             if eid:
                 self._open_event_by_id(eid)
+        elif pane == "dash-calendar":
+            # Space mirrors Enter here too (same reasoning as dash-mail/
+            # dash-news below) -- Enter arrives as a DataTable.CellSelected
+            # event (_dash_cal_cell_selected), but Space doesn't generate one,
+            # so read the highlighted cell directly instead.
+            self._dash_cal_open_highlighted()
         elif pane in ("dash-mail", "dash-news"):
             # Space mirrors Enter on these cards (open the highlighted item) —
             # neither has a toggle/expand action of its own, so reuse the same
@@ -5165,14 +5220,15 @@ class GoogleTUI(App):
 
     def action_dash_jump(self) -> None:
         """"g": jump from the focused Dashboard card to wherever its data
-        actually comes from -- Mail/News/Time/Tasks switch to the matching
-        app tab (Tasks has none of its own, so it goes to Calendar too, same
-        as Time); Weather/Stocks/Word/Picture have no app tab, so this opens
-        the real external source in the Browser tab instead (Word/Picture
-        reuse the exact link Enter already opens on those two). Hermes is
-        already the Dashboard's own card -- nothing to jump to, so a no-op,
-        same as every other Dashboard-tab-gated single-letter action when it
-        doesn't apply to the focused card."""
+        actually comes from -- Mail/News switch to the matching app tab;
+        Calendar/Today/Tasks all go to the Calendar tab (Tasks and the CLOCK
+        have no tab of their own, and Calendar/Today already share the
+        Calendar tab's own month/event state); Weather/Stocks/Word/Picture
+        have no app tab, so this opens the real external source in the
+        Browser tab instead (Word/Picture reuse the exact link Enter already
+        opens on those two). Hermes and CLOCK have nowhere sensible to jump
+        to, so they're a no-op, same as every other Dashboard-tab-gated
+        single-letter action when it doesn't apply to the focused card."""
         if self._main_tabs().active != "tab-dashboard":
             return
         pane = self._dash_active
@@ -5180,7 +5236,7 @@ class GoogleTUI(App):
             self._goto_tab("tab-mail")
         elif pane == "dash-news":
             self._goto_tab("tab-news")
-        elif pane in ("dash-time", "tasks"):
+        elif pane in ("dash-calendar", "dash-today", "tasks"):
             self._goto_tab("tab-calendar")
         elif pane == "dash-weather":
             loc = self.settings.weather_location or self._resolve_weather_location()
@@ -5793,10 +5849,22 @@ class GoogleTUI(App):
         self._browser_navigate(url, push_history=True)
 
     # ---- calendar tab ----
+    def _on_dash_calendar(self) -> bool:
+        """True when the Dashboard tab's CALENDAR card is the focused pane --
+        action_cal_prev/next's second entry point (besides the Calendar tab
+        itself), since the dashboard card shares the exact same
+        _cal_year/_cal_month/_build_cal_month state."""
+        return (self._main_tabs().active == "tab-dashboard"
+                and self._dash_active == "dash-calendar")
+
     def action_cal_prev(self) -> None:
-        if self._main_tabs().active != "tab-calendar":
+        on_dash_cal = self._on_dash_calendar()
+        if self._main_tabs().active != "tab-calendar" and not on_dash_cal:
             return
-        if self.query_one("#cal-tabs", TabbedContent).active == "cal-tab-week":
+        # The dashboard card has no week view of its own -- always move by
+        # month there, regardless of whatever the Calendar tab's own
+        # month/week toggle happens to be set to.
+        if not on_dash_cal and self.query_one("#cal-tabs", TabbedContent).active == "cal-tab-week":
             self._cal_week_start -= dt.timedelta(days=7)
             self._build_cal_week()
         else:
@@ -5807,9 +5875,10 @@ class GoogleTUI(App):
             self._build_cal_month()
 
     def action_cal_next(self) -> None:
-        if self._main_tabs().active != "tab-calendar":
+        on_dash_cal = self._on_dash_calendar()
+        if self._main_tabs().active != "tab-calendar" and not on_dash_cal:
             return
-        if self.query_one("#cal-tabs", TabbedContent).active == "cal-tab-week":
+        if not on_dash_cal and self.query_one("#cal-tabs", TabbedContent).active == "cal-tab-week":
             self._cal_week_start += dt.timedelta(days=7)
             self._build_cal_week()
         else:
@@ -5877,10 +5946,10 @@ class GoogleTUI(App):
             if d:
                 by_day.setdefault(d, []).append(e)
         self._cal_by_day = by_day
-        # TIME card's compact month calendar shows the SAME month/events --
-        # driven from this one call site (all four of its own callers already
-        # funnel through _apply_cal_month) rather than a separate fetch.
-        self._apply_dash_time_cal(by_day)
+        # Dashboard CALENDAR card shows the SAME month/events -- driven from
+        # this one call site (all four of its own callers already funnel
+        # through _apply_cal_month) rather than a separate fetch.
+        self._apply_dash_calendar(by_day)
         first = dt.date(self._cal_year, self._cal_month, 1)
         offset = first.weekday()
         if self._cal_month == 12:
@@ -5922,16 +5991,20 @@ class GoogleTUI(App):
                    if d else "" for d in cells[i:i + 7]]
             grid.add_row(*row, height=row_height)
 
-    def _apply_dash_time_cal(self, by_day: dict[int, list[dict]]) -> None:
-        """Dashboard TIME card's compact month-view calendar: day numbers
+    def _apply_dash_calendar(self, by_day: dict[int, list[dict]]) -> None:
+        """Dashboard CALENDAR card's compact month-view calendar: day numbers
         only (no per-day event text -- there's no room for that in a narrow-
         column card), a "•" marker after any day with 1+ events, and today's
         cell bold+reverse (same "reverse swaps whatever fg/bg the theme
-        has" trick _day_cell_text uses, so it works under any theme). No
-        Enter/click handling -- purely a glance-at-it display; the events
-        list right below it (#event-list) is what's actually interactive."""
+        has" trick _day_cell_text uses, so it works under any theme). Fully
+        navigable (cursor_type="cell" in compose()) -- arrow keys move the
+        cursor, Enter/Space open the highlighted day's events
+        (_dash_cal_cell_selected / _dash_cal_open_highlighted), "["/"]" change
+        month (action_cal_prev/next, extended to this card) -- all sharing
+        the exact same self._cal_year/_cal_month/_cal_by_day state as the
+        Calendar tab's own #cal-grid, so moving either one moves both."""
         try:
-            grid = self.query_one("#dash-time-cal", DataTable)
+            grid = self.query_one("#dash-calendar-grid", DataTable)
         except Exception:
             return
         grid.clear(columns=True)
@@ -5972,22 +6045,31 @@ class GoogleTUI(App):
             grid.add_row(*row)
 
     def _update_dash_clock(self) -> None:
-        """TIME card's clock, ticked once a second (on_mount's set_interval).
-        Local time is always shown; Settings.clock_show_utc adds a second
-        line -- the common ham-radio "local + Zulu" pattern -- rather than a
-        timezone picker, since local-vs-UTC is the only distinction this
-        needed. `.astimezone()` with no args attaches the system's local
-        timezone (name + offset) to the naive `now()` result."""
+        """CLOCK card, ticked once a second (on_mount's set_interval): big
+        block-digit local time (Textual's built-in Digits widget -- no
+        external dependency), then one plain-text "HH:MM:SS <zone>" line per
+        Settings.clock_timezones entry underneath (default just ["UTC"], the
+        common ham-radio "local + Zulu" pairing; empty shows local only).
+        `.astimezone()` with no args attaches the system's local timezone
+        (name + offset) to the naive `now()` result for the big digits.
+        `ZoneInfo(name)` accepts "UTC" and any IANA zone (e.g.
+        "America/Denver"); an unrecognized name someone mistyped in Settings
+        is just skipped, never a crash."""
         try:
-            widget = self.query_one("#dash-time-clock", Static)
+            digits = self.query_one("#dash-clock-digits", Digits)
+            zones_widget = self.query_one("#dash-clock-zones", Static)
         except Exception:
             return
         local = dt.datetime.now().astimezone()
-        lines = [local.strftime("%I:%M:%S %p %Z").strip()]
-        if self.settings.clock_show_utc:
-            utc = dt.datetime.now(dt.timezone.utc)
-            lines.append(utc.strftime("%b %d  %H:%M:%S UTC"))
-        widget.update("\n".join(lines))
+        digits.update(local.strftime("%H:%M:%S"))
+        lines = []
+        for tz_name in self.settings.clock_timezones:
+            try:
+                zoned = dt.datetime.now(ZoneInfo(tz_name))
+            except (ZoneInfoNotFoundError, ValueError):
+                continue
+            lines.append(f"{zoned.strftime('%H:%M:%S')}  {tz_name}")
+        zones_widget.update("\n".join(lines))
 
     def _fetch_cal_week(self, calendars: list[dict] | None = None) -> list[dict]:
         start = dt.datetime.combine(self._cal_week_start, dt.time.min).replace(tzinfo=dt.timezone.utc)
@@ -6090,6 +6172,8 @@ class GoogleTUI(App):
             self._cal_month_cell_selected(event)
         elif table_id == "cal-week-grid":
             self._cal_week_cell_selected(event)
+        elif table_id == "dash-calendar-grid":
+            self._dash_cal_open_day(event.value)
 
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
         """Enter/click on a row of a migrated DataTable list. Dispatches by
@@ -6161,6 +6245,31 @@ class GoogleTUI(App):
         events = self._cal_by_day.get(day, [])
         if events:
             self.push_screen(DayEventsModal(day, self._cal_month, self._cal_year, events))
+
+    def _dash_cal_open_day(self, value) -> None:
+        """Dashboard CALENDAR card's Enter/Space: same DayEventsModal the
+        Calendar tab's own month view opens (_cal_month_cell_selected), just
+        parsing this card's plainer "d" / "d•" cell text (no per-day event
+        summaries, so no multi-line split needed) instead of #cal-grid's
+        multi-line cells."""
+        day_text = str(value).rstrip("•")
+        if not day_text.isdigit():
+            return
+        day = int(day_text)
+        events = self._cal_by_day.get(day, [])
+        if events:
+            self.push_screen(DayEventsModal(day, self._cal_month, self._cal_year, events))
+
+    def _dash_cal_open_highlighted(self) -> None:
+        """Space's path to the same place Enter's CellSelected event
+        (on_data_table_cell_selected -> _dash_cal_open_day) reaches -- Space
+        doesn't generate one, so read the highlighted cell directly."""
+        try:
+            grid = self.query_one("#dash-calendar-grid", DataTable)
+            value = grid.get_cell_at(grid.cursor_coordinate)
+        except Exception:
+            return
+        self._dash_cal_open_day(value)
 
     def _cal_week_cell_selected(self, event: DataTable.CellSelected) -> None:
         col = event.coordinate.column - 1  # column 0 is the Hour label
@@ -6260,12 +6369,12 @@ class GoogleTUI(App):
         if len(matches) > 1:
             self.notify(f"Match {self._cal_search_pos + 1} of {len(matches)}")
 
-    # ---- new event (Calendar tab, and the Dashboard tab's Events pane) ----
+    # ---- new event (Calendar tab, and the Dashboard tab's Today pane) ----
     def action_new_event(self) -> None:
         tab = self._main_tabs().active
         if tab == "tab-calendar":
             default_date = self._cal_default_day()
-        elif tab == "tab-dashboard" and self._dash_active == "dash-time":
+        elif tab == "tab-dashboard" and self._dash_active == "dash-today":
             default_date = dt.date.today()
         else:
             return
@@ -7358,11 +7467,6 @@ class GoogleTUI(App):
             self.settings.check_for_updates = event.value
             save_settings(self.settings)
             return
-        if event.switch.id == "settings-clock-show-utc-switch":
-            self.settings.clock_show_utc = event.value
-            save_settings(self.settings)
-            self._update_dash_clock()  # live, not next-tick -- same as ascii-mode below
-            return
         if event.switch.id == "settings-ascii-mode-switch":
             # Live, not restart-required — same precedent as
             # settings-show-sender-address-switch above: this only changes
@@ -7562,10 +7666,13 @@ class GoogleTUI(App):
         elif event.button.id == "settings-save-dashboard-cards":
             loc = self.query_one("#settings-weather-location", Input).value.strip()
             syms_raw = self.query_one("#settings-stock-symbols", Input).value.strip()
+            zones_raw = self.query_one("#settings-clock-timezones", Input).value.strip()
             self.settings.weather_location = loc or None
             self.settings.stock_symbols = [s.strip().upper() for s in syms_raw.split(",") if s.strip()]
+            self.settings.clock_timezones = [z.strip() for z in zones_raw.split(",") if z.strip()]
             save_settings(self.settings)
             self.notify("Dashboard card settings saved.")
+            self._update_dash_clock()  # live, not next-tick -- new timezone list shows immediately
             # Re-fetch now rather than waiting for the next periodic refresh
             # -- a location/symbol list you just typed in should show real
             # data immediately, not "not available yet" for up to a refresh
