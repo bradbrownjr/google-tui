@@ -69,17 +69,13 @@ GLOBAL_ACTIONS: list[ActionSpec] = [
     ActionSpec("goto_tab_settings", "ctrl+9", "Settings"),
     ActionSpec("cycle_tab_back", "ctrl+left", "Prev Tab"),
     ActionSpec("cycle_tab", "ctrl+right", "Next Tab"),
-    # Alt+1..9 jump to the Nth ENABLED Dashboard card (numbered in display
-    # order, badge shown on each card, renumbered live as cards are
-    # enabled/disabled -- 2026-07-23). These aren't ActionSpecs because the
-    # action is parametrized (`goto_dash_card(n)`) and the set is a fixed
-    # numbered family the footer already summarizes as "Alt+# Pane"; they're
-    # appended directly to GoogleTUI.BINDINGS. (Replaced the old fixed
-    # Alt+1=Email / 2=Events / 3=Tasks / 4=Hermes mapping, which left gaps
-    # and clashed with the tab numbers once the Dashboard grew past 2x2.)
+    ActionSpec("goto_pane_email", "alt+1", "Email"),
+    ActionSpec("goto_pane_events", "alt+2", "Events"),
+    ActionSpec("goto_pane_tasks", "alt+3", "Tasks"),
+    ActionSpec("goto_pane_hermes", "alt+4", "Hermes"),
     # Pops up a small quick-ask modal for the configured AI provider
     # (Settings -> AI Provider) from ANY tab/screen, without navigating to
-    # the Dashboard tab the way its Alt+N card jump does -- see HermesAskModal. Ctrl+<letter>
+    # the Dashboard tab the way Alt+4 does -- see HermesAskModal. Ctrl+<letter>
     # is a real ASCII control code every terminal transmits reliably (same
     # reasoning already established for Ctrl+R/Ctrl+H/Ctrl+Q/Ctrl+P below),
     # unlike the Ctrl+<digit>/F9+ caveats noted elsewhere in this file.
@@ -369,11 +365,9 @@ GLOBAL
   Ctrl+Left/Right  Cycle tabs (the universal fallback if neither F1..F8 nor
                    Ctrl+1..8 reaches the app — some terminals/multiplexers/
                    browsers swallow both)
-  Alt+1..9         Jump to the Nth Dashboard card. Cards are numbered in
-                   display order over the ENABLED cards only (the badge on
-                   each card shows its number), so the numbering has no gaps
-                   and renumbers as you enable/disable cards in Settings →
-                   Dashboard. Works from any tab (switches to Dashboard).
+  Alt+1..4         Jump to a pane: 1 Email (Mail tab), 2/3/4 Today/Tasks/
+                   Hermes (Dashboard tab). The Dashboard's Mail and News
+                   cards have no digit — reach them with Tab or Alt+arrows.
   Alt+arrows       Move to the adjacent Dashboard card (2x2 grid + Hermes;
                    skips over any card disabled in Settings → Dashboard)
   Tab / Shift+Tab  Cycle Dashboard cards (enabled ones only)

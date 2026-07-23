@@ -37,7 +37,6 @@ from rich.text import Text
 from textual import events
 from textual.actions import SkipAction
 from textual.app import App, ComposeResult
-from textual.binding import Binding
 from textual.containers import Container, Grid, Horizontal, Vertical, VerticalScroll
 from textual.coordinate import Coordinate
 from textual.screen import ModalScreen
@@ -1666,17 +1665,8 @@ class GoogleTUI(App):
     HORIZONTAL_BREAKPOINTS = [(0, "-narrow"), (NARROW_WIDTH_THRESHOLD, "-normal")]
 
     # Generated from google_tui/bindings.py — the single source of truth for
-    # this app's keymap (see that module's docstring). The Alt+1..9 Dashboard
-    # card jumps are appended here rather than declared as ActionSpecs: the
-    # action is parametrized (goto_dash_card(n) -> the Nth ENABLED card,
-    # renumbered live in _apply_dashboard_panes_enabled) and the footer already
-    # summarizes the family as "Alt+# Pane", so show=False keeps them out of
-    # the help row. See bindings.py's comment where the old fixed Alt+1..4
-    # ActionSpecs used to be.
-    BINDINGS = bindings.bindings_for_scope("global") + [
-        Binding(f"alt+{n}", f"goto_dash_card({n})", f"Card {n}", show=False)
-        for n in range(1, 10)
-    ]
+    # this app's keymap (see that module's docstring).
+    BINDINGS = bindings.bindings_for_scope("global")
 
     def __init__(self):
         super().__init__()
@@ -1693,12 +1683,6 @@ class GoogleTUI(App):
         # (called from on_mount, and again whenever the Settings -> Dashboard
         # checklist changes) -- empty here only until that first runs.
         self._dash_enabled_ids: list[str] = []
-        # Enabled Dashboard cards in DISPLAY (DASH_PANE_IDS) order -- the
-        # Alt+N target list and the source of each card's shown number badge.
-        # Distinct from _dash_enabled_ids, which is in Tab-cycle order (may be
-        # reordered by config.toml's pane_order); badges must follow the fixed
-        # visual grid order instead. Rebuilt by _apply_dashboard_panes_enabled.
-        self._dash_numbered: list[str] = []
         # Thread ids checked for a multi-select bulk action (ROADMAP P2). A
         # CSS class on the ListItem shows the check; the set is the source of
         # truth, pruned to what's loaded on every re-render (see
@@ -2006,20 +1990,14 @@ class GoogleTUI(App):
         return self._drive_backend
 
     # ---- pane helpers (Mail tab) ----
-    def _pane_title_row(self, text: str, num: int, *, text_id: str | None = None,
-                        num_id: str | None = None) -> Horizontal:
-        # num == 0 means "no Alt-digit shortcut" -- omit the number label
-        # rather than render a misleading "0". text_id lets a caller re-target
-        # the title Label later (e.g. the Hermes card's title tracks
-        # Settings.ai_provider live -- see _update_hermes_labels). num_id
-        # (Dashboard cards) ALWAYS creates the badge Label (with that id) even
-        # when currently empty, because its number is assigned dynamically by
-        # _apply_dashboard_panes_enabled (an enabled card's 1-based display
-        # position) and needs to be updatable / addressable later.
+    def _pane_title_row(self, text: str, num: int, *, text_id: str | None = None) -> Horizontal:
+        # num == 0 means "no Alt-digit shortcut" (the Dashboard's MAIL/NEWS
+        # cards, reachable via Tab/arrows only) -- omit the number label
+        # entirely rather than render a misleading "0". text_id lets a caller
+        # re-target the title Label later (e.g. the Hermes card's title
+        # tracks Settings.ai_provider live -- see _update_hermes_labels).
         children = [Label(text, id=text_id, classes="pane-title-text")]
-        if num_id is not None:
-            children.append(Label(str(num) if num else "", id=num_id, classes="pane-title-num"))
-        elif num:
+        if num:
             children.append(Label(str(num), classes="pane-title-num"))
         return Horizontal(*children, classes="pane-title-row")
 
@@ -2028,8 +2006,8 @@ class GoogleTUI(App):
 
     def _focus_pane(self, idx: int) -> None:
         """Mail tab now has exactly one pane (Email) -- idx is always 0.
-        Kept as a method (not inlined) so call sites (on_mount, the
-        Mail-tab activation branch) don't need to change shape."""
+        Kept as a method (not inlined) so call sites (_goto_pane, on_mount)
+        don't need to change shape."""
         self.active = idx % len(PANE_IDS)
         try:
             self.query_one("#email").add_class("pane-active")
@@ -2157,19 +2135,9 @@ class GoogleTUI(App):
         """
         enabled = set(self.settings.dashboard_panes_enabled)
         self._dash_enabled_ids = [pid for pid in self._dash_cycle_ids if pid in enabled] or ["hermes"]
-        # Enabled cards in visual order + their Alt+N / badge numbers. Uses the
-        # SAME enabled set as _dash_enabled_ids (so the ["hermes"] fallback
-        # applies), just re-sorted into DASH_PANE_IDS (grid display) order.
-        enabled_visible = set(self._dash_enabled_ids)
-        self._dash_numbered = [pid for pid in DASH_PANE_IDS if pid in enabled_visible]
         for pid in DASH_PANE_IDS:
             try:
                 self.query_one(f"#{pid}").set_class(pid not in self._dash_enabled_ids, "dash-pane-disabled")
-            except Exception:
-                pass
-            try:
-                num = self._dash_numbered.index(pid) + 1 if pid in self._dash_numbered else 0
-                self.query_one(f"#dashnum-{pid}", Label).update(str(num) if num else "")
             except Exception:
                 pass
         if self._dash_active not in self._dash_enabled_ids:
@@ -2410,37 +2378,36 @@ class GoogleTUI(App):
                 with Vertical(id="dashboard-body"):
                     with Grid(id="dash-cards"):
                         with Container(id="events", classes="pane"):
-                            yield self._pane_title_row("TODAY  (events, enter=detail)", 0, num_id="dashnum-events")
+                            yield self._pane_title_row("TODAY  (events, enter=detail)", 2)
                             with Horizontal(id="events-bar", classes="btnrow hidden"):
                                 yield Input(placeholder="Search events (summary/description)… (/)",
                                             id="events-search")
                             yield DataTable(id="event-list", cursor_type="row", zebra_stripes=True)
                         with Container(id="tasks", classes="pane"):
-                            yield self._pane_title_row("TASKS  (space=done, enter=detail)", 0, num_id="dashnum-tasks")
+                            yield self._pane_title_row("TASKS  (space=done, enter=detail)", 3)
                             with Horizontal(id="tasks-bar", classes="btnrow hidden"):
                                 yield Input(placeholder="Search tasks (title/notes)… (/)", id="tasks-search")
                             yield DataTable(id="task-list", cursor_type="row", zebra_stripes=True)
                         with Container(id="dash-mail", classes="pane"):
-                            yield self._pane_title_row("MAIL  (unread, enter=open)", 0, num_id="dashnum-dash-mail")
+                            yield self._pane_title_row("MAIL  (unread, enter=open)", 0)
                             yield DataTable(id="dash-mail-list", cursor_type="row", zebra_stripes=True)
                         with Container(id="dash-news", classes="pane"):
-                            yield self._pane_title_row("NEWS  (top headlines)", 0, num_id="dashnum-dash-news")
+                            yield self._pane_title_row("NEWS  (top headlines)", 0)
                             yield DataTable(id="dash-news-list", cursor_type="row", zebra_stripes=True)
                         with Container(id="dash-weather", classes="pane"):
-                            yield self._pane_title_row("WEATHER", 0, num_id="dashnum-dash-weather")
+                            yield self._pane_title_row("WEATHER", 0)
                             yield ListView(id="dash-weather-list")
                         with Container(id="dash-stocks", classes="pane"):
-                            yield self._pane_title_row("STOCKS", 0, num_id="dashnum-dash-stocks")
+                            yield self._pane_title_row("STOCKS", 0)
                             yield ListView(id="dash-stocks-list")
                         with Container(id="dash-word", classes="pane"):
-                            yield self._pane_title_row("WORD OF THE DAY  (enter=open)", 0, num_id="dashnum-dash-word")
+                            yield self._pane_title_row("WORD OF THE DAY  (enter=open)", 0)
                             yield ListView(id="dash-word-list")
                         with Container(id="dash-potd", classes="pane"):
-                            yield self._pane_title_row("PICTURE OF THE DAY  (enter=open)", 0, num_id="dashnum-dash-potd")
+                            yield self._pane_title_row("PICTURE OF THE DAY  (enter=open)", 0)
                             yield ListView(id="dash-potd-list")
                     with Container(id="hermes", classes="pane"):
-                        yield self._pane_title_row(self._hermes_ask_title(), 0,
-                                                   text_id="hermes-pane-title", num_id="dashnum-hermes")
+                        yield self._pane_title_row(self._hermes_ask_title(), 4, text_id="hermes-pane-title")
                         # Starts hidden; _hermes_submit reveals it on the first
                         # question so an empty response box doesn't take space.
                         yield RichLog(id="hermes-log", markup=False, wrap=True, classes="hidden")
@@ -2450,7 +2417,7 @@ class GoogleTUI(App):
                 with Horizontal(id="body"):
                     with Vertical(id="left"):
                         with Container(id="email", classes="pane"):
-                            yield self._pane_title_row("EMAIL  (threads)", 0)
+                            yield self._pane_title_row("EMAIL  (threads)", 1)
                             yield Select(
                                 _initial_label_select_options(self.settings.default_label_id),
                                 value=self.settings.default_label_id,
@@ -3877,18 +3844,30 @@ class GoogleTUI(App):
                     self._refresh_contacts_list()
         self._update_help_bar()
 
-    # ---- pane switching (Alt+1..9) ----
-    def action_goto_dash_card(self, n: int) -> None:
-        """Alt+N: jump to the Nth ENABLED Dashboard card. self._dash_numbered
-        is the enabled cards in display (DASH_PANE_IDS) order, rebuilt by
-        _apply_dashboard_panes_enabled -- so the number matches the badge each
-        card shows, with no gaps, and Alt+N past the last enabled card is a
-        harmless no-op. Switches to the Dashboard tab first, so this works
-        from any tab (replaced the old fixed Alt+1=Email/2/3/4 scheme,
-        2026-07-23)."""
-        if 1 <= n <= len(self._dash_numbered):
-            self._goto_tab("tab-dashboard")
-            self._focus_dash_pane(self._dash_numbered[n - 1])
+    # ---- pane switching (Alt+1..4) ----
+    def _goto_pane(self, pane_id: str) -> None:
+        """pane_id "email" stays on the Mail tab; "events"/"tasks"/"hermes"
+        (Alt+2/3/4) live on the Dashboard tab (`2026-07-16` split). Takes the
+        id directly (not a positional index -- a prior version indexed into
+        DASH_PANE_IDS by `idx - 1`, which silently broke Alt+4 the moment a
+        4th/5th Dashboard card was added between Hermes and position 3; fixed
+        2026-07-18 alongside the enable/disable rework). A card disabled in
+        Settings -> Dashboard still switches to the Dashboard tab but lands
+        on the first enabled card instead, with a notify explaining why."""
+        if pane_id == "email":
+            self._goto_tab("tab-mail")
+            self._focus_pane(0)
+            return
+        self._goto_tab("tab-dashboard")
+        if pane_id not in self._dash_enabled_ids:
+            self.notify(f"{PANE_TITLES.get(pane_id, pane_id)} is disabled — "
+                       f"enable it in Settings → Dashboard.", severity="warning")
+        self._focus_dash_pane(pane_id)
+
+    def action_goto_pane_email(self):  self._goto_pane("email")
+    def action_goto_pane_events(self): self._goto_pane("events")
+    def action_goto_pane_tasks(self):  self._goto_pane("tasks")
+    def action_goto_pane_hermes(self): self._goto_pane("hermes")
 
     def action_switch_left(self):
         active = self._main_tabs().active
