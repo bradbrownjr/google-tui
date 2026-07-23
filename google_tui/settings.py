@@ -23,6 +23,10 @@ class Settings:
     show_sender_address: bool = False  # show raw "Name <addr>" in the Email list vs. name-only
     ai_provider: str = "hermes"  # "hermes" | "claude_code" | "opencode" | "gemini_cli"
     nous_api_key: str | None = None  # overrides ~/.hermes/config.yaml if set
+    # Overrides the hardcoded Nous cloud chat endpoint (ask.py's _LLM_URL) --
+    # e.g. a local/self-hosted Hermes gateway. None (the default) means "use
+    # the public Nous cloud API", unchanged for everyone who doesn't set this.
+    nous_base_url: str | None = None
     feed_urls: list[str] = field(default_factory=list)  # subscribed RSS/Atom feeds (News tab, P1 M3)
     search_provider: str = "google"  # "google" | "duckduckgo" | "searxng" (Browser tab Search mode)
     google_cse_api_key: str | None = None  # Google Custom Search JSON API key

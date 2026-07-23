@@ -171,6 +171,34 @@ Whichever you pick, google-tui builds your Google context locally (recent
 email/events) and hands it to that provider as part of the prompt — no
 separate Google integration needed inside the AI CLI itself.
 
+### Local Hermes gateway (self-hosted, no Nous API key)
+
+If you run the [Hermes Agent](https://github.com/NousResearch/hermes-agent)
+CLI yourself, its `hermes proxy` subcommand is a small local HTTP server
+that speaks the same OpenAI chat-completions shape as the Nous cloud API,
+but forwards to whatever provider you're already authenticated with
+(Nous Portal or xAI) and attaches real credentials itself — the client
+doesn't need its own API key.
+
+To point google-tui's Hermes provider at it instead of the Nous cloud API:
+
+1. Authenticate once: `hermes auth add nous` (or `xai`).
+2. Run the proxy: `hermes proxy start` (foreground, port 8645 by default).
+   To keep it running across reboots, install it as a systemd user service
+   the same way as `hermes gateway`/`hermes dashboard` — see
+   `~/.config/systemd/user/hermes-gateway.service` for the template; a
+   matching `hermes-proxy.service` just swaps the `ExecStart` for
+   `hermes proxy start --host 127.0.0.1 --port 8645` and doesn't need the
+   `hermes-dashboard.service` dependency.
+3. In google-tui Settings → AI Provider, set **Hermes gateway URL** to
+   `http://127.0.0.1:8645/v1/chat/completions` and leave **Nous API key**
+   blank — the proxy supplies its own credentials regardless of what (if
+   anything) the client sends.
+
+Leave the gateway URL field blank to keep using the public Nous cloud API
+with your pasted API key — this is purely an opt-in override
+(`Settings.nous_base_url`, `google_tui/ask.py`'s `ask_llm`).
+
 ## 9. Browser tab search — Google Custom Search setup (optional)
 
 The Browser tab's Search mode (bare text with no scheme in the address

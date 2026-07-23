@@ -36,7 +36,10 @@ Pick ONE in Settings — google-tui isn't locked into any single one, and
 all of them get the same Google context (recent email/events) automatically:
 
 - Hermes (default): needs a Nous API key. Paste it into Settings, or put
-  it in ~/.hermes/config.yaml as api_key: ...
+  it in ~/.hermes/config.yaml as api_key: ... Or, if you run the Hermes
+  Agent CLI yourself, set "Hermes gateway URL" in Settings to a local
+  `hermes proxy start` (default http://127.0.0.1:8645/v1/chat/completions)
+  instead — no API key needed then. See SETUP.md.
 - Claude Code: needs the `claude` CLI on your PATH, already logged in
   (run `claude` once interactively to authenticate).
 - opencode: needs the `opencode` CLI on your PATH and configured

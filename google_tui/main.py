@@ -2750,7 +2750,16 @@ class GoogleTUI(App):
                                         placeholder="only needed for the Hermes provider",
                                         id="settings-nous-key",
                                     )
-                                    yield Button("Save", id="settings-save-nous-key")
+                                with Horizontal(classes="settings-row"):
+                                    yield Label("Hermes gateway URL")
+                                    yield Input(
+                                        value=self.settings.nous_base_url or "",
+                                        placeholder="blank = Nous cloud API; or e.g. "
+                                                     "http://127.0.0.1:8645/v1/chat/completions "
+                                                     "(hermes proxy start)",
+                                        id="settings-nous-base-url",
+                                    )
+                                yield Button("Save", id="settings-save-nous-key")
                         with TabPane("News Feeds", id="settings-tab-feeds"):
                             with VerticalScroll(id="settings-feeds-scroll"):
                                 yield Label("News feeds (RSS/Atom)", classes="pane-title-text")
@@ -2914,7 +2923,8 @@ class GoogleTUI(App):
             gauth.get_credentials()
         except Exception:
             problems.append("google")
-        if not ask.any_provider_reachable(nous_api_key=self.settings.nous_api_key):
+        if not ask.any_provider_reachable(nous_api_key=self.settings.nous_api_key,
+                                           nous_base_url=self.settings.nous_base_url):
             problems.append("ai")
         return problems
 
@@ -5440,7 +5450,8 @@ class GoogleTUI(App):
         loop and locked the entire UI until the model answered.
         """
         provider = ask.get_provider(self.settings.ai_provider, nous_api_key=self.settings.nous_api_key,
-                                     model=self.app_config.llm_model)
+                                     model=self.app_config.llm_model,
+                                     nous_base_url=self.settings.nous_base_url)
         try:
             if needs_agent(q):
                 self.call_from_thread(log.write, f"[running {provider.display_name} agent…]")
@@ -7615,9 +7626,11 @@ class GoogleTUI(App):
             self._prune_cache()
         elif event.button.id == "settings-save-nous-key":
             key = self.query_one("#settings-nous-key", Input).value.strip()
+            base_url = self.query_one("#settings-nous-base-url", Input).value.strip()
             self.settings.nous_api_key = key or None
+            self.settings.nous_base_url = base_url or None
             save_settings(self.settings)
-            self.notify("Nous API key saved.")
+            self.notify("Nous API key / gateway URL saved.")
         elif event.button.id == "settings-save-browser-home":
             url = self.query_one("#settings-browser-home-url", Input).value.strip()
             self.settings.browser_home_url = url or "https://www.google.com"

@@ -48,11 +48,23 @@ _API_KEY = _read_api_key()
 
 
 def ask_llm(system: str, question: str, api_key: str | None = None, model: str | None = None,
-            timeout: int = 90) -> str:
-    """Call the Nous chat endpoint. Returns the assistant text. `model`
-    overrides the default (config.toml's llm_model, see app_config.py)."""
+            timeout: int = 90, base_url: str | None = None) -> str:
+    """Call an OpenAI-chat-style endpoint -- the Nous cloud API by default,
+    or Settings.nous_base_url (Settings -> AI Provider) if set, e.g. a local
+    `hermes proxy start` gateway at http://127.0.0.1:8645/v1/chat/completions
+    (2026-07-23: this is how a self-hosted gateway gets used instead of the
+    hardcoded Nous cloud URL -- see SETUP.md's "Local Hermes gateway"
+    section). Returns the assistant text. `model` overrides the default
+    (config.toml's llm_model, see app_config.py).
+
+    The "no API key" short-circuit only applies to the DEFAULT Nous cloud
+    URL -- a local/self-hosted gateway commonly needs no auth at all, so a
+    custom base_url still gets a real request even with no key configured
+    (the Authorization header is simply omitted then, rather than sending a
+    blank/garbage Bearer token)."""
     key = api_key or _API_KEY
-    if not key:
+    url = base_url or _LLM_URL
+    if not key and url == _LLM_URL:
         return "(no Nous API key — set one in Settings, or in ~/.hermes/config.yaml)"
     payload = {
         "model": model or _MODEL,
@@ -62,10 +74,11 @@ def ask_llm(system: str, question: str, api_key: str | None = None, model: str |
         ],
         "temperature": 0.3,
     }
+    headers = {"Content-Type": "application/json"}
+    if key:
+        headers["Authorization"] = f"Bearer {key}"
     try:
-        r = requests.post(_LLM_URL, headers={"Authorization": f"Bearer {key}",
-                                              "Content-Type": "application/json"},
-                          json=payload, timeout=timeout)
+        r = requests.post(url, headers=headers, json=payload, timeout=timeout)
         r.raise_for_status()
         return r.json()["choices"][0]["message"]["content"]
     except Exception as e:
@@ -120,15 +133,21 @@ class HermesProvider(AIProvider):
     id = "hermes"
     display_name = "Hermes"
 
-    def __init__(self, api_key: str | None = None, model: str | None = None):
+    def __init__(self, api_key: str | None = None, model: str | None = None,
+                 base_url: str | None = None):
         self._api_key = api_key
         self._model = model
+        self._base_url = base_url
 
     def is_reachable(self) -> bool:
-        return bool(self._api_key or _API_KEY) or shutil.which("hermes") is not None
+        # A configured base_url (a local/self-hosted gateway) counts as
+        # "reachable" on its own -- plenty of those need no API key at all.
+        return (bool(self._api_key or _API_KEY or self._base_url)
+                or shutil.which("hermes") is not None)
 
     def ask(self, system: str, question: str, timeout: int = 90) -> str:
-        return ask_llm(system, question, api_key=self._api_key, model=self._model, timeout=timeout)
+        return ask_llm(system, question, api_key=self._api_key, model=self._model,
+                        timeout=timeout, base_url=self._base_url)
 
     def run_action(self, message: str, timeout: int = 120) -> str:
         return ask_hermes_agent(message, timeout=timeout)
@@ -208,10 +227,10 @@ PROVIDER_CHOICES = [
 
 
 def get_provider(provider_id: str, *, nous_api_key: str | None = None,
-                  model: str | None = None) -> AIProvider:
+                  model: str | None = None, nous_base_url: str | None = None) -> AIProvider:
     cls = PROVIDER_CLASSES.get(provider_id, HermesProvider)
     if cls is HermesProvider:
-        return HermesProvider(api_key=nous_api_key, model=model)
+        return HermesProvider(api_key=nous_api_key, model=model, base_url=nous_base_url)
     return cls()
 
 
@@ -225,6 +244,6 @@ def display_name(provider_id: str) -> str:
     return PROVIDER_CLASSES.get(provider_id, HermesProvider).display_name
 
 
-def any_provider_reachable(nous_api_key: str | None = None) -> bool:
-    return any(get_provider(pid, nous_api_key=nous_api_key).is_reachable()
+def any_provider_reachable(nous_api_key: str | None = None, nous_base_url: str | None = None) -> bool:
+    return any(get_provider(pid, nous_api_key=nous_api_key, nous_base_url=nous_base_url).is_reachable()
               for pid in PROVIDER_CLASSES)

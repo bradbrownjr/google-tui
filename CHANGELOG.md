@@ -3,6 +3,21 @@
 Format: keep newest at top. One entry per meaningful change. Reference files
 touched and any breaking notes.
 
+## [2026-07-23] — Hermes provider: support a local self-hosted gateway
+
+New `Settings.nous_base_url` (Settings → AI Provider → "Hermes gateway URL")
+overrides `ask.py`'s hardcoded Nous cloud chat-completions URL. Verified
+against the Hermes Agent CLI's `hermes proxy start` — a local OpenAI-
+compatible server (default `http://127.0.0.1:8645/v1/chat/completions`) that
+attaches its own OAuth credentials, so no Nous API key is needed client-side
+when this is set (the Authorization header is only sent when a key exists
+AND the URL is still the default Nous cloud one). See SETUP.md § "Local
+Hermes gateway" for the setup steps, including a systemd user-service
+template alongside the existing `hermes-gateway`/`hermes-dashboard` units.
+
+**Files:** `google_tui/ask.py`, `google_tui/settings.py`, `google_tui/main.py`
+(Settings tab), `google_tui/setup_instructions.py`, `SETUP.md`.
+
 ## [2026-07-22] — Migrate every list view from `ListView` to Textual `DataTable`
 
 The cross-cutting ROADMAP P3 widget swap: every tab list — Mail, News,
