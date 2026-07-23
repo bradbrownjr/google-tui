@@ -8,9 +8,10 @@ F9+ isn't reliably delivered by every terminal). The Mail tab is Email-only
 2x2 card grid --- TODAY (today's events), TASKS (grouped), MAIL (unread),
 NEWS (rotating headlines) --- plus a full-width ASK HERMES card below; the
 external cards (weather/stocks/dictionary/Wikipedia -- ROADMAP P4) are still
-open. Alt+2/3/4 jump to Today/Tasks/Hermes, Mail/News are Tab/arrows-only;
-Alt+1 stays on the Mail tab's Email. See AGENTS.md for the full keybinding
-reference and the DASH_ADJACENCY rationale.
+open. Dashboard cards are reached with Tab/Shift+Tab or Alt+arrows (no
+per-card digit shortcut -- Alt+<digit> pane jumps were removed 2026-07-23,
+confirmed unreachable over SSH through some terminals). See AGENTS.md for
+the full keybinding reference and the DASH_ADJACENCY rationale.
 """
 from __future__ import annotations
 
@@ -70,12 +71,12 @@ from .app_config import AppConfig, load_config
 # 3 stacked interim panes into the real Google-native dashboard (`2026-07-17`,
 # ROADMAP P4): a 2x2 card grid -- TODAY (today's events), TASKS (grouped
 # overdue/today/upcoming/unscheduled), MAIL (unread count + top unread), NEWS
-# (top headlines from subscribed feeds) -- with the HERMES ASK pane full-width
+# (top headlines from subscribed feeds) -- with the ASK HERMES pane full-width
 # below it. PANE_IDS now covers ONLY Email's own tab, which has nothing to
 # switch to; DASH_PANE_IDS/DASH_ADJACENCY (below) is the Dashboard's own group.
 PANE_IDS = ["email"]
 # Container ids of the Dashboard's nine cards, in Tab/Shift+Tab cycle order.
-# "events"/"tasks"/"hermes" keep their pre-2026-07-17 ids (so Alt+2/3/4 and the
+# "events"/"tasks"/"hermes" keep their pre-2026-07-17 ids (so the
 # #event-list/#task-list populate paths are unchanged); dash-mail/dash-news/
 # dash-weather/dash-stocks/dash-word/dash-potd are all net-new (2026-07-17 and
 # 2026-07-19), reachable via Tab/Shift+Tab and Alt+arrows only.
@@ -1449,7 +1450,6 @@ class GoogleTUI(App):
     .pane-active { border: round $accent; }
     .pane-title-row { height: 1; }
     .pane-title-text { text-style: bold; color: $accent; width: 1fr; }
-    .pane-title-num { color: $text 75%; width: auto; }
     #email-label-select { height: 3; }
     #email-search, #tasks-search, #events-search { width: 1fr; }
     #email-list { height: 1fr; }
@@ -1618,7 +1618,7 @@ class GoogleTUI(App):
     /* Dashboard tab: HIDE the inactive pane instead of stacking. Events/
        Tasks/Hermes stacked 3-high already squeezes an already-scarce 25
        rows; showing exactly ONE pane full width/full height (whichever is
-       "active" -- Alt+2..4/Tab/arrows already track that via
+       "active" -- Tab/arrows already track that via
        _focus_dash_pane, this just also hides the rest when narrow) keeps
        the primary content dominant instead of squeezed. See
        GoogleTUI._apply_narrow_layout, which toggles this class. */
@@ -1990,24 +1990,22 @@ class GoogleTUI(App):
         return self._drive_backend
 
     # ---- pane helpers (Mail tab) ----
-    def _pane_title_row(self, text: str, num: int, *, text_id: str | None = None) -> Horizontal:
-        # num == 0 means "no Alt-digit shortcut" (the Dashboard's MAIL/NEWS
-        # cards, reachable via Tab/arrows only) -- omit the number label
-        # entirely rather than render a misleading "0". text_id lets a caller
-        # re-target the title Label later (e.g. the Hermes card's title
-        # tracks Settings.ai_provider live -- see _update_hermes_labels).
-        children = [Label(text, id=text_id, classes="pane-title-text")]
-        if num:
-            children.append(Label(str(num), classes="pane-title-num"))
-        return Horizontal(*children, classes="pane-title-row")
+    def _pane_title_row(self, text: str, *, text_id: str | None = None) -> Horizontal:
+        # Used to also render a "pane-title-num" Alt+<digit> badge; removed
+        # 2026-07-23 along with the Alt+<digit> pane-jump shortcuts themselves
+        # (confirmed unreachable over SSH through some terminals). text_id
+        # lets a caller re-target the title Label later (e.g. the Hermes
+        # card's title tracks Settings.ai_provider live -- see
+        # _update_hermes_labels).
+        return Horizontal(Label(text, id=text_id, classes="pane-title-text"), classes="pane-title-row")
 
     def _main_tabs(self) -> TabbedContent:
         return self.query_one("#main-tabs", TabbedContent)
 
     def _focus_pane(self, idx: int) -> None:
         """Mail tab now has exactly one pane (Email) -- idx is always 0.
-        Kept as a method (not inlined) so call sites (_goto_pane, on_mount)
-        don't need to change shape."""
+        Kept as a method (not inlined) so call sites (on_mount, the Mail-tab
+        activation branch) don't need to change shape."""
         self.active = idx % len(PANE_IDS)
         try:
             self.query_one("#email").add_class("pane-active")
@@ -2351,16 +2349,13 @@ class GoogleTUI(App):
             # card grid of TODAY (today's events) / TASKS (grouped) / MAIL
             # (unread count + top unread) / NEWS (top headlines) / WEATHER /
             # STOCKS / WORD OF THE DAY / PICTURE OF THE DAY (the four
-            # external cards, `2026-07-19`), with HERMES ASK full-width
+            # external cards, `2026-07-19`), with ASK HERMES full-width
             # below. Reuses #event-list/#task-list in place (so their
             # Space-toggle / Enter-detail handlers are unchanged); the
             # #events-search/#tasks-search bars stay in-DOM (hidden) so the "/"
             # filter path (action_focus_search -> _show_pane_search) still
-            # works.
-            # Title-row badge numbers: 2/3 = Alt+2/3 (events/tasks), 4 = Alt+4
-            # (hermes); every other card has no Alt digit (Tab/arrows only),
-            # so they pass 0 -- _pane_title_row omits the number label for a
-            # falsy num.
+            # works. No per-card digit badge/shortcut -- see _pane_title_row's
+            # docstring and bindings.py's GLOBAL_ACTIONS comment for why.
             with TabPane(_tab_label("Dashboard", 1, self.settings.ascii_mode), id="tab-dashboard"):
                 # dashboard-body is a Vertical of two parts: the adaptive card
                 # grid (#dash-cards) on top, HERMES full-width below. HERMES
@@ -2378,36 +2373,36 @@ class GoogleTUI(App):
                 with Vertical(id="dashboard-body"):
                     with Grid(id="dash-cards"):
                         with Container(id="events", classes="pane"):
-                            yield self._pane_title_row("TODAY  (events, enter=detail)", 2)
+                            yield self._pane_title_row("TODAY  (events, enter=detail)")
                             with Horizontal(id="events-bar", classes="btnrow hidden"):
                                 yield Input(placeholder="Search events (summary/description)… (/)",
                                             id="events-search")
                             yield DataTable(id="event-list", cursor_type="row", zebra_stripes=True)
                         with Container(id="tasks", classes="pane"):
-                            yield self._pane_title_row("TASKS  (space=done, enter=detail)", 3)
+                            yield self._pane_title_row("TASKS  (space=done, enter=detail)")
                             with Horizontal(id="tasks-bar", classes="btnrow hidden"):
                                 yield Input(placeholder="Search tasks (title/notes)… (/)", id="tasks-search")
                             yield DataTable(id="task-list", cursor_type="row", zebra_stripes=True)
                         with Container(id="dash-mail", classes="pane"):
-                            yield self._pane_title_row("MAIL  (unread, enter=open)", 0)
+                            yield self._pane_title_row("MAIL  (unread, enter=open)")
                             yield DataTable(id="dash-mail-list", cursor_type="row", zebra_stripes=True)
                         with Container(id="dash-news", classes="pane"):
-                            yield self._pane_title_row("NEWS  (top headlines)", 0)
+                            yield self._pane_title_row("NEWS  (top headlines)")
                             yield DataTable(id="dash-news-list", cursor_type="row", zebra_stripes=True)
                         with Container(id="dash-weather", classes="pane"):
-                            yield self._pane_title_row("WEATHER", 0)
+                            yield self._pane_title_row("WEATHER")
                             yield ListView(id="dash-weather-list")
                         with Container(id="dash-stocks", classes="pane"):
-                            yield self._pane_title_row("STOCKS", 0)
+                            yield self._pane_title_row("STOCKS")
                             yield ListView(id="dash-stocks-list")
                         with Container(id="dash-word", classes="pane"):
-                            yield self._pane_title_row("WORD OF THE DAY  (enter=open)", 0)
+                            yield self._pane_title_row("WORD OF THE DAY  (enter=open)")
                             yield ListView(id="dash-word-list")
                         with Container(id="dash-potd", classes="pane"):
-                            yield self._pane_title_row("PICTURE OF THE DAY  (enter=open)", 0)
+                            yield self._pane_title_row("PICTURE OF THE DAY  (enter=open)")
                             yield ListView(id="dash-potd-list")
                     with Container(id="hermes", classes="pane"):
-                        yield self._pane_title_row(self._hermes_ask_title(), 4, text_id="hermes-pane-title")
+                        yield self._pane_title_row(self._hermes_ask_title(), text_id="hermes-pane-title")
                         # Starts hidden; _hermes_submit reveals it on the first
                         # question so an empty response box doesn't take space.
                         yield RichLog(id="hermes-log", markup=False, wrap=True, classes="hidden")
@@ -2417,7 +2412,7 @@ class GoogleTUI(App):
                 with Horizontal(id="body"):
                     with Vertical(id="left"):
                         with Container(id="email", classes="pane"):
-                            yield self._pane_title_row("EMAIL  (threads)", 1)
+                            yield self._pane_title_row("EMAIL  (threads)")
                             yield Select(
                                 _initial_label_select_options(self.settings.default_label_id),
                                 value=self.settings.default_label_id,
@@ -3844,31 +3839,6 @@ class GoogleTUI(App):
                     self._refresh_contacts_list()
         self._update_help_bar()
 
-    # ---- pane switching (Alt+1..4) ----
-    def _goto_pane(self, pane_id: str) -> None:
-        """pane_id "email" stays on the Mail tab; "events"/"tasks"/"hermes"
-        (Alt+2/3/4) live on the Dashboard tab (`2026-07-16` split). Takes the
-        id directly (not a positional index -- a prior version indexed into
-        DASH_PANE_IDS by `idx - 1`, which silently broke Alt+4 the moment a
-        4th/5th Dashboard card was added between Hermes and position 3; fixed
-        2026-07-18 alongside the enable/disable rework). A card disabled in
-        Settings -> Dashboard still switches to the Dashboard tab but lands
-        on the first enabled card instead, with a notify explaining why."""
-        if pane_id == "email":
-            self._goto_tab("tab-mail")
-            self._focus_pane(0)
-            return
-        self._goto_tab("tab-dashboard")
-        if pane_id not in self._dash_enabled_ids:
-            self.notify(f"{PANE_TITLES.get(pane_id, pane_id)} is disabled — "
-                       f"enable it in Settings → Dashboard.", severity="warning")
-        self._focus_dash_pane(pane_id)
-
-    def action_goto_pane_email(self):  self._goto_pane("email")
-    def action_goto_pane_events(self): self._goto_pane("events")
-    def action_goto_pane_tasks(self):  self._goto_pane("tasks")
-    def action_goto_pane_hermes(self): self._goto_pane("hermes")
-
     def action_switch_left(self):
         active = self._main_tabs().active
         if active == "tab-browser":
@@ -4073,8 +4043,8 @@ class GoogleTUI(App):
 
     def action_hermes_popup(self) -> None:
         """Ctrl+K: pop up a quick-ask modal for the configured AI provider
-        from ANY tab, without navigating to the Dashboard tab the way Alt+4
-        does. Dead (never dispatched) while another ModalScreen is already
+        from ANY tab, without navigating to the Dashboard tab first. Dead
+        (never dispatched) while another ModalScreen is already
         on top -- Textual truncates the binding-chain walk at a modal
         boundary (AGENTS.md §2), which is the right default here too: we
         don't want this stacking on top of e.g. ComposeModal or ThreadModal."""

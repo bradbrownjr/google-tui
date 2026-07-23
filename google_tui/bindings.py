@@ -69,16 +69,20 @@ GLOBAL_ACTIONS: list[ActionSpec] = [
     ActionSpec("goto_tab_settings", "ctrl+9", "Settings"),
     ActionSpec("cycle_tab_back", "ctrl+left", "Prev Tab"),
     ActionSpec("cycle_tab", "ctrl+right", "Next Tab"),
-    ActionSpec("goto_pane_email", "alt+1", "Email"),
-    ActionSpec("goto_pane_events", "alt+2", "Events"),
-    ActionSpec("goto_pane_tasks", "alt+3", "Tasks"),
-    ActionSpec("goto_pane_hermes", "alt+4", "Hermes"),
+    # Alt+1..4 pane-jump shortcuts (and their 2026-07-22 Alt+1..9 renumbered
+    # successor) were REMOVED 2026-07-23: confirmed via a real user's SSH
+    # session (Windows Terminal -> Debian) that Alt+<digit> never reaches the
+    # app at all -- Alt+arrow (a different key, same modifier) works fine in
+    # the same session, so it's specifically digit keys under Alt that get
+    # eaten somewhere in the terminal/SSH chain, not a general Alt-key
+    # problem. Tab/Shift+Tab + Alt+arrows (below) remain the only ways to
+    # move between Dashboard cards; email is still F2/Ctrl+2 (goto_tab_mail).
     # Pops up a small quick-ask modal for the configured AI provider
     # (Settings -> AI Provider) from ANY tab/screen, without navigating to
-    # the Dashboard tab the way Alt+4 does -- see HermesAskModal. Ctrl+<letter>
+    # the Dashboard tab first -- see HermesAskModal. Ctrl+<letter>
     # is a real ASCII control code every terminal transmits reliably (same
     # reasoning already established for Ctrl+R/Ctrl+H/Ctrl+Q/Ctrl+P below),
-    # unlike the Ctrl+<digit>/F9+ caveats noted elsewhere in this file.
+    # unlike the Ctrl+<digit>/F9+/Alt+<digit> caveats noted elsewhere in this file.
     ActionSpec("hermes_popup", "ctrl+k", "Ask"),
     ActionSpec("reply", "r", "Reply"),
     ActionSpec("reply_all", "a", "Reply All"),
@@ -198,7 +202,7 @@ def ascii_safe(text: str) -> str:
 
 
 HELP_GLOBAL_TEXT = (
-    "F1-F8,Ctrl+9 Tab   Alt+# Pane   Alt+←→↑↓ Move Pane   Ctrl+K Ask   "
+    "F1-F8,Ctrl+9 Tab   Alt+←→↑↓ Move Pane   Ctrl+K Ask   "
     "Ctrl+P Commands   F12 Mouse   Ctrl+H Help   Ctrl+Q Quit"
 )
 
@@ -365,11 +369,11 @@ GLOBAL
   Ctrl+Left/Right  Cycle tabs (the universal fallback if neither F1..F8 nor
                    Ctrl+1..8 reaches the app — some terminals/multiplexers/
                    browsers swallow both)
-  Alt+1..4         Jump to a pane: 1 Email (Mail tab), 2/3/4 Today/Tasks/
-                   Hermes (Dashboard tab). The Dashboard's Mail and News
-                   cards have no digit — reach them with Tab or Alt+arrows.
-  Alt+arrows       Move to the adjacent Dashboard card (2x2 grid + Hermes;
-                   skips over any card disabled in Settings → Dashboard)
+  Alt+arrows       Move to the adjacent Dashboard card (2-column card grid +
+                   Hermes; skips over any card disabled in Settings →
+                   Dashboard). Alt+<digit> pane-jump shortcuts were removed
+                   2026-07-23 -- confirmed unreachable over SSH through some
+                   terminals (Alt+arrow, a different key, works fine).
   Tab / Shift+Tab  Cycle Dashboard cards (enabled ones only)
   Ctrl+K           Quick-ask the configured AI assistant (Settings → AI
                    Provider) from anywhere — pops up a small modal, Esc closes.
