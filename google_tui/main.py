@@ -1443,6 +1443,15 @@ class GoogleTUI(App):
     #hermes { height: auto; }
     #dash-mail-list, #dash-news-list, #dash-weather-list, #dash-stocks-list,
     #dash-word-list, #dash-potd-list { height: 1fr; }
+    /* Label defaults to `width: auto` (size-to-content, one unwrapped line) --
+       with no width to wrap against, a long WORD OF THE DAY definition or
+       empty-state message ("Not available yet...") just renders as one long
+       line and gets clipped at the card's edge instead of wrapping. These
+       four cards' Labels are the only Dashboard content still built from
+       plain multi-line strings (not a DataTable), so constrain them to the
+       card's width to let Rich actually word-wrap. */
+    #dash-weather-list Label, #dash-stocks-list Label,
+    #dash-word-list Label, #dash-potd-list Label { width: 1fr; }
     /* TASKS/MAIL group-header + Email multi-select rows are styled per-cell on
        their DataTables now (bold Text / _email_sel_style), not via a CSS class. */
     #email-preview-meta { height: auto; border-bottom: solid $panel-darken-2; padding-bottom: 1; }
@@ -4905,6 +4914,17 @@ class GoogleTUI(App):
         list_tables.rebuild_flat_table(table, self._EVENT_COLS, rows,
                                        flex_min=10, fallback_width=_EVENT_ROW_DEFAULT_W)
 
+    # From/Date fixed, Subject flexible -- mirrors the Dashboard NEWS card's
+    # (Feed, Headline) columns and the Mail tab's own From/Subject/.../Date
+    # widths (_EMAIL_SENDER_W/_EMAIL_DATE_W), just narrower for this half-width
+    # card. Replaced 2026-07-23: this used to be a single flex column holding
+    # "{frm}   {subj}   {date_str}" as one hand-joined string -- DataTable only
+    # measures/aligns discrete CELLS across real columns, not substrings
+    # within one, so that rendered exactly like the old ListView's manual
+    # padding (ragged, since names/subjects vary in length) despite already
+    # being a DataTable.
+    _DASH_MAIL_COLS = [("From", 14), ("Subject", None), ("Date", _EMAIL_DATE_W)]
+
     def _populate_dash_mail(self, threads) -> None:
         """Dashboard MAIL card: an unread count header (Enter jumps to the Mail
         tab) followed by up to six most-recent unread threads (Enter opens the
@@ -4914,18 +4934,19 @@ class GoogleTUI(App):
         external text that Textual's markup parser would otherwise choke on."""
         unread = [t for t in threads if t.get("unread")]
         # A bold "unread count" header row (dm-open, Enter jumps to Mail) then
-        # up to six unread threads. Single flex column; From/Subject/Date are
-        # measured/aligned by DataTable, so no _cell_col padding.
-        rows: list[tuple[str, list]] = [("dm-open", [Text(f"📬 {len(unread)} unread", style="bold")])]
+        # up to six unread threads, each a real (From, Subject, Date) row —
+        # DataTable measures/aligns real columns, not substrings.
+        rows: list[tuple[str, list]] = [
+            ("dm-open", [Text(f"📬 {len(unread)} unread", style="bold"), "", ""])]
         seen: set = {"dm-open"}
         for t in unread[:6]:
             cid = _unique_id(_mk_id("dm", t["threadId"]), seen)
             frm = _format_sender(t.get("from", ""), False)
             subj = t.get("subject") or "(no subject)"
             date_str = _fmt_email_date(t.get("date", ""))
-            rows.append((cid, [f"{frm}   {subj}   {date_str}"]))
+            rows.append((cid, [frm, subj, date_str]))
         list_tables.rebuild_flat_table(self.query_one("#dash-mail-list", DataTable),
-                                       [("Mail", None)], rows, flex_min=20)
+                                       self._DASH_MAIL_COLS, rows, flex_min=20)
 
     def _apply_dashboard_extras(self, weather=_DASH_EXTRA_UNCHANGED, stocks=_DASH_EXTRA_UNCHANGED,
                                  word_of_day=_DASH_EXTRA_UNCHANGED, wiki_potd=_DASH_EXTRA_UNCHANGED) -> None:
